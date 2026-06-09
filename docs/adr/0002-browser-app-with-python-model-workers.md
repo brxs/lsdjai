@@ -1,6 +1,6 @@
 # 0002. Browser app with Python model workers, deferring Tauri
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-09
 - **Deciders:** Daniel Peter
 

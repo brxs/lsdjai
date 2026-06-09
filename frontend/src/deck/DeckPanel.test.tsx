@@ -15,6 +15,8 @@ function renderPanel(state: Partial<DeckState>, handlers: Record<string, () => v
       onPlay={handlers.onPlay ?? noop}
       onStop={handlers.onStop ?? noop}
       onSetPrompt={(handlers.onSetPrompt as (p: string) => void) ?? noop}
+      onSetModel={(handlers.onSetModel as (m: string) => void) ?? noop}
+      onRestart={handlers.onRestart ?? noop}
       onSetVolume={noop}
     />,
   )
@@ -66,6 +68,54 @@ describe('DeckPanel', () => {
     fireEvent.change(input, { target: { value: '  warm disco funk  ' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onSetPrompt).toHaveBeenCalledWith('warm disco funk')
+  })
+
+  it('offers the model picker and reports a selection', () => {
+    const onSetModel = vi.fn()
+    renderPanel(
+      {
+        connection: 'open',
+        model: 'mrt2_small',
+        availableModels: ['mrt2_small', 'mrt2_base'],
+      },
+      { onSetModel: onSetModel as () => void },
+    )
+    fireEvent.change(screen.getByLabelText('Model'), {
+      target: { value: 'mrt2_base' },
+    })
+    expect(onSetModel).toHaveBeenCalledWith('mrt2_base')
+  })
+
+  it('locks the deck while a model is loading', () => {
+    renderPanel({
+      connection: 'open',
+      switchingModel: true,
+      model: 'mrt2_base',
+      availableModels: ['mrt2_small', 'mrt2_base'],
+    })
+    expect(screen.getByText('Loading model…')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Play' })).toBeDisabled()
+    expect(screen.getByLabelText('Model')).toBeDisabled()
+  })
+
+  it('offers recovery when the worker died', () => {
+    const onRestart = vi.fn()
+    renderPanel(
+      {
+        connection: 'open',
+        workerDied: true,
+        model: 'mrt2_base',
+        availableModels: ['mrt2_small', 'mrt2_base'],
+      },
+      { onRestart },
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent('The deck engine crashed.')
+    fireEvent.click(screen.getByRole('button', { name: 'Restart deck' }))
+    expect(onRestart).toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Play' })).toBeDisabled()
+    // Recovery from a model that cannot load is switching to one that can —
+    // the picker must stay usable while the worker is dead.
+    expect(screen.getByLabelText('Model')).toBeEnabled()
   })
 
   it('announces worker errors', () => {

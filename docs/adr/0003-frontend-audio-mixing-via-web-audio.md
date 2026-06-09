@@ -1,6 +1,6 @@
 # 0003. Frontend audio mixing via Web Audio
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-09
 - **Deciders:** Daniel Peter
 

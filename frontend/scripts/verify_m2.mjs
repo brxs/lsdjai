@@ -16,35 +16,36 @@ const browser = await chromium.launch({
 try {
   const page = await browser.newPage()
   await page.goto(URL)
+  const deckA = page.locator('section[aria-label="Deck a"]')
 
   // Deck connects on load.
-  await page.getByText('Connected', { exact: true }).waitFor({ timeout: 10_000 })
+  await deckA.getByText('Connected', { exact: true }).waitFor({ timeout: 10_000 })
   console.log('connected: deck socket open from the React app')
 
   // Set a prompt, then play.
-  await page.getByLabel('Style prompt').fill('warm disco funk')
-  await page.getByRole('button', { name: 'Set prompt' }).click()
-  await page.getByText('Playing: warm disco funk').waitFor({ timeout: 20_000 })
+  await deckA.getByLabel('Style prompt').fill('warm disco funk')
+  await deckA.getByRole('button', { name: 'Set prompt' }).click()
+  await deckA.getByText('Playing: warm disco funk').waitFor({ timeout: 20_000 })
   console.log('prompt: applied and reflected in the UI')
 
-  await page.getByRole('button', { name: 'Play' }).click()
-  await page.getByRole('button', { name: 'Stop' }).waitFor({ timeout: 5_000 })
+  await deckA.getByRole('button', { name: 'Play' }).click()
+  await deckA.getByRole('button', { name: 'Stop' }).waitFor({ timeout: 5_000 })
 
   // Let it stream, then read the health row from the UI.
   await page.waitForTimeout(PLAY_SECONDS * 1000)
 
   const underruns = Number(
-    await page
+    await deckA
       .locator('.ui-stat', { hasText: 'Underruns' })
       .locator('.ui-stat__value')
       .textContent(),
   )
-  const bufferLabel = await page
+  const bufferLabel = await deckA
     .locator('.ui-meter__label span')
     .nth(1)
     .textContent()
   const bufferedSeconds = Number.parseFloat(bufferLabel ?? '0')
-  const genSpeedText = await page
+  const genSpeedText = await deckA
     .locator('.ui-stat', { hasText: 'Gen speed' })
     .locator('.ui-stat__value')
     .textContent()
@@ -54,15 +55,15 @@ try {
   )
 
   // Volume fader accepts input and reflects it.
-  const volume = page.getByLabel('Volume')
+  const volume = deckA.getByLabel('Volume')
   await volume.fill('0.3')
   if ((await volume.inputValue()) !== '0.3') {
     throw new Error('volume fader did not take the new value')
   }
 
   // Stop returns the transport to Play.
-  await page.getByRole('button', { name: 'Stop' }).click()
-  await page.getByRole('button', { name: 'Play' }).waitFor({ timeout: 5_000 })
+  await deckA.getByRole('button', { name: 'Stop' }).click()
+  await deckA.getByRole('button', { name: 'Play' }).waitFor({ timeout: 5_000 })
   console.log('transport: play/stop round-trip works')
 
   await page.screenshot({ path: 'm2-verification.png', fullPage: true })

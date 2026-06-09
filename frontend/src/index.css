@@ -34,3 +34,14 @@ body {
   justify-content: center;
   width: 100%;
 }
+
+.app__warning {
+  font: 500 var(--text-s) var(--font-ui);
+  color: var(--color-warn);
+  background: var(--color-surface);
+  border: 1px solid var(--color-warn);
+  border-radius: var(--radius-s);
+  padding: var(--space-2) var(--space-4);
+  margin: 0;
+  max-width: 100%;
+}

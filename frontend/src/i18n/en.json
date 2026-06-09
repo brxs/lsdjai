@@ -1,9 +1,23 @@
 {
   "app": {
-    "title": "magenta-dj"
+    "title": "magenta-dj",
+    "ramWarning": "Selected models need roughly {{combined}} GB on a {{total}} GB machine — real-time playback may struggle."
+  },
+  "mixer": {
+    "title": "Mixer",
+    "crossfade": "Crossfade",
+    "deckA": "A",
+    "deckB": "B"
   },
   "deck": {
     "title": "Deck {{id}}",
+    "model": {
+      "label": "Model"
+    },
+    "worker": {
+      "died": "The deck engine crashed.",
+      "restart": "Restart deck"
+    },
     "prompt": {
       "label": "Style prompt",
       "placeholder": "e.g. warm disco funk",
@@ -16,7 +30,8 @@
     "status": {
       "connecting": "Connecting…",
       "connected": "Connected",
-      "disconnected": "Disconnected — retrying"
+      "disconnected": "Disconnected — retrying",
+      "loadingModel": "Loading model…"
     },
     "health": {
       "buffer": "Buffer",

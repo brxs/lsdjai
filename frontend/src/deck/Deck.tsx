@@ -1,8 +1,25 @@
+import { useEffect } from 'react'
+
+import type { DeckId } from '../audio/engine'
 import { DeckPanel } from './DeckPanel'
+import type { RamInfo } from './deckState'
 import { useDeck } from './useDeck'
 
-export function Deck({ id }: { id: string }) {
-  const { state, volume, play, stop, setPrompt, setVolume } = useDeck(id)
+type DeckProps = {
+  id: DeckId
+  onModelChange?: (deckId: DeckId, model: string | null, ramInfo: RamInfo | null) => void
+}
+
+export function Deck({ id, onModelChange }: DeckProps) {
+  const { state, volume, play, stop, setPrompt, setModel, restartWorker, setVolume } =
+    useDeck(id)
+
+  // Report the active model up so the app can warn about the combined RAM
+  // footprint across both decks.
+  useEffect(() => {
+    onModelChange?.(id, state.model, state.ramInfo)
+  }, [id, state.model, state.ramInfo, onModelChange])
+
   return (
     <DeckPanel
       deckId={id}
@@ -11,6 +28,8 @@ export function Deck({ id }: { id: string }) {
       onPlay={() => void play()}
       onStop={stop}
       onSetPrompt={setPrompt}
+      onSetModel={setModel}
+      onRestart={restartWorker}
       onSetVolume={setVolume}
     />
   )

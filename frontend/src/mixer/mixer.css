@@ -1,0 +1,20 @@
+.mixer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-raised);
+  width: min(36rem, 100%);
+}
+
+.mixer__fader {
+  flex: 1;
+}
+
+.mixer__edge {
+  font: 700 var(--text-l) var(--font-mono);
+  color: var(--color-accent-strong);
+}

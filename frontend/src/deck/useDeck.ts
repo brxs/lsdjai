@@ -1,16 +1,15 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 
+import { useAudioEngine } from '../audio/engineContext'
+import type { DeckChannel, DeckId } from '../audio/engine'
 import {
   deckReducer,
   initialDeckState,
   type DeckState,
   type ServerEvent,
-  type WorkletStats,
 } from './deckState'
 
-const SAMPLE_RATE = 48_000
 const RECONNECT_DELAY_MS = 2_000
-const VOLUME_RAMP_SECONDS = 0.02
 
 export type DeckControls = {
   state: DeckState
@@ -18,60 +17,42 @@ export type DeckControls = {
   play: () => Promise<void>
   stop: () => void
   setPrompt: (prompt: string) => void
+  setModel: (model: string) => void
+  restartWorker: () => void
   setVolume: (volume: number) => void
 }
 
-/** Owns one deck's WebSocket and audio graph:
- * socket → worklet ring buffer → per-deck gain → speakers. */
-export function useDeck(deckId: string): DeckControls {
+/** Owns one deck's WebSocket and its channel on the shared audio engine
+ * (worklet ring buffer → deck gain → crossfade bus, see audio/engine.ts). */
+export function useDeck(deckId: DeckId): DeckControls {
+  const engine = useAudioEngine()
   const [state, dispatch] = useReducer(deckReducer, initialDeckState)
   const [volume, setVolumeState] = useState(0.8)
   const volumeRef = useRef(volume)
 
-  type AudioGraph = {
-    context: AudioContext
-    worklet: AudioWorkletNode
-    gain: GainNode
-  }
   const socketRef = useRef<WebSocket | null>(null)
-  const audioRef = useRef<AudioGraph | null>(null)
-  // Memoised in-flight build so rapid play() clicks share one graph instead
-  // of leaking contexts (Chrome caps concurrent AudioContexts).
-  const audioPromiseRef = useRef<Promise<AudioGraph> | null>(null)
+  const channelRef = useRef<DeckChannel | null>(null)
+  // Memoised in-flight channel build so rapid play() clicks share one
+  // channel instead of stacking worklets on the bus.
+  const channelPromiseRef = useRef<Promise<DeckChannel> | null>(null)
 
-  const buildAudioGraph = useCallback(async (): Promise<AudioGraph> => {
-    const context = new AudioContext({ sampleRate: SAMPLE_RATE })
-    try {
-      await context.audioWorklet.addModule('/player-worklet.js')
-      const worklet = new AudioWorkletNode(context, 'pcm-player', {
-        numberOfOutputs: 1,
-        outputChannelCount: [2],
-      })
-      const gain = context.createGain()
-      gain.gain.value = volumeRef.current
-      worklet.connect(gain)
-      gain.connect(context.destination)
-      worklet.port.onmessage = (event: MessageEvent<WorkletStats>) => {
-        dispatch({ type: 'worklet_stats', stats: event.data })
-      }
-      const graph = { context, worklet, gain }
-      audioRef.current = graph
-      return graph
-    } catch (error) {
-      void context.close()
-      throw error
+  const ensureChannel = useCallback(() => {
+    if (!channelPromiseRef.current) {
+      channelPromiseRef.current = engine
+        .createDeckChannel(deckId, volumeRef.current, (stats) =>
+          dispatch({ type: 'worklet_stats', stats }),
+        )
+        .then((channel) => {
+          channelRef.current = channel
+          return channel
+        })
+        .catch((error: unknown) => {
+          channelPromiseRef.current = null // allow a retry after failure
+          throw error
+        })
     }
-  }, [])
-
-  const ensureAudio = useCallback(() => {
-    if (!audioPromiseRef.current) {
-      audioPromiseRef.current = buildAudioGraph().catch((error: unknown) => {
-        audioPromiseRef.current = null // allow a retry after failure
-        throw error
-      })
-    }
-    return audioPromiseRef.current
-  }, [buildAudioGraph])
+    return channelPromiseRef.current
+  }, [engine, deckId])
 
   useEffect(() => {
     let disposed = false
@@ -88,10 +69,7 @@ export function useDeck(deckId: string): DeckControls {
       socket.onopen = () => dispatch({ type: 'socket_open' })
       socket.onmessage = (event) => {
         if (event.data instanceof ArrayBuffer) {
-          const samples = new Float32Array(event.data)
-          audioRef.current?.worklet.port.postMessage({ type: 'pcm', samples }, [
-            samples.buffer,
-          ])
+          channelRef.current?.postPcm(new Float32Array(event.data))
         } else {
           let parsed: ServerEvent
           try {
@@ -99,6 +77,12 @@ export function useDeck(deckId: string): DeckControls {
           } catch {
             console.warn(`deck ${deckId}: dropping malformed frame`, event.data)
             return
+          }
+          if (parsed.event === 'model_loading' || parsed.event === 'worker_died') {
+            // The stream this buffer came from is gone with the old worker;
+            // a crashed deck goes silent rather than draining its tail under
+            // the crash banner.
+            channelRef.current?.reset()
           }
           dispatch({ type: 'server_event', event: parsed })
         }
@@ -115,9 +99,9 @@ export function useDeck(deckId: string): DeckControls {
       disposed = true
       clearTimeout(reconnectTimer)
       socketRef.current?.close()
-      audioRef.current?.context.close()
-      audioRef.current = null
-      audioPromiseRef.current = null
+      channelRef.current?.dispose()
+      channelRef.current = null
+      channelPromiseRef.current = null
     }
   }, [deckId])
 
@@ -130,11 +114,11 @@ export function useDeck(deckId: string): DeckControls {
 
   const play = useCallback(async () => {
     try {
-      const audio = await ensureAudio()
-      await audio.context.resume()
+      const channel = await ensureChannel()
+      await engine.resume()
       // Drop whatever an earlier session left in the ring buffer, so the
       // first thing heard is the new stream, not stale chunks.
-      audio.worklet.port.postMessage({ type: 'reset' })
+      channel.reset()
     } catch (error) {
       dispatch({
         type: 'local_error',
@@ -144,13 +128,13 @@ export function useDeck(deckId: string): DeckControls {
     }
     send({ type: 'play' })
     dispatch({ type: 'play_requested' })
-  }, [ensureAudio, send])
+  }, [ensureChannel, engine, send])
 
   const stop = useCallback(() => {
     send({ type: 'stop' })
     // Flush instead of letting the buffered seconds play out, so stop is
     // immediate like a DJ expects.
-    audioRef.current?.worklet.port.postMessage({ type: 'reset' })
+    channelRef.current?.reset()
     dispatch({ type: 'stop_requested' })
   }, [send])
 
@@ -161,18 +145,31 @@ export function useDeck(deckId: string): DeckControls {
     [send],
   )
 
+  const setModel = useCallback(
+    (model: string) => {
+      send({ type: 'set_model', model })
+    },
+    [send],
+  )
+
+  const restartWorker = useCallback(() => {
+    send({ type: 'restart' })
+  }, [send])
+
   const setVolume = useCallback((next: number) => {
     setVolumeState(next)
     volumeRef.current = next
-    const audio = audioRef.current
-    if (audio) {
-      audio.gain.gain.setTargetAtTime(
-        next,
-        audio.context.currentTime,
-        VOLUME_RAMP_SECONDS,
-      )
-    }
+    channelRef.current?.setVolume(next)
   }, [])
 
-  return { state, volume, play, stop, setPrompt, setVolume }
+  return {
+    state,
+    volume,
+    play,
+    stop,
+    setPrompt,
+    setModel,
+    restartWorker,
+    setVolume,
+  }
 }

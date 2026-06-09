@@ -61,6 +61,12 @@ visible in the UI rather than silent glitches.
 
 ## M3 — Two decks, crossfader, model picker
 
+**Status: ✅ done (2026-06-09).** Exit criteria verified end-to-end in
+headless Chromium (`frontend/scripts/verify_m3.mjs`): both decks on
+different prompts, live equal-power crossfade, deck b switched
+`mrt2_small` → `mrt2_base` while deck a kept playing with zero underruns.
+Worker-death recovery ships with it (worker_died event + restart button).
+
 **Goal:** the actual DJ instrument.
 
 Scope:

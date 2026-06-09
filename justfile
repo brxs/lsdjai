@@ -11,6 +11,10 @@ setup:
     cd frontend && npm install
     just build
 
+# Optional: the higher-quality deck model (per-deck picker in the UI).
+download-base-model:
+    cd backend && uv run mrt models download mrt2_base
+
 # Build the frontend (the backend serves frontend/dist).
 build:
     cd frontend && npm run build
@@ -53,3 +57,4 @@ verify-stream duration="60":
 # UI e2e in headless Chromium against a running server.
 verify-ui:
     cd frontend && node scripts/verify_m2.mjs
+    cd frontend && node scripts/verify_m3.mjs

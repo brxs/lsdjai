@@ -13,6 +13,24 @@ FRAME_SECONDS = 0.04
 FRAMES_PER_CHUNK = 25
 CHUNK_SECONDS = FRAMES_PER_CHUNK * FRAME_SECONDS
 
+# Models this app knows how to drive; commands are validated against this.
+KNOWN_MODELS = ("mrt2_small", "mrt2_base")
+
+
+def available_models() -> list[str]:
+    """KNOWN_MODELS whose files are actually on disk (mrt2_base is an
+    optional download), so the UI only offers models that can load."""
+    from magenta_rt import paths
+
+    present = []
+    for name in KNOWN_MODELS:
+        model_dir = paths.models_dir() / name
+        if (model_dir / f"{name}.mlxfn").is_file() and (
+            model_dir / f"{name}_state.safetensors"
+        ).is_file():
+            present.append(name)
+    return present
+
 
 class DeckEngine:
     """One model instance generating a continuous stream in 1-second chunks."""

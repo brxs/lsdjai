@@ -20,7 +20,9 @@ just setup   # backend deps, model weights (~1.8 GB), frontend deps + build
 ```
 
 Models land in `~/Documents/Magenta/magenta-rt-v2` (override with
-`MAGENTA_HOME`).
+`MAGENTA_HOME`). `just download-base-model` additionally fetches `mrt2_base`,
+selectable per deck in the UI — heavier and higher-quality; the app warns
+when the combined selection looks tight for your RAM.
 
 ## Run
 

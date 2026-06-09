@@ -26,5 +26,5 @@ scaffolds the file from the template.
 | ADR | Title | Status |
 | --- | ----- | ------ |
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted |
-| [0002](0002-browser-app-with-python-model-workers.md) | Browser app with Python model workers, deferring Tauri | Proposed |
-| [0003](0003-frontend-audio-mixing-via-web-audio.md) | Frontend audio mixing via Web Audio | Proposed |
+| [0002](0002-browser-app-with-python-model-workers.md) | Browser app with Python model workers, deferring Tauri | Accepted |
+| [0003](0003-frontend-audio-mixing-via-web-audio.md) | Frontend audio mixing via Web Audio | Accepted |
