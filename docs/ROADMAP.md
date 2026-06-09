@@ -18,6 +18,10 @@ headroom for two concurrent model instances (Pro/Max-class for two
 
 ## M1 — One deck, audible
 
+**Status: ✅ done (2026-06-09).** Exit criteria verified with
+`backend/scripts/verify_m1.py` (full soak run waived); MRT2 API facts
+recorded in [`spike-mrt2.md`](spike-mrt2.md).
+
 **Goal:** end-to-end skeleton — model worker → WebSocket → browser playback.
 
 Scope:
@@ -29,12 +33,18 @@ Scope:
   (`magenta_rt` MLX) supervised by the controller.
 - WebSocket protocol v0: binary frames = PCM chunks; JSON frames = control
   (`play`, `stop`, `set_prompt`).
-- Throwaway test page (no React yet) with an AudioWorklet ring buffer.
+- Throwaway test page (no React yet) with an AudioWorklet ring buffer
+  (retired in M2 as planned).
 
 **Exit criteria:** continuous audio in the browser for 10+ minutes with no
 underruns; a prompt change audibly takes effect at the next chunk boundary.
 
 ## M2 — Real frontend
+
+**Status: ✅ done (2026-06-09).** Exit criteria verified end-to-end in
+headless Chromium (`frontend/scripts/verify_m2.mjs`): deck driven entirely
+from the React UI, health row (buffer meter, underrun counter, generation
+speed) live in the UI; component tests pin the underrun visibility.
 
 **Goal:** the React app replaces the test page.
 

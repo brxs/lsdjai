@@ -18,6 +18,10 @@ cd backend
 uv sync
 uv run mrt models init                  # shared resources (~1.3 GB)
 uv run mrt models download mrt2_small   # deck model (~450 MB)
+
+cd ../frontend
+npm install
+npm run build
 ```
 
 Models land in `~/Documents/Magenta/magenta-rt-v2` (override with
@@ -30,8 +34,17 @@ cd backend
 uv run magenta-dj
 ```
 
-Then open <http://127.0.0.1:8000> — the M1 test page: connect, set a prompt,
-play. The page shows buffer level and underrun count.
+Then open <http://127.0.0.1:8000> — set a style prompt, hit play, ride the
+volume fader. The health row shows the stream buffer, underrun count, and
+generation speed.
 
-`backend/scripts/verify_m1.py` checks the M1 exit criteria end-to-end against
-a running server (`uv run python scripts/verify_m1.py 660`).
+For frontend development, run the backend as above plus `npm run dev` in
+`frontend/` (the Vite dev server proxies `/ws` to the backend).
+
+## Verify
+
+- Backend tests: `uv run pytest` (in `backend/`)
+- Frontend tests: `npm run test` (in `frontend/`)
+- Stream e2e: `uv run python scripts/verify_m1.py 60` against a running server
+- UI e2e: `node scripts/verify_m2.mjs` (in `frontend/`, needs Playwright
+  Chromium: `npx playwright install chromium`) against a running server
