@@ -30,10 +30,12 @@ logger = logging.getLogger(__name__)
 OUT_QUEUE_CHUNKS = 6
 PUMP_POLL_SECONDS = 0.2
 
-DECK_IDS = ("a",)  # M1: single deck; "b" arrives in M3.
+DECK_IDS = ("a",)  # M2: single deck; "b" arrives in M3.
 DEFAULT_MODEL = "mrt2_small"
 
-STATIC_DIR = pathlib.Path(__file__).parent / "static"
+# The React app (frontend/, built with `npm run build`). During development
+# the Vite dev server serves it instead and proxies /ws here.
+FRONTEND_DIST = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 
 class DeckProcess:
@@ -205,11 +207,18 @@ async def _pump_worker_output(deck: DeckProcess, websocket: WebSocket) -> None:
 
 
 # Registered after the WebSocket route so /ws/deck/* is matched first.
-app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+if FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    if not FRONTEND_DIST.is_dir():
+        logger.warning(
+            "frontend build not found at %s — run `npm run build` in frontend/ "
+            "(the WebSocket API works regardless)",
+            FRONTEND_DIST,
+        )
     uvicorn.run(app, host="127.0.0.1", port=8000)
 
 
