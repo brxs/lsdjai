@@ -141,13 +141,7 @@ export function useDeck(deckId: DeckId): DeckControls {
 
   const setStyle = useCallback(
     (style: ActiveStyle) => {
-      send({
-        type: 'set_style',
-        prompt_a: style.promptA,
-        prompt_b: style.promptB,
-        mix: style.mix,
-        bpm: style.bpm,
-      })
+      send({ type: 'set_style', prompts: style.prompts, bpm: style.bpm })
     },
     [send],
   )

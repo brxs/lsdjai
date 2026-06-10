@@ -19,15 +19,13 @@
       "restart": "Restart deck"
     },
     "style": {
-      "promptA": "Prompt A",
-      "promptAPlaceholder": "e.g. warm disco funk",
-      "promptB": "Prompt B (morph target)",
-      "promptBPlaceholder": "optional",
+      "target": "Style target",
+      "targetPlaceholder": "e.g. warm disco funk",
+      "addTarget": "Add",
+      "removeTarget": "Remove {{prompt}}",
+      "pad": "Style pad",
       "bpmHint": "Tempo hint (bpm)",
-      "apply": "Set style",
-      "morph": "Morph A ↔ B",
-      "activeSingle": "Playing: {{a}}",
-      "activeMorph": "Playing: {{a}} ↔ {{b}}"
+      "active": "Playing: {{summary}}"
     },
     "play": "Play",
     "stop": "Stop",

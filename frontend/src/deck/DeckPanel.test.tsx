@@ -61,76 +61,105 @@ describe('DeckPanel', () => {
     expect(onStop).toHaveBeenCalled()
   })
 
-  it('applies a trimmed single-prompt style', () => {
+  function addTarget(text: string) {
+    fireEvent.change(screen.getByLabelText('Style target'), {
+      target: { value: text },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+  }
+
+  it('applies a single centred target on add', () => {
     const onSetStyle = vi.fn()
     renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
-    fireEvent.change(screen.getByLabelText('Prompt A'), {
-      target: { value: '  warm disco funk  ' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Set style' }))
+    addTarget('  warm disco funk  ')
     expect(onSetStyle).toHaveBeenCalledWith({
-      promptA: 'warm disco funk',
-      promptB: null,
-      mix: 0,
+      prompts: [{ text: 'warm disco funk', weight: 1 }],
       bpm: null,
     })
   })
 
-  it('applies a morph style with both prompts and a tempo hint', () => {
+  it('splits weights between targets from the centred cursor', () => {
     const onSetStyle = vi.fn()
     renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
-    fireEvent.change(screen.getByLabelText('Prompt A'), {
-      target: { value: 'warm disco funk' },
+    addTarget('funk')
+    addTarget('techno')
+    const style = onSetStyle.mock.calls.at(-1)![0]
+    expect(style.prompts.map((p: { text: string }) => p.text)).toEqual([
+      'funk',
+      'techno',
+    ])
+    const [a, b] = style.prompts.map((p: { weight: number }) => p.weight)
+    expect(a).toBeCloseTo(0.5)
+    expect(b).toBeCloseTo(0.5)
+  })
+
+  it('removes a target from its chip and resends the style', () => {
+    const onSetStyle = vi.fn()
+    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
+    addTarget('funk')
+    addTarget('techno')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove funk' }))
+    expect(onSetStyle.mock.calls.at(-1)![0]).toEqual({
+      prompts: [{ text: 'techno', weight: 1 }],
+      bpm: null,
     })
-    fireEvent.change(screen.getByLabelText('Prompt B (morph target)'), {
-      target: { value: 'dark minimal techno' },
-    })
+  })
+
+  it('includes a valid tempo hint and drops the style send on an invalid one', () => {
+    const onSetStyle = vi.fn()
+    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
     fireEvent.change(screen.getByLabelText('Tempo hint (bpm)'), {
       target: { value: '124' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Set style' }))
+    addTarget('funk')
     expect(onSetStyle).toHaveBeenCalledWith({
-      promptA: 'warm disco funk',
-      promptB: 'dark minimal techno',
-      mix: 0,
+      prompts: [{ text: 'funk', weight: 1 }],
       bpm: 124,
     })
-  })
 
-  it('rejects an out-of-range tempo hint by disabling apply', () => {
-    renderPanel({ connection: 'open' })
-    fireEvent.change(screen.getByLabelText('Prompt A'), {
-      target: { value: 'funk' },
-    })
+    onSetStyle.mockClear()
     fireEvent.change(screen.getByLabelText('Tempo hint (bpm)'), {
       target: { value: '999' },
     })
-    expect(screen.getByRole('button', { name: 'Set style' })).toBeDisabled()
+    addTarget('techno')
+    expect(onSetStyle).not.toHaveBeenCalled()
   })
 
-  it('keeps the morph slider locked until a morph target is active', () => {
+  it('keeps the pad locked until there are two targets to blend', () => {
     renderPanel({ connection: 'open' })
-    expect(screen.getByLabelText('Morph A ↔ B')).toBeDisabled()
+    expect(screen.getByLabelText('Style pad')).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    )
   })
 
-  it('rides the morph slider live against the active style', () => {
+  it('moves the cursor by keyboard and sends reweighted styles', () => {
     const onSetStyle = vi.fn()
-    renderPanel(
-      {
-        connection: 'open',
-        activeStyle: { promptA: 'funk', promptB: 'techno', mix: 0.2, bpm: null },
+    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
+    addTarget('funk')
+    addTarget('techno')
+    onSetStyle.mockClear()
+
+    const pad = screen.getByLabelText('Style pad')
+    fireEvent.keyDown(pad, { key: 'ArrowUp' })
+    expect(onSetStyle).toHaveBeenCalledTimes(1)
+    const style = onSetStyle.mock.calls.at(-1)![0]
+    // Two targets sit at 12 and 6 o'clock; moving up favours the first.
+    expect(style.prompts[0].weight).toBeGreaterThan(style.prompts[1].weight)
+  })
+
+  it('shows the active blend summary', () => {
+    renderPanel({
+      connection: 'open',
+      activeStyle: {
+        prompts: [
+          { text: 'funk', weight: 0.7 },
+          { text: 'techno', weight: 0.3 },
+        ],
+        bpm: 124,
       },
-      { onSetStyle: onSetStyle as () => void },
-    )
-    const slider = screen.getByLabelText('Morph A ↔ B')
-    expect(slider).toBeEnabled()
-    fireEvent.change(slider, { target: { value: '0.8' } })
-    expect(onSetStyle).toHaveBeenCalledWith({
-      promptA: 'funk',
-      promptB: 'techno',
-      mix: 0.8,
-      bpm: null,
     })
+    expect(screen.getByText('Playing: 70% funk · 30% techno')).toBeInTheDocument()
   })
 
   it('offers the model picker and reports a selection', () => {

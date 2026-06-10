@@ -111,7 +111,7 @@ describe('useDeck connection', () => {
   it('drops commands while the socket is not open', () => {
     const { result } = renderDeck(makeFakeEngine().engine)
 
-    const style = { promptA: 'warm disco funk', promptB: null, mix: 0, bpm: null }
+    const style = { prompts: [{ text: 'warm disco funk', weight: 1 }], bpm: null }
     act(() => result.current.setStyle(style))
     expect(socket(0).sent).toHaveLength(0)
 
@@ -120,9 +120,7 @@ describe('useDeck connection', () => {
     expect(socket(0).sent).toEqual([
       JSON.stringify({
         type: 'set_style',
-        prompt_a: 'warm disco funk',
-        prompt_b: null,
-        mix: 0,
+        prompts: [{ text: 'warm disco funk', weight: 1 }],
         bpm: null,
       }),
     ])

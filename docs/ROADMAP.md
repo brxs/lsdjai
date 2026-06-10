@@ -85,9 +85,12 @@ live; switch one deck's model while the other keeps playing.
 ## M4 — Performance features
 
 **Status: ✅ done (2026-06-10).** Exit criteria verified end-to-end
-(`frontend/scripts/verify_m4.mjs`): a deck glides between two prompts via
-embedding-space morphing with an unbroken stream (25 s sweep, zero
-underruns). Tempo proved *partially* steerable
+(`frontend/scripts/verify_m4.mjs`). Shipped beyond the original two-slot
+scope: each deck has a **2D style pad** with up to 8 prompt targets —
+inverse-distance weighting blends the cursor position over all of them
+(exact at a target, smooth everywhere else), applied at chunk boundaries
+via cached-embedding averaging. Verified with a three-target glide on an
+unbroken stream (zero underruns). Tempo proved *partially* steerable
 ([`spike-bpm.md`](spike-bpm.md)), so the UI ships a clearly-labelled tempo
 hint and no nudge/sync.
 

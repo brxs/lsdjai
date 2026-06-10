@@ -17,8 +17,8 @@ const browser = await chromium.launch({
 
 function deckLocators(deck) {
   return {
-    prompt: deck.getByLabel('Prompt A'),
-    setPrompt: deck.getByRole('button', { name: 'Set style' }),
+    prompt: deck.getByLabel('Style target'),
+    setPrompt: deck.getByRole('button', { name: 'Add' }),
     play: deck.getByRole('button', { name: 'Play' }),
     stop: deck.getByRole('button', { name: 'Stop' }),
     model: deck.getByLabel('Model'),

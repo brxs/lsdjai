@@ -121,3 +121,75 @@
 .ui-stat--danger .ui-stat__value {
   color: var(--color-danger);
 }
+
+.ui-xypad {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.ui-xypad__label {
+  font: 500 var(--text-s) var(--font-ui);
+  color: var(--color-text-muted);
+}
+
+.ui-xypad__surface {
+  position: relative;
+  aspect-ratio: 1;
+  width: 100%;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-m);
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.ui-xypad__surface:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
+.ui-xypad__surface--disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ui-xypad__target {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  pointer-events: none;
+}
+
+.ui-xypad__target-dot {
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: 50%;
+  background: var(--color-text-muted);
+}
+
+.ui-xypad__target-label {
+  font: 500 var(--text-s) var(--font-ui);
+  color: var(--color-text-muted);
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ui-xypad__cursor {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: var(--space-4);
+  height: var(--space-4);
+  border-radius: 50%;
+  background: var(--color-accent);
+  box-shadow: var(--shadow-raised);
+  pointer-events: none;
+  transition:
+    left 0.05s linear,
+    top 0.05s linear;
+}

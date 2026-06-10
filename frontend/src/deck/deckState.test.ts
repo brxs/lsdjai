@@ -80,9 +80,10 @@ describe('deckReducer', () => {
           type: 'server_event',
           event: {
             event: 'style_applied',
-            prompt_a: 'funk',
-            prompt_b: 'techno',
-            mix: 0.3,
+            prompts: [
+              { text: 'funk', weight: 0.7 },
+              { text: 'techno', weight: 0.3 },
+            ],
             bpm: 124,
             effective_from_chunk: 3,
           },
@@ -92,9 +93,10 @@ describe('deckReducer', () => {
     )
     expect(recovered.error).toBeNull()
     expect(recovered.activeStyle).toEqual({
-      promptA: 'funk',
-      promptB: 'techno',
-      mix: 0.3,
+      prompts: [
+        { text: 'funk', weight: 0.7 },
+        { text: 'techno', weight: 0.3 },
+      ],
       bpm: 124,
     })
   })
@@ -106,9 +108,7 @@ describe('deckReducer', () => {
         type: 'server_event',
         event: {
           event: 'style_applied',
-          prompt_a: 'funk',
-          prompt_b: null,
-          mix: 0,
+          prompts: [{ text: 'funk', weight: 1 }],
           bpm: null,
           effective_from_chunk: 1,
         },

@@ -43,6 +43,30 @@
   flex-wrap: wrap;
 }
 
+.deck__targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.deck__target-chip {
+  font: 500 var(--text-s) var(--font-ui);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-s);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.deck__target-chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .deck__active-prompt {
   font: 400 var(--text-s) var(--font-ui);
   color: var(--color-accent-strong);

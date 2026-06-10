@@ -23,9 +23,9 @@ try {
   console.log('connected: deck socket open from the React app')
 
   // Set a prompt, then play.
-  await deckA.getByLabel('Prompt A').fill('warm disco funk')
-  await deckA.getByRole('button', { name: 'Set style' }).click()
-  await deckA.getByText('Playing: warm disco funk').waitFor({ timeout: 20_000 })
+  await deckA.getByLabel('Style target').fill('warm disco funk')
+  await deckA.getByRole('button', { name: 'Add' }).click()
+  await deckA.getByText('Playing: 100% warm disco funk').waitFor({ timeout: 20_000 })
   console.log('prompt: applied and reflected in the UI')
 
   await deckA.getByRole('button', { name: 'Play' }).click()

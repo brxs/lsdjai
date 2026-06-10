@@ -19,9 +19,7 @@ export type ServerEvent =
   | { event: 'chunk'; index: number; rtf: number | null }
   | {
       event: 'style_applied'
-      prompt_a: string
-      prompt_b: string | null
-      mix: number
+      prompts: StylePrompt[]
       bpm: number | null
       effective_from_chunk: number
     }
@@ -40,11 +38,11 @@ export type RamInfo = {
   estimateGbByModel: Record<string, number>
 }
 
+export type StylePrompt = { text: string; weight: number }
+
 /** The style the worker confirmed it is generating with. */
 export type ActiveStyle = {
-  promptA: string
-  promptB: string | null
-  mix: number
+  prompts: StylePrompt[]
   bpm: number | null
 }
 
@@ -166,12 +164,7 @@ function applyServerEvent(state: DeckState, event: ServerEvent): DeckState {
     case 'style_applied':
       return {
         ...state,
-        activeStyle: {
-          promptA: event.prompt_a,
-          promptB: event.prompt_b,
-          mix: event.mix,
-          bpm: event.bpm,
-        },
+        activeStyle: { prompts: event.prompts, bpm: event.bpm },
         error: null,
       }
     case 'error':
