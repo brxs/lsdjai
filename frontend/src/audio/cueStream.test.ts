@@ -74,6 +74,20 @@ describe('startCueStream', () => {
     expect(socket().sent).toEqual([samples])
   })
 
+  it('only the ready event counts as acceptance', async () => {
+    const { engine } = fakeEngine()
+    const streaming = startCueStream(engine, 'DDJ-FLX4')
+
+    // A pre-ready error frame (or noise) must not start the capture.
+    socket().onmessage?.({ data: JSON.stringify({ event: 'error' }) })
+    socket().onmessage?.({ data: 'not json' })
+    expect(engine.startCueCapture).not.toHaveBeenCalled()
+
+    socket().serverReady()
+    await streaming
+    expect(engine.startCueCapture).toHaveBeenCalled()
+  })
+
   it('rejects with the backend reason when refused', async () => {
     const { engine } = fakeEngine()
     const streaming = startCueStream(engine, 'Nope')

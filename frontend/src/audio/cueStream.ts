@@ -51,6 +51,13 @@ export function startCueStream(
 
     socket.onmessage = (event) => {
       if (ready || typeof event.data !== 'string') return
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(event.data)
+      } catch {
+        return
+      }
+      if ((parsed as { event?: unknown }).event !== 'ready') return
       ready = true
       engine
         .startCueCapture((samples) => {

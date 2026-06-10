@@ -99,7 +99,15 @@ function App() {
       cueStreamStop.current = null
       if (device?.backend) {
         await engine.setCueDevice(null)
-        const stop = await startCueStream(engine, device.deviceId)
+        let stop: () => void
+        try {
+          stop = await startCueStream(engine, device.deviceId)
+        } catch (cause) {
+          // The old route is already torn down, so show reality (Off) —
+          // but don't persist it: a reload restores the last good route.
+          if (token === cueRouteToken.current) setCueDevice(null)
+          throw cause
+        }
         if (token !== cueRouteToken.current) {
           stop()
           return

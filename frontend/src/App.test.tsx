@@ -15,7 +15,9 @@ import { loadAppSettings, updateAppSettings } from './persistence'
 // The scan needs deterministic devices; startCueStream stays real so the
 // routing logic runs against the fake socket below.
 vi.mock('./audio/outputs', () => ({
-  listAudioOutputs: vi.fn(async () => []),
+  listAudioOutputs: vi.fn(async () => [
+    { deviceId: 'bt', label: 'WH-1000XM4' },
+  ]),
 }))
 vi.mock('./audio/cueStream', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./audio/cueStream')>()
@@ -139,6 +141,37 @@ describe('App crossfade ownership', () => {
     // The failed pick must survive neither in state nor across a reload.
     expect(select).toHaveValue('Off')
     expect(loadAppSettings().cueDevice).toBeUndefined()
+  })
+
+  it('shows Off after a failed switch instead of the torn-down old route', async () => {
+    updateAppSettings({ cueDevice: { deviceId: 'bt', label: 'WH-1000XM4' } })
+    renderApp(makeEngine())
+    const select = screen.getByLabelText('Phones out')
+    expect(select).toHaveValue('WH-1000XM4')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Find devices' }))
+    await waitFor(() => expect(select).toContainHTML('phones jack'))
+    fireEvent.change(select, { target: { value: 'DDJ-FLX4 — phones jack' } })
+    const cueSocket = await waitFor(() => {
+      const socket = FakeWebSocket.instances.find((candidate) =>
+        candidate.url.includes('/ws/cue'),
+      )
+      expect(socket).toBeDefined()
+      return socket!
+    })
+    act(() => cueSocket.onclose?.({ reason: 'cue already has a client' }))
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('already has a client'),
+    )
+    // The old route was torn down before the failure, so Off is the
+    // truth on screen…
+    expect(select).toHaveValue('Off')
+    // …while the last good route stays persisted for the next reload.
+    expect(loadAppSettings().cueDevice).toEqual({
+      deviceId: 'bt',
+      label: 'WH-1000XM4',
+    })
   })
 
   it('a stale backend pick stops itself instead of clobbering a newer one', async () => {
