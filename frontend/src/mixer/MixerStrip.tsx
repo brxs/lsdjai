@@ -6,6 +6,7 @@ import type { DeckId } from '../audio/engine'
 import { useAudioEngine } from '../audio/engineContext'
 import { listAudioOutputs, type AudioOutputDevice } from '../audio/outputs'
 import { useControlBus } from '../control/busContext'
+import { FLX4_NAME_FRAGMENT } from '../control/midi'
 import { Button } from '../ui/Button'
 import { Knob } from '../ui/Knob'
 import { LevelMeter } from '../ui/LevelMeter'
@@ -75,7 +76,15 @@ export function MixerStrip({
 
   async function scanCueOutputs() {
     try {
-      setCueOutputs(await listAudioOutputs())
+      // The FLX4 is never a valid cue output: Chromium can only reach its
+      // first stereo pair, which is the MASTER RCA — picking it would
+      // leak the preview to the room, and its phones jack (USB 3/4) is
+      // unreachable from the browser anyway (ADR-0006).
+      setCueOutputs(
+        (await listAudioOutputs()).filter(
+          (output) => !output.label.includes(FLX4_NAME_FRAGMENT),
+        ),
+      )
       setPhonesError(null)
     } catch (cause) {
       setPhonesError(cause instanceof Error ? cause.message : String(cause))

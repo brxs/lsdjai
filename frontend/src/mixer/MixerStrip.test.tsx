@@ -9,8 +9,9 @@ import { MixerStrip, type ChannelControls } from './MixerStrip'
 
 vi.mock('../audio/outputs', () => ({
   listAudioOutputs: vi.fn(async () => [
-    { deviceId: 'flx4', label: 'DDJ-FLX4' },
+    { deviceId: 'flx4', label: 'DDJ-FLX4 (2b73:0045)' },
     { deviceId: 'mac', label: 'MacBook Pro Speakers' },
+    { deviceId: 'bt', label: 'WH-1000XM4' },
   ]),
 }))
 
@@ -158,20 +159,23 @@ describe('MixerStrip headphone cue', () => {
     expect(onCueMixChange).toHaveBeenCalledWith(0.2)
   })
 
-  it('scans for outputs and hands the picked device up', async () => {
+  it('scans for outputs, hides the FLX4, and hands the picked device up', async () => {
     const onCueDeviceChange = vi.fn(async () => {})
     renderMixer(makeEngine(), { onCueDeviceChange })
 
     fireEvent.click(screen.getByRole('button', { name: 'Find devices' }))
     const select = screen.getByLabelText('Phones out')
-    await waitFor(() =>
-      expect(select).toContainHTML('DDJ-FLX4'),
-    )
+    await waitFor(() => expect(select).toContainHTML('WH-1000XM4'))
+    expect(select).toContainHTML('MacBook Pro Speakers')
+    // Never offered: cue to the FLX4 would come out the MASTER RCA —
+    // the room hearing the preview — since Chromium can't reach its
+    // phones channels (ADR-0006).
+    expect(select).not.toContainHTML('DDJ-FLX4')
 
-    fireEvent.change(select, { target: { value: 'DDJ-FLX4' } })
+    fireEvent.change(select, { target: { value: 'WH-1000XM4' } })
     expect(onCueDeviceChange).toHaveBeenCalledWith({
-      deviceId: 'flx4',
-      label: 'DDJ-FLX4',
+      deviceId: 'bt',
+      label: 'WH-1000XM4',
     })
   })
 

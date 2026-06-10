@@ -11,8 +11,10 @@ table, and wiring are unit-tested; this covers real devices, real ears.
 - [ ] Speakers on the **system default output** (e.g. set the FLX4 as
       default so its MASTER RCA feeds them — the rekordbox-style setup).
 - [ ] Headphones on a **second device**: the Mac's 3.5mm jack, Bluetooth,
-      or the built-in speakers as a stand-in. (The FLX4's own phones jack
-      can't carry the cue — Chromium is stereo-per-sink, ADR-0006.)
+      or the built-in speakers as a stand-in. The FLX4's own phones jack
+      can't carry the cue (Chromium is stereo-per-sink, ADR-0006) — the
+      picker deliberately doesn't offer the FLX4, since routing the cue
+      there would surface on the MASTER RCA, i.e. in the room.
 - [ ] Both decks with 2+ style targets; deck A playing on the master.
 
 ## M9 — split cue from the UI
