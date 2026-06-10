@@ -283,6 +283,12 @@ surface; before/after screenshots in the PR.
 
 ## M9 — Split cue: pre-listen in headphones (PFL)
 
+**Status: 🔶 built (2026-06-10), pending hardware verification.** Cue bus,
+per-channel PFL taps, cue/master blend, device picker with the one-off
+permission flow — all shipped and unit-tested; ADR-0006 records the
+spike-settled routing. Exit criteria await a run of
+[`m9-m10-hardware-checklist.md`](m9-m10-hardware-checklist.md).
+
 **Goal:** audition a deck privately before the audience hears it — the
 half of DJing the booth still lacks. With deck A on air, prime deck B,
 listen to it in headphones, and only then fade it in.
@@ -319,6 +325,11 @@ a reload. Routing math unit-tested; the full flow verified on hardware
 via an extended manual checklist (audio routing cannot be e2e-heard).
 
 ## M10 — Hardware cue: prep decks from the FLX4
+
+**Status: 🔶 built (2026-06-10), pending hardware verification.** Channel
+CUE buttons, the HEADPHONES MIX knob, and transport-CUE deck prep are
+translated, wired, LED-echoed, and unit-tested; verification rides the
+same checklist as M9.
 
 **Goal:** the full pre-listen workflow with hands off the mouse,
 completing the two-decks-and-headphones instrument.

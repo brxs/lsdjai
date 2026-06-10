@@ -34,20 +34,22 @@ on the listed CC, LSB on CC+`0x20`.
 | Jog wheels | `0xB0`/`0xB1` CC `0x21`/`0x22` etc. | no scratch concept in v1; cursor-nudge candidate later |
 | TRIM, CUE (headphone), browse/load, BEAT SYNC, loop section | various | no app counterpart yet |
 
-## Reserved for M9/M10 (headphone cue)
+## Mapped in M10 (headphone cue)
 
-Bytes confirmed against the Mixxx mapping; verify with the monitor when
-M10 lands, as with everything here.
+Bytes sourced from the Mixxx mapping like the table above; the monitor
+remains the verification tool.
 
-| Control | Message | Planned use |
-| ------- | ------- | ----------- |
-| CUE (headphone) channel 1 / 2 | `0x90`/`0x91` note `0x54` | toggle channel PFL (M10) |
-| HEADPHONES MIX knob | `0xB6` CC `0x0C` (LSB `0x2C`) | cue↔master blend in the phones (M10) — it sends MIDI, unlike a typical analog monitor knob |
-| CUE (transport) deck 1 / 2 | `0x90`/`0x91` note `0x0C` | deck prep: silent prime / stop with flush (M10) |
+| Control | Message | → App intent |
+| ------- | ------- | ------------ |
+| CUE (headphone) channel 1 / 2 | `0x90`/`0x91` note `0x54` | toggle channel PFL; LED echoes the state |
+| HEADPHONES MIX knob | `0xB6` CC `0x0C` (LSB `0x2C`) | cue↔master blend in the phones — it sends MIDI, unlike a typical analog monitor knob |
+| CUE (transport) deck 1 / 2 | `0x90`/`0x91` note `0x0C` | deck prep: prime off air / stop with flush; LED lit while primed |
 
-The FLX4 is also the audio path for M9: its USB sound card exposes
-4 output channels at 48 kHz (measured via `system_profiler` on this
-unit) — channels 1/2 feed the MASTER RCA, 3/4 the headphone jack.
+On audio: the FLX4's USB sound card exposes 4 output channels at 48 kHz
+(measured via `system_profiler`) — 1/2 feed the MASTER RCA, 3/4 the
+headphone jack — but Chromium caps Web Audio output at stereo per sink,
+so the phones jack is unreachable from the browser; the cue feed uses a
+second output device instead (ADR-0006).
 
 ## Useful spares for later
 

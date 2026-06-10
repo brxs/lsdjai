@@ -1,6 +1,6 @@
 # 0006. Cue output via a second audio sink
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-10
 - **Deciders:** Daniel Peter
 
