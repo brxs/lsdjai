@@ -47,3 +47,28 @@ nearly continuously in drum-driven music), so a 1-frame-in-15 click reads
 as "mostly no drums", not as a clock. **No clock feature ships.** Worth
 revisiting if upstream documents the conditioning's training distribution
 or an example shows transcription-shaped conditioning steering rhythm.
+
+## Round 3: clock + text combined, repeated trials (2026-06-10)
+
+`backend/scripts/spike_midi_clock3.py` — text-only vs clock-only vs both,
+3 trials each at the contested tempos:
+
+| Condition | target 100 | target 88.2 |
+| --------- | ---------- | ----------- |
+| text hint only | 141, 141, 141 ✗ | 148, 148, 148 ✗ |
+| masked clock only | 104, 104, 104 "✓" | **104**, 104, 104 ✗ |
+| both | 128, 128, 128 ✗ | 148, 148, 148 ✗ |
+
+Two findings that close the question:
+
+1. **Generation from the exported `.mlxfn` is deterministic** given the
+   same conditioning — the sampler's RNG state ships inside
+   `*_state.safetensors`. Repeated trials are exact repeats, so none of
+   the earlier round-to-round differences were sampling noise.
+2. **The clock rate is not interpreted as a rate.** A 100 bpm clock and an
+   88 bpm clock both land on ~104 bpm: the sparse-drums conditioning drags
+   output toward a slower-groove attractor regardless of pulse period —
+   it acts as a drum-density/feel knob, not a tempo input. The round-2
+   "lock" at 100 was that attractor coinciding with the request.
+   Combining with the text hint just lands on a third attractor, no
+   closer to the target.
