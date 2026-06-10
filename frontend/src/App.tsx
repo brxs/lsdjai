@@ -141,7 +141,7 @@ function App() {
   )
 
   const midi = useMidi()
-  const { status: midiStatus, setLed, setPadLeds, setFxPadLeds } = midi
+  const { status: midiStatus, setLed, setPadLeds, setFxPadLeds, ledEpoch } = midi
   const [padCounts, setPadCounts] = useState<Record<DeckId, number>>({
     a: 0,
     b: 0,
@@ -160,20 +160,22 @@ function App() {
     [handleTargetCount],
   )
 
-  // LED feedback (M7 stretch): pads 1–N lit for the N style targets, re-sent
-  // on reconnect so a hot-plugged controller picks the state back up.
+  // LED feedback (M7 stretch): pads 1–N lit for the N style targets,
+  // re-sent on reconnect so a hot-plugged controller picks the state
+  // back up, and on every ledEpoch bump — a pad-mode switch clears the
+  // device's pad LEDs, so each bank repaints.
   useEffect(() => {
     if (midiStatus !== 'connected') return
     setPadLeds('a', padCounts.a)
     setPadLeds('b', padCounts.b)
-  }, [midiStatus, setPadLeds, padCounts])
+  }, [midiStatus, setPadLeds, padCounts, ledEpoch])
 
   // PAD FX bank LEDs (M12): the active effect's pad lit per deck.
   useEffect(() => {
     if (midiStatus !== 'connected') return
     setFxPadLeds('a', deckA.fx.kind ? FX_KINDS.indexOf(deckA.fx.kind) : null)
     setFxPadLeds('b', deckB.fx.kind ? FX_KINDS.indexOf(deckB.fx.kind) : null)
-  }, [midiStatus, setFxPadLeds, deckA.fx.kind, deckB.fx.kind])
+  }, [midiStatus, setFxPadLeds, deckA.fx.kind, deckB.fx.kind, ledEpoch])
 
   // Cue LEDs (M10): channel CUE mirrors the headphone-cue toggles,
   // transport CUE lights while a deck is primed off air.

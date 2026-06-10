@@ -41,6 +41,18 @@ export const PAD_COUNT = 8
  * LOOP 0x60 are all confirmed) — the monitor verifies it on hardware. */
 export const PAD_FX_NOTE_BASE = 0x10
 
+/** Pad-mode selector buttons (HOT CUE 0x1B, PAD FX1 0x1E, BEAT JUMP
+ * 0x20, SAMPLER 0x22, KEYBOARD 0x69, PAD FX2 0x6B, BEAT LOOP 0x6D,
+ * KEY SHIFT 0x6F). Switching modes clears the device's pad LEDs, so
+ * these are the cue to repaint them. */
+const PAD_MODE_NOTES = new Set([0x1b, 0x1e, 0x20, 0x22, 0x69, 0x6b, 0x6d, 0x6f])
+
+export function isPadModeSwitch(data: ArrayLike<number>): boolean {
+  if (data.length < 3) return false
+  const [status, note, velocity] = [data[0], data[1], data[2]]
+  return Boolean(NOTE_ON_DECK[status]) && PAD_MODE_NOTES.has(note) && velocity > 0
+}
+
 const CC_DECK: Partial<Record<number, DeckId>> = { 0xb0: 'a', 0xb1: 'b' }
 const MIXER_STATUS = 0xb6
 const LSB_OFFSET = 0x20

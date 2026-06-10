@@ -5,9 +5,15 @@ import type { ReactNode } from 'react'
 import { ControlBusProvider } from './ControlBusProvider'
 import { useMidi } from './useMidi'
 
+type FakeInput = {
+  name: string
+  onmidimessage: ((event: { data: Uint8Array }) => void) | null
+}
+
 function stubMidiAccess(outputSend: ReturnType<typeof vi.fn>) {
+  const input: FakeInput = { name: 'DDJ-FLX4', onmidimessage: null }
   const access = {
-    inputs: new Map([['in-0', { name: 'DDJ-FLX4', onmidimessage: null }]]),
+    inputs: new Map([['in-0', input]]),
     outputs: new Map([['out-0', { name: 'DDJ-FLX4', send: outputSend }]]),
     onstatechange: null,
   }
@@ -15,6 +21,7 @@ function stubMidiAccess(outputSend: ReturnType<typeof vi.fn>) {
     configurable: true,
     value: vi.fn(() => Promise.resolve(access)),
   })
+  return { input }
 }
 
 afterEach(() => {
@@ -86,6 +93,22 @@ describe('useMidi pad LEDs', () => {
     result.current.setFxPadLeds('b', null)
     expect(send.mock.calls.every(([bytes]) => bytes[2] === 0)).toBe(true)
     expect(send.mock.calls[0][0][0]).toBe(0x99)
+  })
+
+  it('bumps the LED epoch when the controller switches pad modes', async () => {
+    const send = vi.fn()
+    const { input } = stubMidiAccess(send)
+    const { result } = renderHook(() => useMidi(), { wrapper })
+    act(() => result.current.connect())
+    await waitFor(() => expect(result.current.status).toBe('connected'))
+    const before = result.current.ledEpoch
+
+    act(() => input.onmidimessage?.({ data: new Uint8Array([0x90, 0x1b, 0x7f]) }))
+    expect(result.current.ledEpoch).toBe(before + 1)
+
+    // Ordinary traffic doesn't trigger repaints.
+    act(() => input.onmidimessage?.({ data: new Uint8Array([0xb6, 0x1f, 0x40]) }))
+    expect(result.current.ledEpoch).toBe(before + 1)
   })
 
   it('echoes single-button LEDs with on/off velocities', async () => {

@@ -57,6 +57,10 @@ first:
       light; pads 7–8 do nothing.
 - [ ] Pressing the lit pad switches the effect off (pad goes dark, the
       picker shows Off).
+- [ ] Mode round-trip keeps LEDs truthful: PAD FX → HOT CUE → PAD FX —
+      after every switch the bank shows its own state again (style pads
+      lit 1–N, the active effect's pad lit), repainted on the mode
+      button press.
 - [ ] Selecting an effect parks the knob at its rest position — never
       mid-effect.
 - [ ] Each deck's pads drive only their own deck.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { createFlx4Translator } from './flx4'
+import { createFlx4Translator, isPadModeSwitch } from './flx4'
 
 const PRESS = 0x7f
 const RELEASE = 0x00
@@ -255,6 +255,24 @@ describe('createFlx4Translator', () => {
         deck: 'a',
         value: 1 / 16383,
       })
+    })
+  })
+
+  describe('pad-mode switches', () => {
+    it('recognises mode-button presses on either deck', () => {
+      expect(isPadModeSwitch([0x90, 0x1b, PRESS])).toBe(true) // HOT CUE
+      expect(isPadModeSwitch([0x91, 0x1e, PRESS])).toBe(true) // PAD FX1
+      expect(isPadModeSwitch([0x90, 0x6b, PRESS])).toBe(true) // PAD FX2
+      expect(isPadModeSwitch([0x90, 0x1b, RELEASE])).toBe(false)
+      expect(isPadModeSwitch([0x90, 0x0b, PRESS])).toBe(false) // PLAY
+      expect(isPadModeSwitch([0x97, 0x1b, PRESS])).toBe(false) // pad channel
+      expect(isPadModeSwitch([0x90, 0x1b])).toBe(false)
+    })
+
+    it('mode buttons emit no intent of their own', () => {
+      const translate = createFlx4Translator()
+      expect(translate([0x90, 0x1b, PRESS])).toBeNull()
+      expect(translate([0x91, 0x1e, PRESS])).toBeNull()
     })
   })
 
