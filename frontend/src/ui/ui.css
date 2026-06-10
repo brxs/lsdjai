@@ -248,6 +248,14 @@
   cursor: grab;
 }
 
+/* The input is transparent, so its native focus ring is invisible — show
+ * keyboard focus on the dial instead. */
+.ui-knob__dial:has(.ui-knob__input:focus-visible) {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 50%;
+}
+
 .ui-knob__label {
   font: var(--silkscreen);
   letter-spacing: var(--silkscreen-spacing);

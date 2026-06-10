@@ -10,7 +10,6 @@ type KnobProps = {
   step?: number
   accent?: KnobAccent
   disabled?: boolean
-  'data-shortcut'?: string
   onChange: (value: number) => void
 }
 
@@ -43,7 +42,8 @@ function arcPath(fromDegrees: number, toDegrees: number) {
 }
 
 /** Rotary control: an SVG arc dial over a real (invisible) range input, so
- * keyboard, labels, and test tooling keep native input semantics. */
+ * keyboard, labels, and test tooling keep native input semantics.
+ * Double-click resets to the centre of the range (the EQ-flat convention). */
 export function Knob({
   label,
   value,
@@ -52,11 +52,10 @@ export function Knob({
   step = 0.01,
   accent = 'master',
   disabled,
-  'data-shortcut': dataShortcut,
   onChange,
 }: KnobProps) {
   const id = useId()
-  const fraction = (value - min) / (max - min)
+  const fraction = max === min ? 0 : (value - min) / (max - min)
   const valueAngle = angleFor(fraction)
   const pointer = polar(valueAngle, POINTER_RADIUS)
 
@@ -84,7 +83,6 @@ export function Knob({
           step={step}
           value={value}
           disabled={disabled}
-          data-shortcut={dataShortcut}
           onChange={(event) => onChange(Number(event.target.value))}
           onDoubleClick={() => onChange((min + max) / 2)}
         />

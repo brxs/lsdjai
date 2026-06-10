@@ -305,6 +305,7 @@ export function DeckColumn({
           <TransportButton
             kind="stop"
             accent={deckId}
+            lit
             label={t('deck.stop')}
             disabled={!operable}
             onClick={onStop}

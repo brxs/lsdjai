@@ -10,6 +10,7 @@
  */
 
 import { EQ_BANDS, EQ_FILTERS, eqValueToDb, type EqBand } from './eq'
+import { rangeFromBytes, rmsFromBytes } from './levels'
 import { encodeWav, floatToInt16 } from './wav'
 
 export type DeckId = 'a' | 'b'
@@ -75,12 +76,7 @@ const ANALYSER_FFT_SIZE = 2048
 
 function rmsLevel(analyser: AnalyserNode, buffer: Uint8Array<ArrayBuffer>): number {
   analyser.getByteTimeDomainData(buffer)
-  let sum = 0
-  for (let i = 0; i < buffer.length; i++) {
-    const sample = (buffer[i] - 128) / 128
-    sum += sample * sample
-  }
-  return Math.sqrt(sum / buffer.length)
+  return rmsFromBytes(buffer)
 }
 
 type Recorder = {
@@ -92,6 +88,8 @@ export function createAudioEngine(): AudioEngine {
   let busPromise: Promise<Bus> | null = null
   let crossfadePosition = INITIAL_CROSSFADE
   let recorder: Recorder | null = null
+  // Mirrors bus.masterAnalyser: getMasterLevel must be synchronous (meters
+  // poll it every frame) while the bus itself sits behind a promise.
   let masterAnalyserRef: AnalyserNode | null = null
   let masterBuffer: Uint8Array<ArrayBuffer> | null = null
 
@@ -189,13 +187,7 @@ export function createAudioEngine(): AudioEngine {
         },
         getWaveformRange() {
           analyser.getByteTimeDomainData(analyserBuffer)
-          let lowest = 255
-          let highest = 0
-          for (let i = 0; i < analyserBuffer.length; i++) {
-            if (analyserBuffer[i] < lowest) lowest = analyserBuffer[i]
-            if (analyserBuffer[i] > highest) highest = analyserBuffer[i]
-          }
-          return [(lowest - 128) / 128, (highest - 128) / 128]
+          return rangeFromBytes(analyserBuffer)
         },
         dispose() {
           worklet.port.onmessage = null

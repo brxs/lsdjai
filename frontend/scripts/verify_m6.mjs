@@ -125,8 +125,8 @@ try {
   // Reload: the kill must be restored on deck A, flat elsewhere.
   await page.reload()
   await deckA.getByText('Connected', { exact: true }).waitFor({ timeout: 10_000 })
-  const restoredLow = await page.getByRole('group', { name: 'Channel a' }).getByLabel('EQ Low').inputValue()
-  const restoredHi = await page.getByRole('group', { name: 'Channel a' }).getByLabel('EQ Hi').inputValue()
+  const restoredLow = await channelA.getByLabel('EQ Low').inputValue()
+  const restoredHi = await channelA.getByLabel('EQ Hi').inputValue()
   console.log(`after reload: deck a EQ Low=${restoredLow} EQ Hi=${restoredHi}`)
 
   await page.screenshot({ path: 'm6-verification.png', fullPage: true })

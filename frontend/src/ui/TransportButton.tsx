@@ -2,22 +2,24 @@ type TransportButtonProps = {
   kind: 'play' | 'stop'
   label: string
   accent?: 'a' | 'b'
+  /** Light the button in the accent colour (its action is the active state). */
+  lit?: boolean
   disabled?: boolean
   onClick: () => void
 }
 
-/** Large square transport control with an icon glyph; lights in the deck's
- * accent while its action is the active state. */
+/** Large square transport control with an icon glyph. */
 export function TransportButton({
   kind,
   label,
   accent = 'a',
+  lit,
   disabled,
   onClick,
 }: TransportButtonProps) {
   return (
     <button
-      className={`ui-transport ui-transport--${accent}${kind === 'stop' ? ' ui-transport--lit' : ''}`}
+      className={`ui-transport ui-transport--${accent}${lit ? ' ui-transport--lit' : ''}`}
       aria-label={label}
       disabled={disabled}
       onClick={onClick}
