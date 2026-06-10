@@ -16,8 +16,15 @@ export type ServerEvent =
       model_ram_estimate_gb: Record<string, number>
     }
   | { event: 'ready'; deck: string; model: string }
-  | { event: 'chunk'; index: number; rtf: number | null; prompt: string | null }
-  | { event: 'prompt_applied'; prompt: string; effective_from_chunk: number }
+  | { event: 'chunk'; index: number; rtf: number | null }
+  | {
+      event: 'style_applied'
+      prompt_a: string
+      prompt_b: string | null
+      mix: number
+      bpm: number | null
+      effective_from_chunk: number
+    }
   | { event: 'model_loading'; model: string }
   | { event: 'worker_died'; model: string }
   | { event: 'error'; error: string }
@@ -31,6 +38,14 @@ export type WorkletStats = {
 export type RamInfo = {
   totalGb: number
   estimateGbByModel: Record<string, number>
+}
+
+/** The style the worker confirmed it is generating with. */
+export type ActiveStyle = {
+  promptA: string
+  promptB: string | null
+  mix: number
+  bpm: number | null
 }
 
 export type DeckAction =
@@ -56,7 +71,7 @@ export type DeckState = {
   playing: boolean
   /** The worklet is actually emitting sound (false while prebuffering). */
   audible: boolean
-  activePrompt: string | null
+  activeStyle: ActiveStyle | null
   bufferedSeconds: number
   underruns: number
   generationSpeed: number | null
@@ -72,7 +87,7 @@ export const initialDeckState: DeckState = {
   workerDied: false,
   playing: false,
   audible: false,
-  activePrompt: null,
+  activeStyle: null,
   bufferedSeconds: 0,
   underruns: 0,
   generationSpeed: null,
@@ -141,15 +156,24 @@ function applyServerEvent(state: DeckState, event: ServerEvent): DeckState {
         switchingModel: true,
         workerDied: false,
         playing: false,
-        activePrompt: null,
+        activeStyle: null,
         generationSpeed: null,
       }
     case 'worker_died':
       return { ...state, workerDied: true, playing: false }
     case 'chunk':
       return { ...state, generationSpeed: event.rtf }
-    case 'prompt_applied':
-      return { ...state, activePrompt: event.prompt, error: null }
+    case 'style_applied':
+      return {
+        ...state,
+        activeStyle: {
+          promptA: event.prompt_a,
+          promptB: event.prompt_b,
+          mix: event.mix,
+          bpm: event.bpm,
+        },
+        error: null,
+      }
     case 'error':
       return { ...state, error: event.error }
     default:

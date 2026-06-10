@@ -84,6 +84,13 @@ live; switch one deck's model while the other keeps playing.
 
 ## M4 — Performance features
 
+**Status: ✅ done (2026-06-10).** Exit criteria verified end-to-end
+(`frontend/scripts/verify_m4.mjs`): a deck glides between two prompts via
+embedding-space morphing with an unbroken stream (25 s sweep, zero
+underruns). Tempo proved *partially* steerable
+([`spike-bpm.md`](spike-bpm.md)), so the UI ships a clearly-labelled tempo
+hint and no nudge/sync.
+
 **Goal:** smoother, more musical transitions.
 
 Scope:

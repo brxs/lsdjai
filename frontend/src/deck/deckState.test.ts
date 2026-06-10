@@ -62,13 +62,13 @@ describe('deckReducer', () => {
     const state = reduce([
       {
         type: 'server_event',
-        event: { event: 'chunk', index: 4, rtf: 1.86, prompt: 'x' },
+        event: { event: 'chunk', index: 4, rtf: 1.86 },
       },
     ])
     expect(state.generationSpeed).toBe(1.86)
   })
 
-  it('surfaces worker errors and clears them when a prompt applies', () => {
+  it('surfaces worker errors and clears them when a style applies', () => {
     const errored = reduce([
       { type: 'server_event', event: { event: 'error', error: 'boom' } },
     ])
@@ -78,13 +78,25 @@ describe('deckReducer', () => {
       [
         {
           type: 'server_event',
-          event: { event: 'prompt_applied', prompt: 'funk', effective_from_chunk: 3 },
+          event: {
+            event: 'style_applied',
+            prompt_a: 'funk',
+            prompt_b: 'techno',
+            mix: 0.3,
+            bpm: 124,
+            effective_from_chunk: 3,
+          },
         },
       ],
       errored,
     )
     expect(recovered.error).toBeNull()
-    expect(recovered.activePrompt).toBe('funk')
+    expect(recovered.activeStyle).toEqual({
+      promptA: 'funk',
+      promptB: 'techno',
+      mix: 0.3,
+      bpm: 124,
+    })
   })
 
   it('enters a switching state and forgets the stream when a model loads', () => {
@@ -92,13 +104,20 @@ describe('deckReducer', () => {
       { type: 'play_requested' },
       {
         type: 'server_event',
-        event: { event: 'prompt_applied', prompt: 'funk', effective_from_chunk: 1 },
+        event: {
+          event: 'style_applied',
+          prompt_a: 'funk',
+          prompt_b: null,
+          mix: 0,
+          bpm: null,
+          effective_from_chunk: 1,
+        },
       },
       { type: 'server_event', event: { event: 'model_loading', model: 'mrt2_base' } },
     ])
     expect(state.switchingModel).toBe(true)
     expect(state.playing).toBe(false)
-    expect(state.activePrompt).toBeNull()
+    expect(state.activeStyle).toBeNull()
     // Adopting the target immediately lets the RAM warning lead the load.
     expect(state.model).toBe('mrt2_base')
   })

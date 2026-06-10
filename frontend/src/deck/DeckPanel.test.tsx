@@ -14,7 +14,7 @@ function renderPanel(state: Partial<DeckState>, handlers: Record<string, () => v
       volume={0.8}
       onPlay={handlers.onPlay ?? noop}
       onStop={handlers.onStop ?? noop}
-      onSetPrompt={(handlers.onSetPrompt as (p: string) => void) ?? noop}
+      onSetStyle={(handlers.onSetStyle as (s: object) => void) ?? noop}
       onSetModel={(handlers.onSetModel as (m: string) => void) ?? noop}
       onRestart={handlers.onRestart ?? noop}
       onSetVolume={noop}
@@ -61,13 +61,76 @@ describe('DeckPanel', () => {
     expect(onStop).toHaveBeenCalled()
   })
 
-  it('applies a trimmed prompt on Enter', () => {
-    const onSetPrompt = vi.fn()
-    renderPanel({ connection: 'open' }, { onSetPrompt: onSetPrompt as () => void })
-    const input = screen.getByLabelText('Style prompt')
-    fireEvent.change(input, { target: { value: '  warm disco funk  ' } })
-    fireEvent.keyDown(input, { key: 'Enter' })
-    expect(onSetPrompt).toHaveBeenCalledWith('warm disco funk')
+  it('applies a trimmed single-prompt style', () => {
+    const onSetStyle = vi.fn()
+    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
+    fireEvent.change(screen.getByLabelText('Prompt A'), {
+      target: { value: '  warm disco funk  ' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Set style' }))
+    expect(onSetStyle).toHaveBeenCalledWith({
+      promptA: 'warm disco funk',
+      promptB: null,
+      mix: 0,
+      bpm: null,
+    })
+  })
+
+  it('applies a morph style with both prompts and a tempo hint', () => {
+    const onSetStyle = vi.fn()
+    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
+    fireEvent.change(screen.getByLabelText('Prompt A'), {
+      target: { value: 'warm disco funk' },
+    })
+    fireEvent.change(screen.getByLabelText('Prompt B (morph target)'), {
+      target: { value: 'dark minimal techno' },
+    })
+    fireEvent.change(screen.getByLabelText('Tempo hint (bpm)'), {
+      target: { value: '124' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Set style' }))
+    expect(onSetStyle).toHaveBeenCalledWith({
+      promptA: 'warm disco funk',
+      promptB: 'dark minimal techno',
+      mix: 0,
+      bpm: 124,
+    })
+  })
+
+  it('rejects an out-of-range tempo hint by disabling apply', () => {
+    renderPanel({ connection: 'open' })
+    fireEvent.change(screen.getByLabelText('Prompt A'), {
+      target: { value: 'funk' },
+    })
+    fireEvent.change(screen.getByLabelText('Tempo hint (bpm)'), {
+      target: { value: '999' },
+    })
+    expect(screen.getByRole('button', { name: 'Set style' })).toBeDisabled()
+  })
+
+  it('keeps the morph slider locked until a morph target is active', () => {
+    renderPanel({ connection: 'open' })
+    expect(screen.getByLabelText('Morph A ↔ B')).toBeDisabled()
+  })
+
+  it('rides the morph slider live against the active style', () => {
+    const onSetStyle = vi.fn()
+    renderPanel(
+      {
+        connection: 'open',
+        activeStyle: { promptA: 'funk', promptB: 'techno', mix: 0.2, bpm: null },
+      },
+      { onSetStyle: onSetStyle as () => void },
+    )
+    const slider = screen.getByLabelText('Morph A ↔ B')
+    expect(slider).toBeEnabled()
+    fireEvent.change(slider, { target: { value: '0.8' } })
+    expect(onSetStyle).toHaveBeenCalledWith({
+      promptA: 'funk',
+      promptB: 'techno',
+      mix: 0.8,
+      bpm: null,
+    })
   })
 
   it('offers the model picker and reports a selection', () => {

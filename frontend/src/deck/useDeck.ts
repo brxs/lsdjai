@@ -5,6 +5,7 @@ import type { DeckChannel, DeckId } from '../audio/engine'
 import {
   deckReducer,
   initialDeckState,
+  type ActiveStyle,
   type DeckState,
   type ServerEvent,
 } from './deckState'
@@ -16,7 +17,7 @@ export type DeckControls = {
   volume: number
   play: () => Promise<void>
   stop: () => void
-  setPrompt: (prompt: string) => void
+  setStyle: (style: ActiveStyle) => void
   setModel: (model: string) => void
   restartWorker: () => void
   setVolume: (volume: number) => void
@@ -138,9 +139,15 @@ export function useDeck(deckId: DeckId): DeckControls {
     dispatch({ type: 'stop_requested' })
   }, [send])
 
-  const setPrompt = useCallback(
-    (prompt: string) => {
-      send({ type: 'set_prompt', prompt })
+  const setStyle = useCallback(
+    (style: ActiveStyle) => {
+      send({
+        type: 'set_style',
+        prompt_a: style.promptA,
+        prompt_b: style.promptB,
+        mix: style.mix,
+        bpm: style.bpm,
+      })
     },
     [send],
   )
@@ -167,7 +174,7 @@ export function useDeck(deckId: DeckId): DeckControls {
     volume,
     play,
     stop,
-    setPrompt,
+    setStyle,
     setModel,
     restartWorker,
     setVolume,

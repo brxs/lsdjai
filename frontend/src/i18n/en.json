@@ -18,11 +18,16 @@
       "died": "The deck engine crashed.",
       "restart": "Restart deck"
     },
-    "prompt": {
-      "label": "Style prompt",
-      "placeholder": "e.g. warm disco funk",
-      "apply": "Set prompt",
-      "active": "Playing: {{prompt}}"
+    "style": {
+      "promptA": "Prompt A",
+      "promptAPlaceholder": "e.g. warm disco funk",
+      "promptB": "Prompt B (morph target)",
+      "promptBPlaceholder": "optional",
+      "bpmHint": "Tempo hint (bpm)",
+      "apply": "Set style",
+      "morph": "Morph A ↔ B",
+      "activeSingle": "Playing: {{a}}",
+      "activeMorph": "Playing: {{a}} ↔ {{b}}"
     },
     "play": "Play",
     "stop": "Stop",

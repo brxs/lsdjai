@@ -6,10 +6,11 @@ type SliderProps = {
   max: number
   step: number
   value: number
+  disabled?: boolean
   onChange: (value: number) => void
 }
 
-export function Slider({ label, min, max, step, value, onChange }: SliderProps) {
+export function Slider({ label, min, max, step, value, disabled, onChange }: SliderProps) {
   const id = useId()
   return (
     <div className="ui-slider">
@@ -24,6 +25,7 @@ export function Slider({ label, min, max, step, value, onChange }: SliderProps) 
         max={max}
         step={step}
         value={value}
+        disabled={disabled}
         onChange={(event) => onChange(Number(event.target.value))}
       />
     </div>

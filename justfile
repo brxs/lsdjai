@@ -58,3 +58,4 @@ verify-stream duration="60":
 verify-ui:
     cd frontend && node scripts/verify_m2.mjs
     cd frontend && node scripts/verify_m3.mjs
+    cd frontend && node scripts/verify_m4.mjs
