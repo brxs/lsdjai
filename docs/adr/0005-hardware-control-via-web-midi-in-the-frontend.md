@@ -35,9 +35,11 @@ We will integrate hardware controllers in the **frontend using Web MIDI**:
   Mixer components subscribe with their existing handlers; the MIDI module
   publishes. Keyboard/mouse paths are unchanged.
 - Device mappings are **pure, tested translation tables** (`MIDI message →
-  intent`), built empirically with an in-app MIDI monitor rather than
-  trusted from vendor PDFs. The DDJ-FLX4 map ships first; other
-  controllers are additional tables.
+  intent`). The DDJ-FLX4 map is documented in
+  [`docs/midi-ddj-flx4.md`](../midi-ddj-flx4.md), sourced from the proven
+  Mixxx community mapping and cross-referenced against Pioneer's official
+  MIDI message list; an in-app MIDI monitor verifies it against the
+  physical device's firmware. Other controllers are additional tables.
 - MIDI access is requested on an explicit user gesture ("Connect MIDI"),
   with device status shown in the UI.
 - Tempo-related hardware (tempo sliders) stays deliberately unmapped, per
@@ -64,9 +66,10 @@ We will integrate hardware controllers in the **frontend using Web MIDI**:
   (UI-less) operation becomes a goal.
 - **A vendor-specific HID/driver integration** - the FLX4 is
   class-compliant MIDI; HID buys nothing and costs portability.
-- **Hard-coding the vendor MIDI chart** - rejected in favour of
-  monitor-assisted empirical capture; charts drift and the cost of a wrong
-  byte is silent dead controls.
+- **Blind-trusting a single vendor chart** - the map is sourced from the
+  Mixxx mapping that thousands of users exercise, and still verified
+  against the device with the in-app monitor; charts drift and the cost
+  of a wrong byte is silent dead controls.
 
 <!-- Status values: Proposed | Accepted | Rejected | Deprecated |
      Superseded by ADR-NNNN -->

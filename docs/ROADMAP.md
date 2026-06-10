@@ -140,20 +140,22 @@ Scope, ordered by risk:
 
 1. **MIDI plumbing + monitor.** "Connect MIDI" button (user-gesture
    permission), device detection by name with a status indicator, and a
-   debug monitor showing incoming messages — the tool for capturing the
-   FLX4's actual byte map from the physical device (vendor charts drift;
-   the map is built from evidence, like the spikes).
+   debug monitor showing incoming messages. The byte map is already
+   documented ([`midi-ddj-flx4.md`](midi-ddj-flx4.md), sourced from the
+   Mixxx community mapping + Pioneer's official list); the monitor is the
+   verification tool against the physical device's firmware.
 2. **ControlBus.** Typed control intents (`{deck, action, value}`) as a
    small pub/sub: Deck and Mixer subscribe with their existing handlers,
    sources (MIDI now, anything later) publish. Keyboard/mouse unchanged.
-3. **FLX4 mapping table** — pure and unit-tested, captured via the monitor:
+3. **FLX4 mapping table** — pure and unit-tested, from
+   [`midi-ddj-flx4.md`](midi-ddj-flx4.md):
    - channel faders → deck volumes; crossfader → master crossfade
      (14-bit MSB/LSB pairs)
    - PLAY/PAUSE per deck → play/stop
    - performance pads 1–8 → snap the style-pad cursor to target N
      (cue points for prompts)
    - two EQ knobs per deck → style-pad cursor X/Y (continuous morph)
-   - a spare button → record toggle
+   - BEAT FX ON/OFF → record toggle
    - tempo sliders deliberately unmapped (ADR-0004); jog wheels unmapped
      in v1
 4. **(Stretch) LED feedback** — light pads that have a style target, via
@@ -191,5 +193,5 @@ Ideas parked deliberately — each would get its own ADR if picked up:
 | BPM not reliably steerable by prompt | M4 scope shrinks | Treated as best-effort from the start; UI follows what works |
 | MRT2 streaming API shifts under us (young project) | Rework in workers | Worker isolates all `magenta_rt` calls behind one small interface |
 | Memory pressure with `mrt2_base` decks | Crashes mid-session | RAM guardrails in model picker (M3); worker-death recovery |
-| FLX4 MIDI map differs from vendor docs / firmware | Dead or wrong controls | M6 builds the map empirically via the in-app MIDI monitor |
+| FLX4 MIDI map differs from docs / firmware | Dead or wrong controls | Map sourced from the proven Mixxx mapping (docs/midi-ddj-flx4.md); in-app monitor verifies against the device |
 | Web MIDI is Chromium-only | No hardware control elsewhere | Accepted (ADR-0005); on-screen UI unaffected |
