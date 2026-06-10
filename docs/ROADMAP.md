@@ -129,6 +129,43 @@ Scope:
 **Exit criteria:** record a 5-minute mix to WAV that matches what was heard;
 close/reopen the app and pick up previous settings.
 
+## M6 — Hardware control: Pioneer DDJ-FLX4 over Web MIDI
+
+**Goal:** perform on physical hardware — the FLX4's surface drives the
+decks, mixer, and style pads without touching the mouse. Architecture in
+[ADR-0005](adr/0005-hardware-control-via-web-midi-in-the-frontend.md):
+Web MIDI in the frontend, dispatching into the existing UI handlers.
+
+Scope, ordered by risk:
+
+1. **MIDI plumbing + monitor.** "Connect MIDI" button (user-gesture
+   permission), device detection by name with a status indicator, and a
+   debug monitor showing incoming messages — the tool for capturing the
+   FLX4's actual byte map from the physical device (vendor charts drift;
+   the map is built from evidence, like the spikes).
+2. **ControlBus.** Typed control intents (`{deck, action, value}`) as a
+   small pub/sub: Deck and Mixer subscribe with their existing handlers,
+   sources (MIDI now, anything later) publish. Keyboard/mouse unchanged.
+3. **FLX4 mapping table** — pure and unit-tested, captured via the monitor:
+   - channel faders → deck volumes; crossfader → master crossfade
+     (14-bit MSB/LSB pairs)
+   - PLAY/PAUSE per deck → play/stop
+   - performance pads 1–8 → snap the style-pad cursor to target N
+     (cue points for prompts)
+   - two EQ knobs per deck → style-pad cursor X/Y (continuous morph)
+   - a spare button → record toggle
+   - tempo sliders deliberately unmapped (ADR-0004); jog wheels unmapped
+     in v1
+4. **(Stretch) LED feedback** — light pads that have a style target, via
+   MIDI out through the same module.
+
+**Exit criteria:** with a DDJ-FLX4 connected, start/stop both decks, ride
+the channel faders and crossfader, jump and morph styles from the pads and
+knobs — hands off the mouse, with every hardware move reflected live in
+the UI. Verified with the physical device against a written checklist
+(hardware cannot be e2e-automated), plus unit tests for the full mapping
+table.
+
 ## Later (not committed)
 
 Ideas parked deliberately — each would get its own ADR if picked up:
@@ -137,7 +174,8 @@ Ideas parked deliberately — each would get its own ADR if picked up:
   ADR-0002.
 - **C++ engine (`magentart::core`) backend** — single distributable binary,
   supersedes ADR-0002 if pursued.
-- **MIDI controller mapping** (Web MIDI) — physical crossfader and knobs.
+- **Controller LED/display feedback beyond M6's stretch** — full
+  bidirectional surface state (requires the FLX4 output map).
 - **Audio-prompt styles** — MRT styles can come from reference audio, not just
   text: "make deck B sound like this track".
 - **Output device picker** (`setSinkId`) / external interface routing.
@@ -153,3 +191,5 @@ Ideas parked deliberately — each would get its own ADR if picked up:
 | BPM not reliably steerable by prompt | M4 scope shrinks | Treated as best-effort from the start; UI follows what works |
 | MRT2 streaming API shifts under us (young project) | Rework in workers | Worker isolates all `magenta_rt` calls behind one small interface |
 | Memory pressure with `mrt2_base` decks | Crashes mid-session | RAM guardrails in model picker (M3); worker-death recovery |
+| FLX4 MIDI map differs from vendor docs / firmware | Dead or wrong controls | M6 builds the map empirically via the in-app MIDI monitor |
+| Web MIDI is Chromium-only | No hardware control elsewhere | Accepted (ADR-0005); on-screen UI unaffected |
