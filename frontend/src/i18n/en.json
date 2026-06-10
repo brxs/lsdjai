@@ -59,6 +59,20 @@
       "blendItem": "{{percent}}% {{text}}",
       "blendSeparator": " · "
     },
+    "fx": {
+      "title": "Color FX",
+      "effect": "Effect",
+      "amount": "FX amount",
+      "off": "Off",
+      "names": {
+        "filter": "Filter",
+        "dub_echo": "Dub Echo",
+        "space": "Space",
+        "crush": "Crush",
+        "noise": "Noise",
+        "sweep": "Sweep"
+      }
+    },
     "play": "Play",
     "stop": "Stop",
     "volume": "Volume",

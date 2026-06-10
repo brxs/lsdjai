@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { DeckId } from '../audio/engine'
+import { FX_KINDS, type FxKind } from '../audio/fx'
 import { useControlBus } from '../control/busContext'
 import { Button } from '../ui/Button'
+import { Knob } from '../ui/Knob'
 import { Meter } from '../ui/Meter'
 import { Panel } from '../ui/Panel'
 import { Select } from '../ui/Select'
@@ -69,6 +71,10 @@ type DeckColumnProps = {
   onTargetCount?: (count: number) => void
   /** Generating off air (M10 deck prep) — surfaced in the status line. */
   primed?: boolean
+  /** Color FX insert state and controls (M12). */
+  fx: { kind: FxKind | null; amount: number }
+  onSetFx: (kind: FxKind | null) => void
+  onSetFxAmount: (amount: number) => void
 }
 
 export function DeckColumn({
@@ -82,6 +88,9 @@ export function DeckColumn({
   onRestart,
   onTargetCount,
   primed = false,
+  fx,
+  onSetFx,
+  onSetFxAmount,
 }: DeckColumnProps) {
   const { t } = useTranslation()
   const [targets, setTargets] = useState<(PadPoint & { text: string })[]>(
@@ -329,6 +338,32 @@ export function DeckColumn({
         />
         <p className="deck__active-prompt">{activeSummary}</p>
       </Panel>
+
+      <div className="deck__fx" role="group" aria-label={t('deck.fx.title')}>
+        <div className="deck__fx-select">
+          <Select
+            label={t('deck.fx.effect')}
+            value={fx.kind ? t(`deck.fx.names.${fx.kind}`) : t('deck.fx.off')}
+            options={[
+              t('deck.fx.off'),
+              ...FX_KINDS.map((kind) => t(`deck.fx.names.${kind}`)),
+            ]}
+            onChange={(label) =>
+              onSetFx(
+                FX_KINDS.find((kind) => t(`deck.fx.names.${kind}`) === label) ??
+                  null,
+              )
+            }
+          />
+        </div>
+        <Knob
+          label={t('deck.fx.amount')}
+          accent={deckId}
+          value={fx.amount}
+          disabled={!fx.kind}
+          onChange={onSetFxAmount}
+        />
+      </div>
 
       <div className="deck__transport">
         {state.playing ? (

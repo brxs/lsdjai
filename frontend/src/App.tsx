@@ -239,6 +239,9 @@ function App() {
           onRestart={deckA.restartWorker}
           onTargetCount={handleTargetCountA}
           primed={deckA.primed}
+          fx={deckA.fx}
+          onSetFx={deckA.setFx}
+          onSetFxAmount={deckA.setFxAmount}
         />
         <MixerStrip
           channels={channels}
@@ -260,6 +263,9 @@ function App() {
           onRestart={deckB.restartWorker}
           onTargetCount={handleTargetCountB}
           primed={deckB.primed}
+          fx={deckB.fx}
+          onSetFx={deckB.setFx}
+          onSetFxAmount={deckB.setFxAmount}
         />
       </div>
     </main>

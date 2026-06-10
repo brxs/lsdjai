@@ -63,6 +63,16 @@
   background: var(--color-led-ok);
 }
 
+.deck__fx {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+.deck__fx-select {
+  flex: 1;
+}
+
 .deck__prompt-row {
   display: flex;
   gap: var(--space-2);
