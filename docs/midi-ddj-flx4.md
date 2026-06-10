@@ -34,9 +34,23 @@ on the listed CC, LSB on CC+`0x20`.
 | Jog wheels | `0xB0`/`0xB1` CC `0x21`/`0x22` etc. | no scratch concept in v1; cursor-nudge candidate later |
 | TRIM, CUE (headphone), browse/load, BEAT SYNC, loop section | various | no app counterpart yet |
 
+## Reserved for M9/M10 (headphone cue)
+
+Bytes confirmed against the Mixxx mapping; verify with the monitor when
+M10 lands, as with everything here.
+
+| Control | Message | Planned use |
+| ------- | ------- | ----------- |
+| CUE (headphone) channel 1 / 2 | `0x90`/`0x91` note `0x54` | toggle channel PFL (M10) |
+| HEADPHONES MIX knob | `0xB6` CC `0x0C` (LSB `0x2C`) | cue↔master blend in the phones (M10) — it sends MIDI, unlike a typical analog monitor knob |
+| CUE (transport) deck 1 / 2 | `0x90`/`0x91` note `0x0C` | deck prep: silent prime / stop with flush (M10) |
+
+The FLX4 is also the audio path for M9: its USB sound card exposes
+4 output channels at 48 kHz (measured via `system_profiler` on this
+unit) — channels 1/2 feed the MASTER RCA, 3/4 the headphone jack.
+
 ## Useful spares for later
 
-- CUE deck 1/2 (`0x90`/`0x91` note `0x0C`) — e.g. "stop with flush".
 - SHIFT (`0x90`/`0x91` note `0x3F`) — modifier for a second layer.
 - Pad modes other than HOT CUE send distinct note ranges (BEAT LOOP
   `0x60`–`0x67`, BEAT JUMP `0x20`–`0x27`, KEY SHIFT `0x70`–`0x77`) — free

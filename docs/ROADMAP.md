@@ -281,6 +281,69 @@ mixer strip; every control rendered from the new design-system components
 strips and channel meters; all existing e2e suites green on the new
 surface; before/after screenshots in the PR.
 
+## M9 — Split cue: pre-listen in headphones (PFL)
+
+**Goal:** audition a deck privately before the audience hears it — the
+half of DJing the booth still lacks. With deck A on air, prime deck B,
+listen to it in headphones, and only then fade it in.
+
+Architecture sketch (gets its own ADR): the FLX4 doubles as a 4-channel
+USB audio interface — measured on this unit via `system_profiler`:
+4 output channels at 48 kHz, matching the engine's sample rate — with
+USB channels 1/2 feeding the MASTER RCA and 3/4 the headphone jack
+(the same routing rekordbox uses). Primary path: one AudioContext,
+`setSinkId(flx4)`, `destination.channelCount = 4`, a ChannelMerger with
+the master bus on 1/2 and the cue bus on 3/4. Fallback for FLX4-less
+sessions: cue bus → `MediaStreamAudioDestinationNode` → an `<audio>`
+element `setSinkId`-routed to any second device, master staying on the
+default sink.
+
+Scope, ordered by risk:
+
+1. **Output-routing spike.** Verify 4-channel output through
+   `AudioContext.setSinkId` + ChannelMerger against the physical FLX4
+   (Chromium has a history of `maxChannelCount` quirks with sink
+   changes — measure, don't read). Pick primary/fallback and record the
+   decision as the next ADR. Includes the `enumerateDevices` permission
+   flow needed to obtain device IDs.
+2. **Cue bus in the engine.** Per-deck post-EQ, pre-fader tap → per-channel
+   cue toggle gain → cue bus, plus a cue/master blend ("MIXING") gain pair
+   for the headphone feed. Master bus, meters, and the recorder are
+   untouched — the audience and the WAV never hear the cue.
+3. **UI.** CUE toggle per channel strip (lit, LED-style), a cue-mix knob,
+   and an output-device picker — all persisted like every other setting.
+
+**Exit criteria:** with deck A on the master, toggling deck B's CUE makes
+B audible in the headphones only; the mix knob blends cue↔master in the
+phones; the audience feed never glitches while cueing; settings survive
+a reload. Routing math unit-tested; the full flow verified on hardware
+via an extended manual checklist (audio routing cannot be e2e-heard).
+
+## M10 — Hardware cue: prep decks from the FLX4
+
+**Goal:** the full pre-listen workflow with hands off the mouse,
+completing the two-decks-and-headphones instrument.
+
+Scope — bytes sourced from the Mixxx FLX4 mapping like M7's table, to be
+verified with the in-app monitor:
+
+1. **Channel CUE buttons** (`0x90`/`0x91` note `0x54`) → toggle each
+   channel's headphone cue, with LED echo lighting the active cues.
+2. **HEADPHONES MIX knob** (`0xB6` CC `0x0C`, LSB `0x2C` — it does send
+   MIDI, unlike a typical analog monitor knob) → the M9 cue/master blend.
+3. **Transport CUE buttons** (`0x90`/`0x91` note `0x0C`, the spare
+   reserved since M7) → deck prep: CUE on a stopped deck starts
+   generation silently (buffer filling, audible only over PFL), PLAY
+   then drops it on air instantly; CUE while playing stops with flush.
+   The generative analog of cueing a record.
+4. New ControlBus intents + translator rows, unit-tested like the M7
+   table; checklist addendum for the hardware run.
+
+**Exit criteria:** hands off the mouse: prime deck B with CUE, audition
+it via the channel-cue button and mix knob, drop it with PLAY, kill
+deck A — cue LEDs mirroring state throughout. Unit tests cover every new
+mapping row; verified on the physical device against the checklist.
+
 ## Later (not committed)
 
 Ideas parked deliberately — each would get its own ADR if picked up:
@@ -289,11 +352,11 @@ Ideas parked deliberately — each would get its own ADR if picked up:
   ADR-0002.
 - **C++ engine (`magentart::core`) backend** — single distributable binary,
   supersedes ADR-0002 if pursued.
-- **Controller LED/display feedback beyond M7's stretch** — full
-  bidirectional surface state (requires the FLX4 output map).
+- **Controller LED/display feedback beyond M7's stretch and M10's cue
+  LEDs** — full bidirectional surface state (requires the FLX4 output
+  map).
 - **Audio-prompt styles** — MRT styles can come from reference audio, not just
   text: "make deck B sound like this track".
-- **Output device picker** (`setSinkId`) / external interface routing.
 - **Prompt/preset library** with crates of saved styles.
 
 ## Standing risks
