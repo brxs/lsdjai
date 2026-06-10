@@ -161,6 +161,14 @@ survive a reload.
 
 ## M7 — Hardware control: Pioneer DDJ-FLX4 over Web MIDI
 
+**Status: ✅ done (2026-06-10).** All four scope items shipped (LED stretch
+included): ControlBus, the unit-tested FLX4 translation table, Web MIDI
+plumbing with the statusbar monitor, and intent wiring through the
+existing UI handlers. Exit criteria verified on the physical device
+against [`m7-hardware-checklist.md`](m7-hardware-checklist.md) — every
+box ticked, including the hands-off mini-set; `verify_m7.mjs` smokes the
+provider wiring and connect flow in CI-able form.
+
 **Goal:** perform on physical hardware — the FLX4's surface drives the
 decks, mixer, and style pads without touching the mouse. Architecture in
 [ADR-0005](adr/0005-hardware-control-via-web-midi-in-the-frontend.md):

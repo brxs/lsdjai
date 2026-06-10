@@ -1,24 +1,33 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
+import { createControlBus, type ControlBus } from '../control/bus'
+import { ControlBusProvider } from '../control/ControlBusProvider'
 import { updateDeckSettings } from '../persistence'
 import { DeckColumn } from './DeckColumn'
 import { initialDeckState, type DeckState } from './deckState'
 
 const noop = () => {}
 
-function renderPanel(state: Partial<DeckState>, handlers: Record<string, () => void> = {}) {
+function renderPanel(
+  state: Partial<DeckState>,
+  handlers: Record<string, () => void> = {},
+  bus: ControlBus = createControlBus(),
+) {
   return render(
-    <DeckColumn
-      deckId="a"
-      state={{ ...initialDeckState, ...state }}
-      getWaveformRange={() => [0, 0]}
-      onPlay={handlers.onPlay ?? noop}
-      onStop={handlers.onStop ?? noop}
-      onSetStyle={(handlers.onSetStyle as (s: object) => void) ?? noop}
-      onSetModel={(handlers.onSetModel as (m: string) => void) ?? noop}
-      onRestart={handlers.onRestart ?? noop}
-    />,
+    <ControlBusProvider bus={bus}>
+      <DeckColumn
+        deckId="a"
+        state={{ ...initialDeckState, ...state }}
+        getWaveformRange={() => [0, 0]}
+        onPlay={handlers.onPlay ?? noop}
+        onStop={handlers.onStop ?? noop}
+        onSetStyle={(handlers.onSetStyle as (s: object) => void) ?? noop}
+        onSetModel={(handlers.onSetModel as (m: string) => void) ?? noop}
+        onRestart={handlers.onRestart ?? noop}
+        onTargetCount={handlers.onTargetCount as (count: number) => void}
+      />
+    </ControlBusProvider>,
   )
 }
 
@@ -286,5 +295,87 @@ describe('DeckColumn', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(
       'generation failed; deck stopped',
     )
+  })
+
+  it('reports the style target count for the pad LED echo', () => {
+    const onTargetCount = vi.fn()
+    renderPanel({ connection: 'open' }, { onTargetCount: onTargetCount as () => void })
+    expect(onTargetCount).toHaveBeenLastCalledWith(0)
+    addTarget('funk')
+    expect(onTargetCount).toHaveBeenLastCalledWith(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Remove funk' }))
+    expect(onTargetCount).toHaveBeenLastCalledWith(0)
+  })
+
+  it('snaps the cursor onto a pad target from the control bus', () => {
+    const onSetStyle = vi.fn()
+    const bus = createControlBus()
+    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void }, bus)
+    addTarget('funk')
+    addTarget('techno')
+
+    act(() => bus.publish({ kind: 'style_target', deck: 'a', index: 1 }))
+
+    expect(onSetStyle.mock.calls.at(-1)![0]).toEqual({
+      prompts: [
+        { text: 'funk', weight: 0 },
+        { text: 'techno', weight: 1 },
+      ],
+    })
+  })
+
+  it('sweeps the cursor around the target circle from the control bus', () => {
+    vi.useFakeTimers()
+    try {
+      const onSetStyle = vi.fn()
+      const bus = createControlBus()
+      renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void }, bus)
+      addTarget('funk') // spawns at 12 o'clock — exactly where sweep 0 lands
+      addTarget('techno')
+      onSetStyle.mockClear()
+
+      act(() => bus.publish({ kind: 'style_sweep', deck: 'a', value: 0 }))
+      act(() => vi.advanceTimersByTime(300)) // flush the throttle's trailing send
+
+      expect(onSetStyle.mock.calls.at(-1)![0]).toEqual({
+        prompts: [
+          { text: 'funk', weight: 1 },
+          { text: 'techno', weight: 0 },
+        ],
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores style intents addressed to the other deck', () => {
+    const onSetStyle = vi.fn()
+    const bus = createControlBus()
+    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void }, bus)
+    addTarget('funk')
+    onSetStyle.mockClear()
+
+    act(() => bus.publish({ kind: 'style_target', deck: 'b', index: 0 }))
+    act(() => bus.publish({ kind: 'style_sweep', deck: 'b', value: 0.5 }))
+
+    expect(onSetStyle).not.toHaveBeenCalled()
+  })
+
+  it('ignores hardware style intents while the deck cannot take them', () => {
+    updateDeckSettings('a', {
+      targets: [{ text: 'funk', x: 0.5, y: 0.12 }],
+      cursor: { x: 0.5, y: 0.5 },
+    })
+    const onSetStyle = vi.fn()
+    const bus = createControlBus()
+    renderPanel(
+      { connection: 'open', switchingModel: true },
+      { onSetStyle: onSetStyle as () => void },
+      bus,
+    )
+
+    act(() => bus.publish({ kind: 'style_target', deck: 'a', index: 0 }))
+
+    expect(onSetStyle).not.toHaveBeenCalled()
   })
 })

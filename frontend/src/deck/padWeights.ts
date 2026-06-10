@@ -21,12 +21,19 @@ export function padWeights(targets: PadPoint[], cursor: PadPoint): number[] {
   return raw.map((weight) => weight / total)
 }
 
-function circleSlot(index: number): PadPoint {
-  const angle = (2 * Math.PI * index) / SPAWN_SLOTS - Math.PI / 2
+/** Where a sweep fraction in [0, 1] lands: on the same circle the spawn
+ * slots sit on, 0 at 12 o'clock, increasing clockwise — so a hardware knob
+ * rides the cursor through every spawned target in order (M7). */
+export function sweepPosition(fraction: number): PadPoint {
+  const angle = 2 * Math.PI * fraction - Math.PI / 2
   return {
     x: 0.5 + CIRCLE_RADIUS * Math.cos(angle),
     y: 0.5 + CIRCLE_RADIUS * Math.sin(angle),
   }
+}
+
+function circleSlot(index: number): PadPoint {
+  return sweepPosition(index / SPAWN_SLOTS)
 }
 
 /** Where a newly added target spawns: the circle slot with the most

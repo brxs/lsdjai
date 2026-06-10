@@ -1,8 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { AudioEngineProvider } from '../audio/AudioEngineProvider'
 import type { AudioEngine } from '../audio/engine'
+import { createControlBus, type ControlBus } from '../control/bus'
+import { ControlBusProvider } from '../control/ControlBusProvider'
 import { MixerStrip, type ChannelControls } from './MixerStrip'
 
 function makeEngine(overrides: Partial<AudioEngine> = {}): AudioEngine {
@@ -31,10 +33,13 @@ function makeChannel(overrides: Partial<ChannelControls> = {}): ChannelControls 
 function renderMixer(
   engine: AudioEngine,
   channels: Record<'a' | 'b', ChannelControls> = { a: makeChannel(), b: makeChannel() },
+  bus: ControlBus = createControlBus(),
 ) {
   return render(
     <AudioEngineProvider engine={engine}>
-      <MixerStrip channels={channels} crossfade={0.5} onCrossfadeChange={() => {}} />
+      <ControlBusProvider bus={bus}>
+        <MixerStrip channels={channels} crossfade={0.5} onCrossfadeChange={() => {}} />
+      </ControlBusProvider>
     </AudioEngineProvider>,
   )
 }
@@ -92,5 +97,17 @@ describe('MixerStrip recording', () => {
     await waitFor(() =>
       expect(screen.getByRole('alert')).toHaveTextContent('no audio context'),
     )
+  })
+
+  it('toggles recording from the control bus', async () => {
+    const engine = makeEngine()
+    const bus = createControlBus()
+    renderMixer(engine, undefined, bus)
+
+    act(() => bus.publish({ kind: 'record_toggle' }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Stop recording' })).toBeVisible(),
+    )
+    expect(engine.startRecording).toHaveBeenCalled()
   })
 })

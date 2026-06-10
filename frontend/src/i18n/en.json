@@ -4,6 +4,20 @@
     "ramWarning": "Selected models need roughly {{combined}} GB on a {{total}} GB machine — real-time playback may struggle.",
     "shortcutsHint": "Shortcuts: A / B focus a deck's style target · X focuses the crossfader"
   },
+  "midi": {
+    "connect": "Connect MIDI",
+    "status": {
+      "unsupported": "MIDI unavailable",
+      "idle": "MIDI off",
+      "requesting": "Requesting MIDI…",
+      "no-device": "No DDJ-FLX4 found",
+      "denied": "MIDI access denied"
+    },
+    "monitor": {
+      "label": "MIDI monitor",
+      "empty": "monitoring…"
+    }
+  },
   "mixer": {
     "title": "Mixer",
     "channel": "Channel {{id}}",

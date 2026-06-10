@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { DeckId } from '../audio/engine'
+import { useControlBus } from '../control/busContext'
 import { Button } from '../ui/Button'
 import { Meter } from '../ui/Meter'
 import { Panel } from '../ui/Panel'
@@ -11,8 +12,8 @@ import { TextField } from '../ui/TextField'
 import { TransportButton } from '../ui/TransportButton'
 import { WaveformStrip } from '../ui/WaveformStrip'
 import { XYPad } from '../ui/XYPad'
-import type { ActiveStyle, DeckState } from './deckState'
-import { padWeights, spawnPosition, type PadPoint } from './padWeights'
+import { isDeckOperable, type ActiveStyle, type DeckState } from './deckState'
+import { padWeights, spawnPosition, sweepPosition, type PadPoint } from './padWeights'
 import { loadDeckSettings, updateDeckSettings } from '../persistence'
 import './deck.css'
 
@@ -64,6 +65,8 @@ type DeckColumnProps = {
   onSetStyle: (style: ActiveStyle) => void
   onSetModel: (model: string) => void
   onRestart: () => void
+  /** Reports how many style targets exist (for the pad LED echo). */
+  onTargetCount?: (count: number) => void
 }
 
 export function DeckColumn({
@@ -75,6 +78,7 @@ export function DeckColumn({
   onSetStyle,
   onSetModel,
   onRestart,
+  onTargetCount,
 }: DeckColumnProps) {
   const { t } = useTranslation()
   const [targets, setTargets] = useState<(PadPoint & { text: string })[]>(
@@ -87,7 +91,7 @@ export function DeckColumn({
   const [throttle] = useState(() => createSendThrottle(STYLE_SEND_INTERVAL_MS))
 
   const connected = state.connection === 'open'
-  const operable = connected && !state.switchingModel && !state.workerDied
+  const operable = isDeckOperable(state)
   const statusKey = state.switchingModel
     ? 'deck.status.loadingModel'
     : {
@@ -133,6 +137,10 @@ export function DeckColumn({
     updateDeckSettings(deckId, { targets, cursor })
   }, [deckId, targets, cursor])
 
+  useEffect(() => {
+    onTargetCount?.(targets.length)
+  }, [targets.length, onTargetCount])
+
   // The worker has no style after a reload, a model switch, or a crash
   // restart — re-apply the pad's arrangement once per such episode, as soon
   // as the deck can take it. Ref-gated so the in-flight server echo doesn't
@@ -140,11 +148,7 @@ export function DeckColumn({
   const resentRef = useRef(false)
   useEffect(() => {
     const needsStyle =
-      state.connection === 'open' &&
-      !state.switchingModel &&
-      !state.workerDied &&
-      !state.activeStyle &&
-      targets.length > 0
+      isDeckOperable(state) && !state.activeStyle && targets.length > 0
     if (!needsStyle) {
       resentRef.current = false
       return
@@ -183,6 +187,27 @@ export function DeckColumn({
     setCursor(next)
     sendStyleThrottled(targets, next)
   }
+
+  // Hardware style intents (ADR-0005) mirror the pointer paths and the
+  // pad's gating: HOT CUE pad N snaps the cursor onto target N (immediate
+  // send, like add/remove), the CFX knob sweeps the cursor with the same
+  // throttle as a drag. Resubscribes per render to read fresh state.
+  const bus = useControlBus()
+  useEffect(() =>
+    bus.subscribe((intent) => {
+      if (!operable || targets.length === 0) return
+      if (intent.kind === 'style_target' && intent.deck === deckId) {
+        const target = targets[intent.index]
+        if (!target) return
+        const next = { x: target.x, y: target.y }
+        setCursor(next)
+        sendStyle(targets, next)
+      } else if (intent.kind === 'style_sweep' && intent.deck === deckId) {
+        const next = sweepPosition(intent.value)
+        handleCursor(next.x, next.y)
+      }
+    }),
+  )
 
   function handleTargetMove(id: string, x: number, y: number) {
     const next = targets.map((target) =>

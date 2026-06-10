@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { padWeights, spawnPosition, type PadPoint } from './padWeights'
+import {
+  padWeights,
+  spawnPosition,
+  sweepPosition,
+  type PadPoint,
+} from './padWeights'
 
 describe('padWeights', () => {
   it('gives the full weight to a target the cursor sits on', () => {
@@ -91,5 +96,43 @@ describe('spawnPosition', () => {
   it('is deterministic for the same arrangement', () => {
     const existing = [{ x: 0.3, y: 0.3 }]
     expect(spawnPosition(existing)).toEqual(spawnPosition(existing))
+  })
+})
+
+describe('sweepPosition', () => {
+  it('starts at 12 o\'clock, matching the first spawn slot', () => {
+    const start = sweepPosition(0)
+    expect(start.x).toBeCloseTo(0.5)
+    expect(start.y).toBeCloseTo(0.12)
+    expect(start).toEqual(spawnPosition([]))
+  })
+
+  it('sweeps clockwise: a quarter turn lands at 3 o\'clock', () => {
+    const quarter = sweepPosition(0.25)
+    expect(quarter.x).toBeCloseTo(0.88)
+    expect(quarter.y).toBeCloseTo(0.5)
+  })
+
+  it('reaches the bottom at the halfway point', () => {
+    const half = sweepPosition(0.5)
+    expect(half.x).toBeCloseTo(0.5)
+    expect(half.y).toBeCloseTo(0.88)
+  })
+
+  it('closes the loop: fraction 1 returns to the start', () => {
+    const start = sweepPosition(0)
+    const end = sweepPosition(1)
+    expect(end.x).toBeCloseTo(start.x)
+    expect(end.y).toBeCloseTo(start.y)
+  })
+
+  it('stays inside the pad for any fraction', () => {
+    for (let i = 0; i <= 20; i++) {
+      const point = sweepPosition(i / 20)
+      expect(point.x).toBeGreaterThanOrEqual(0)
+      expect(point.x).toBeLessThanOrEqual(1)
+      expect(point.y).toBeGreaterThanOrEqual(0)
+      expect(point.y).toBeLessThanOrEqual(1)
+    }
   })
 })

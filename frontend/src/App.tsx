@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { INITIAL_CROSSFADE } from './audio/engine'
+import { INITIAL_CROSSFADE, type DeckId } from './audio/engine'
 import { useAudioEngine } from './audio/engineContext'
+import { applyAppIntent } from './control/appIntents'
+import { useControlBus } from './control/busContext'
+import { MidiControls } from './control/MidiControls'
+import { useMidi } from './control/useMidi'
 import { DeckColumn } from './deck/DeckColumn'
 import { useDeck } from './deck/useDeck'
 import { MixerStrip, type ChannelControls } from './mixer/MixerStrip'
@@ -32,10 +36,54 @@ function App() {
     return () => window.removeEventListener('keydown', handleShortcutKey)
   }, [])
 
-  const handleCrossfade = useCallback((position: number) => {
-    setCrossfade(position)
-    updateAppSettings({ crossfade: position })
+  // The one place a crossfade move is defined: audio bus + state + persist.
+  // Every source — slider, keyboard, hardware — lands here.
+  const handleCrossfade = useCallback(
+    (position: number) => {
+      engine.setCrossfade(position)
+      setCrossfade(position)
+      updateAppSettings({ crossfade: position })
+    },
+    [engine],
+  )
+
+  // Hardware intents (ADR-0005) for the state this component owns.
+  // Resubscribes every render so the handler always reads current deck
+  // state; the bus itself is a stable singleton.
+  const bus = useControlBus()
+  useEffect(() =>
+    bus.subscribe((intent) =>
+      applyAppIntent(intent, { a: deckA, b: deckB }, handleCrossfade),
+    ),
+  )
+
+  const midi = useMidi()
+  const { status: midiStatus, setPadLeds } = midi
+  const [padCounts, setPadCounts] = useState<Record<DeckId, number>>({
+    a: 0,
+    b: 0,
+  })
+  const handleTargetCount = useCallback((deck: DeckId, count: number) => {
+    setPadCounts((previous) =>
+      previous[deck] === count ? previous : { ...previous, [deck]: count },
+    )
   }, [])
+  const handleTargetCountA = useCallback(
+    (count: number) => handleTargetCount('a', count),
+    [handleTargetCount],
+  )
+  const handleTargetCountB = useCallback(
+    (count: number) => handleTargetCount('b', count),
+    [handleTargetCount],
+  )
+
+  // LED feedback (M7 stretch): pads 1–N lit for the N style targets, re-sent
+  // on reconnect so a hot-plugged controller picks the state back up.
+  useEffect(() => {
+    if (midiStatus !== 'connected') return
+    setPadLeds('a', padCounts.a)
+    setPadLeds('b', padCounts.b)
+  }, [midiStatus, setPadLeds, padCounts])
 
   const ramWarning = combinedRamWarning(
     { a: deckA.state.model, b: deckB.state.model },
@@ -69,6 +117,12 @@ function App() {
           </p>
         )}
         <p className="app__hint">{t('app.shortcutsHint')}</p>
+        <MidiControls
+          status={midi.status}
+          deviceName={midi.deviceName}
+          onConnect={midi.connect}
+          readMonitor={midi.readMonitor}
+        />
       </header>
       <div className="app__booth">
         <DeckColumn
@@ -80,6 +134,7 @@ function App() {
           onSetStyle={deckA.setStyle}
           onSetModel={deckA.setModel}
           onRestart={deckA.restartWorker}
+          onTargetCount={handleTargetCountA}
         />
         <MixerStrip
           channels={channels}
@@ -95,6 +150,7 @@ function App() {
           onSetStyle={deckB.setStyle}
           onSetModel={deckB.setModel}
           onRestart={deckB.restartWorker}
+          onTargetCount={handleTargetCountB}
         />
       </div>
     </main>

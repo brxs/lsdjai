@@ -1,6 +1,6 @@
 # 0005. Hardware control via Web MIDI in the frontend
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-10
 - **Deciders:** Daniel Peter
 

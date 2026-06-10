@@ -74,6 +74,13 @@ export type DeckState = {
   error: string | null
 }
 
+/** Whether the deck can take commands right now — the single gating
+ * predicate for the transport button, the style pad, and hardware control
+ * intents, so the three can never drift apart. */
+export function isDeckOperable(state: DeckState): boolean {
+  return state.connection === 'open' && !state.switchingModel && !state.workerDied
+}
+
 export const initialDeckState: DeckState = {
   connection: 'connecting',
   model: null,

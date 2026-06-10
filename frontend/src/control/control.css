@@ -1,0 +1,46 @@
+.midi {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.midi__status {
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.midi__status--connected {
+  color: var(--color-text);
+}
+
+.midi__led {
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: 50%;
+  background: var(--color-led-off);
+}
+
+.midi__led--on {
+  background: var(--color-led-ok);
+}
+
+.midi__monitor {
+  font: 500 var(--text-xs) var(--font-mono);
+  color: var(--color-text-muted);
+  background: var(--color-surface-inset);
+  border-radius: var(--radius-s);
+  box-shadow: var(--inset-border);
+  padding: var(--space-1) var(--space-2);
+  display: inline-flex;
+  gap: var(--space-3);
+  white-space: nowrap;
+}
+
+.midi__monitor-entry:last-child {
+  color: var(--color-text);
+}
