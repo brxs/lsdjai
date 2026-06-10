@@ -110,6 +110,14 @@ overpromising).
 
 ## M5 — Recording and polish
 
+**Status: ✅ done (2026-06-10).** Exit criteria verified end-to-end
+(`frontend/scripts/verify_m5.mjs`): a 5-minute mix recorded off the master
+bus to a valid stereo 48 kHz WAV (300.0 s, non-silent), and a reload
+restoring pad arrangements, active style, volumes, and crossfade. Focus
+shortcuts (A/B/X) ship with it. The verification also flushed out and
+fixed a real reconnect race (a cancelled pump thread could eat the next
+session's first event — `backend/scripts/repro_reconnect_echo.py`).
+
 **Goal:** a jam is worth keeping; the app survives a session.
 
 Scope:
