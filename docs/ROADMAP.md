@@ -192,6 +192,70 @@ reflected live in the UI. Verified with the physical device against a written ch
 (hardware cannot be e2e-automated), plus unit tests for the full mapping
 table.
 
+## M8 — UI overhaul: from web page to instrument
+
+**Goal:** the app reads as DJ software — booth topology, hardware-style
+controls, living signal displays — while behavior, hooks, and the audio
+graph stay untouched (purely presentational; no ADR needed, ADR-0003's
+architecture is unchanged). Aesthetic direction: rekordbox/Serato-class
+dark instrument panels, no vendor trade dress.
+
+Recommended execution order: **M6 (EQ function) → M8 (the face) → M7
+(hardware)** — M8 ships the Knob component the EQ wants to live in, and
+M7's LED/status work then lands on a stable surface. M8 has no hard
+dependency either way.
+
+Scope:
+
+1. **Tokens v2.** Same token-only discipline, new vocabulary: near-black
+   panel palette with inset borders (no floating-card shadows), per-deck
+   accent colours (deck A ≠ deck B), LED state colours, condensed
+   uppercase micro-labels, monospace numeric readouts, tighter spacing,
+   small hardware radii. Light-touch motion (LED blink for REC, meter
+   decay) — no decorative animation.
+2. **Design-system components**, each specced before building (purpose /
+   variants / states / API, per the design-system rule):
+   - `Knob` — rotary with arc indicator; vertical-drag + arrow keys +
+     double-click-to-centre; sizes S/M; used by EQ (M6) and morph sweep.
+   - `VerticalFader` — channel volume; the crossfader stays horizontal.
+   - `LevelMeter` — segmented LED column from an AnalyserNode, peak hold;
+     per channel and master.
+   - `TransportButton` — large square, lit state, icon glyphs.
+   - `Panel` / `PanelLabel` — the structural chrome with silkscreen
+     labels, replacing cards.
+3. **Booth layout.** Full-viewport CSS grid, no page scroll:
+
+   ```
+   ┌────────────────────────┬──────────┬────────────────────────┐
+   │ DECK A waveform strip  │  MASTER  │ DECK B waveform strip  │
+   ├────────────────────────┤ meter ·  ├────────────────────────┤
+   │ style pad   │ targets  │ REC ·    │ targets    │ style pad │
+   │             │ model    │ status   │ model      │           │
+   │ transport · readouts   ├──────────┤ transport · readouts   │
+   │                        │ EQ knobs │                        │
+   │                        │ ch faders│                        │
+   │                        │ ─ xfade ─│                        │
+   └────────────────────────┴──────────┴────────────────────────┘
+   ```
+
+   Connection/model/MIDI state moves into a thin status strip instead of
+   prose inside cards.
+4. **Per-deck waveform/spectrum strip** (pulled in from "Later"): an
+   AnalyserNode tap per deck channel rendering a scrolling waveform or
+   spectrum — the buffer-health meter stays, the strip makes the signal
+   visible.
+5. **Behaviour freeze.** Containers, hooks, reducers, engine, wire
+   protocol: untouched. DeckPanel decomposes into presentational pieces;
+   i18n keys and accessibility names survive so component tests and the
+   e2e suites keep their selectors (updated only where labels genuinely
+   change).
+
+**Exit criteria:** the booth layout above at full viewport with the centre
+mixer strip; every control rendered from the new design-system components
+(no hardcoded colours/spacing outside tokens); live per-deck waveform
+strips and channel meters; all existing e2e suites green on the new
+surface; before/after screenshots in the PR.
+
 ## Later (not committed)
 
 Ideas parked deliberately — each would get its own ADR if picked up:
@@ -205,8 +269,6 @@ Ideas parked deliberately — each would get its own ADR if picked up:
 - **Audio-prompt styles** — MRT styles can come from reference audio, not just
   text: "make deck B sound like this track".
 - **Output device picker** (`setSinkId`) / external interface routing.
-- **Per-deck visuals** — waveform/spectrum via AnalyserNodes (cheap, cut from
-  MVP by choice).
 - **Prompt/preset library** with crates of saved styles.
 
 ## Standing risks
