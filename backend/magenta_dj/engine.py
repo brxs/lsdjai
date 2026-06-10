@@ -32,6 +32,11 @@ def available_models() -> list[str]:
     return present
 
 
+# Embeddings are reused across morph-slider moves; texts beyond this are
+# evicted oldest-first.
+EMBED_CACHE_SIZE = 32
+
+
 class DeckEngine:
     """One model instance generating a continuous stream in 1-second chunks."""
 
@@ -44,10 +49,41 @@ class DeckEngine:
         self._system = system.MagentaRT2SystemMlxfn(size=model)
         self._state = None
         self._style = None
+        self._embed_cache: dict[str, np.ndarray] = {}
+
+    def _embed_cached(self, text: str) -> np.ndarray:
+        if text not in self._embed_cache:
+            if len(self._embed_cache) >= EMBED_CACHE_SIZE:
+                self._embed_cache.pop(next(iter(self._embed_cache)))
+            self._embed_cache[text] = self._system.embed_style(text)
+        return self._embed_cache[text]
 
     def set_prompt(self, prompt: str) -> None:
         """Embed a text prompt; takes effect on the next generate_chunk()."""
-        self._style = self._system.embed_style(prompt)
+        self.set_style([(prompt, 1.0)])
+
+    def set_style(
+        self, prompts: list[tuple[str, float]], bpm: int | None = None
+    ) -> None:
+        """Blend weighted prompt embeddings into the active style.
+
+        MusicCoCa embeddings are plain 768-dim vectors (docs/spike-mrt2.md),
+        so a morph between prompts is their weighted average. An optional
+        tempo hint is appended to each prompt text before embedding
+        (docs/spike-bpm.md for how steerable that is). Takes effect on the
+        next generate_chunk().
+        """
+        weighted = [(text, weight) for text, weight in prompts if weight > 0]
+        if not weighted:
+            raise ValueError("set_style needs at least one prompt with weight > 0")
+        total = sum(weight for _, weight in weighted)
+        blend = np.zeros(0)
+        for text, weight in weighted:
+            full = f"{text}, {bpm} bpm" if bpm else text
+            embedding = self._embed_cached(full).astype(np.float32)
+            term = (weight / total) * embedding
+            blend = term if blend.size == 0 else blend + term
+        self._style = blend
 
     def generate_chunk(self) -> bytes:
         """Generate CHUNK_SECONDS of audio, continuous with the previous call.

@@ -32,7 +32,7 @@ def run_deck_worker(
     out_queue.put(("status", {"event": "ready", "deck": deck_id, "model": model}))
 
     playing = False
-    prompt: str | None = None
+    style: dict | None = None
     chunk_index = 0
     # Pacing clock: seconds of audio emitted since play, vs. wall time since
     # play. Reset on every stop→play transition.
@@ -69,31 +69,43 @@ def run_deck_worker(
                     pace_seconds = 0.0
             elif kind == "stop":
                 playing = False
-            elif kind == "set_prompt":
+            elif kind in ("set_prompt", "set_style"):
                 started = time.monotonic()
+                prompt_a = cmd.get("prompt_a") or cmd.get("prompt")
+                prompt_b = cmd.get("prompt_b")
+                mix = float(cmd.get("mix", 0.0))
+                bpm = cmd.get("bpm")
+                prompts = [(prompt_a, 1.0 - mix)]
+                if prompt_b:
+                    prompts.append((prompt_b, mix))
                 try:
-                    engine.set_prompt(cmd["prompt"])
+                    engine.set_style(prompts, bpm=bpm)
                 except Exception:
                     # The deck must survive a bad prompt; the controller
                     # validates shape, but embedding can still fail.
-                    logger.exception("deck %s: set_prompt failed", deck_id)
+                    logger.exception("deck %s: set_style failed", deck_id)
                     out_queue.put(
                         (
                             "status",
                             {
                                 "event": "error",
-                                "error": "set_prompt failed; prompt unchanged",
+                                "error": "set_style failed; style unchanged",
                             },
                         )
                     )
                 else:
-                    prompt = cmd["prompt"]
+                    style = {
+                        "prompt_a": prompt_a,
+                        "prompt_b": prompt_b,
+                        "mix": mix,
+                        "bpm": bpm,
+                    }
                     out_queue.put(
                         (
                             "status",
                             {
-                                "event": "prompt_applied",
-                                "prompt": prompt,
+                                "event": "style_applied",
+                                **style,
                                 "effective_from_chunk": chunk_index,
                                 "embed_seconds": round(time.monotonic() - started, 3),
                             },
@@ -122,7 +134,7 @@ def run_deck_worker(
                     "event": "chunk",
                     "index": chunk_index,
                     "rtf": round(1.0 / elapsed, 2) if elapsed > 0 else None,
-                    "prompt": prompt,
+                    "style": style,
                 },
             )
         )

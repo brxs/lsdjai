@@ -150,6 +150,35 @@ def validate_command(parsed: object) -> tuple[dict | None, str | None]:
         if isinstance(prompt, str) and prompt.strip():
             return {"type": "set_prompt", "prompt": prompt}, None
         return None, "set_prompt requires a non-empty string 'prompt'"
+    if kind == "set_style":
+        prompt_a = parsed.get("prompt_a")
+        if not (isinstance(prompt_a, str) and prompt_a.strip()):
+            return None, "set_style requires a non-empty string 'prompt_a'"
+        prompt_b = parsed.get("prompt_b")
+        if prompt_b is not None and not (
+            isinstance(prompt_b, str) and prompt_b.strip()
+        ):
+            return None, "set_style 'prompt_b' must be a non-empty string when given"
+        mix = parsed.get("mix", 0.0)
+        if (
+            isinstance(mix, bool)
+            or not isinstance(mix, (int, float))
+            or not 0 <= mix <= 1
+        ):
+            return None, "set_style 'mix' must be a number in [0, 1]"
+        bpm = parsed.get("bpm")
+        if bpm is not None and (
+            isinstance(bpm, bool) or not isinstance(bpm, int) or not 40 <= bpm <= 240
+        ):
+            return None, "set_style 'bpm' must be an integer in [40, 240]"
+        return {
+            "type": "set_style",
+            "prompt_a": prompt_a,
+            "prompt_b": prompt_b,
+            # Without a second prompt there is nothing to morph toward.
+            "mix": float(mix) if prompt_b else 0.0,
+            "bpm": bpm,
+        }, None
     if kind == "set_model":
         model = parsed.get("model")
         if model in engine.KNOWN_MODELS:

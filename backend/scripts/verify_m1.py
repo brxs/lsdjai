@@ -62,9 +62,9 @@ async def main(duration: float) -> None:
                 event = json.loads(message)
                 if event.get("event") == "chunk":
                     chunk_events.append(event)
-                elif event.get("event") == "prompt_applied":
+                elif event.get("event") == "style_applied":
                     prompt_applied.append(event)
-                    print("prompt_applied:", event)
+                    print("style_applied:", event)
 
             if playback_started_at is not None:
                 played = (now - playback_started_at) + PREBUFFER_SECONDS
@@ -88,7 +88,7 @@ async def main(duration: float) -> None:
     print(f"min buffer level:     {min_buffer:.2f}s")
     if rtfs:
         print(f"worker RTF min/avg:   {min(rtfs):.2f}x / {sum(rtfs) / len(rtfs):.2f}x")
-    second_prompt = [e for e in prompt_applied if e["prompt"] == PROMPT_B]
+    second_prompt = [e for e in prompt_applied if e["prompt_a"] == PROMPT_B]
     boundary = second_prompt[0]["effective_from_chunk"] if second_prompt else None
     print(
         f"prompt switch:        acknowledged={bool(second_prompt)}, effective_from_chunk={boundary}"
