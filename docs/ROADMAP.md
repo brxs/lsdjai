@@ -202,6 +202,15 @@ table.
 
 ## M8 — UI overhaul: from web page to instrument
 
+**Status: ✅ done (2026-06-10).** Booth topology shipped — deck columns
+flanking a centre mixer strip (EQ knob columns, LED channel meters,
+vertical faders, crossfader, master/record) with live per-deck waveform
+strips, tokens v2, and the full component kit (Knob, VerticalFader,
+LevelMeter, TransportButton, Panel). All five e2e suites pass unchanged
+in behaviour on the new surface; component CSS is token-only. Before /
+after: [`docs/img/ui-before-m8.png`](img/ui-before-m8.png) →
+[`docs/img/ui-after-m8.png`](img/ui-after-m8.png).
+
 **Goal:** the app reads as DJ software — booth topology, hardware-style
 controls, living signal displays — while behavior, hooks, and the audio
 graph stay untouched (purely presentational; no ADR needed, ADR-0003's
