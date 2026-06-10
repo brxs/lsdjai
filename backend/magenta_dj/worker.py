@@ -71,15 +71,16 @@ def run_deck_worker(
                 playing = False
             elif kind in ("set_prompt", "set_style"):
                 started = time.monotonic()
-                prompt_a = cmd.get("prompt_a") or cmd.get("prompt")
-                prompt_b = cmd.get("prompt_b")
-                mix = float(cmd.get("mix", 0.0))
+                if kind == "set_prompt":
+                    entries = [{"text": cmd["prompt"], "weight": 1.0}]
+                else:
+                    entries = cmd["prompts"]
                 bpm = cmd.get("bpm")
-                prompts = [(prompt_a, 1.0 - mix)]
-                if prompt_b:
-                    prompts.append((prompt_b, mix))
                 try:
-                    engine.set_style(prompts, bpm=bpm)
+                    engine.set_style(
+                        [(entry["text"], entry["weight"]) for entry in entries],
+                        bpm=bpm,
+                    )
                 except Exception:
                     # The deck must survive a bad prompt; the controller
                     # validates shape, but embedding can still fail.
@@ -94,12 +95,7 @@ def run_deck_worker(
                         )
                     )
                 else:
-                    style = {
-                        "prompt_a": prompt_a,
-                        "prompt_b": prompt_b,
-                        "mix": mix,
-                        "bpm": bpm,
-                    }
+                    style = {"prompts": entries, "bpm": bpm}
                     out_queue.put(
                         (
                             "status",

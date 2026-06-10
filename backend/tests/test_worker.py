@@ -82,24 +82,26 @@ def test_play_emits_audio(deck):
 def test_set_prompt_applies_as_single_prompt_style(deck):
     deck.send(type="set_prompt", prompt="warm disco funk")
     applied = deck.next_event("style_applied")
-    assert applied["prompt_a"] == "warm disco funk"
-    assert applied["prompt_b"] is None
+    assert applied["prompts"] == [{"text": "warm disco funk", "weight": 1.0}]
     assert deck.engine.styles[-1] == ([("warm disco funk", 1.0)], None)
 
 
-def test_set_style_blends_two_prompts_with_bpm(deck):
-    deck.send(
-        type="set_style",
-        prompt_a="warm disco funk",
-        prompt_b="dark minimal techno",
-        mix=0.25,
-        bpm=124,
-    )
+def test_set_style_blends_many_prompts_with_bpm(deck):
+    prompts = [
+        {"text": "warm disco funk", "weight": 0.5},
+        {"text": "dark minimal techno", "weight": 0.3},
+        {"text": "dub reggae", "weight": 0.2},
+    ]
+    deck.send(type="set_style", prompts=prompts, bpm=124)
     applied = deck.next_event("style_applied")
-    assert applied["mix"] == 0.25
+    assert applied["prompts"] == prompts
     assert applied["bpm"] == 124
-    prompts, bpm = deck.engine.styles[-1]
-    assert prompts == [("warm disco funk", 0.75), ("dark minimal techno", 0.25)]
+    blended, bpm = deck.engine.styles[-1]
+    assert blended == [
+        ("warm disco funk", 0.5),
+        ("dark minimal techno", 0.3),
+        ("dub reggae", 0.2),
+    ]
     assert bpm == 124
 
 
@@ -111,7 +113,7 @@ def test_set_style_failure_keeps_worker_alive(deck):
     # The deck must still take commands and play afterwards.
     deck.engine.fail_set_style = False
     deck.send(type="set_prompt", prompt="recovered")
-    assert deck.next_event("style_applied")["prompt_a"] == "recovered"
+    assert deck.next_event("style_applied")["prompts"][0]["text"] == "recovered"
     deck.send(type="play")
     assert deck.next_event("audio") == FAKE_PCM
 

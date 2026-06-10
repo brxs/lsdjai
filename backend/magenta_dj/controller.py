@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import multiprocessing as mp
 import os
 import pathlib
@@ -33,6 +34,9 @@ PUMP_POLL_SECONDS = 0.2
 
 DECK_IDS = ("a", "b")
 DEFAULT_MODEL = "mrt2_small"
+# Each distinct prompt costs one MusicCoCa embed in the worker (cached, but
+# the cache is finite — see engine.EMBED_CACHE_SIZE).
+MAX_STYLE_PROMPTS = 8
 
 # Rough whole-process footprints (model + MusicCoCa + MLX runtime), used only
 # for the UI's "this combination looks tight" warning — not enforcement.
@@ -151,34 +155,31 @@ def validate_command(parsed: object) -> tuple[dict | None, str | None]:
             return {"type": "set_prompt", "prompt": prompt}, None
         return None, "set_prompt requires a non-empty string 'prompt'"
     if kind == "set_style":
-        prompt_a = parsed.get("prompt_a")
-        if not (isinstance(prompt_a, str) and prompt_a.strip()):
-            return None, "set_style requires a non-empty string 'prompt_a'"
-        prompt_b = parsed.get("prompt_b")
-        if prompt_b is not None and not (
-            isinstance(prompt_b, str) and prompt_b.strip()
-        ):
-            return None, "set_style 'prompt_b' must be a non-empty string when given"
-        mix = parsed.get("mix", 0.0)
-        if (
-            isinstance(mix, bool)
-            or not isinstance(mix, (int, float))
-            or not 0 <= mix <= 1
-        ):
-            return None, "set_style 'mix' must be a number in [0, 1]"
+        prompts = parsed.get("prompts")
+        if not isinstance(prompts, list) or not 1 <= len(prompts) <= MAX_STYLE_PROMPTS:
+            return None, f"set_style requires 1..{MAX_STYLE_PROMPTS} 'prompts'"
+        clean_prompts = []
+        for entry in prompts:
+            text = entry.get("text") if isinstance(entry, dict) else None
+            weight = entry.get("weight", 1.0) if isinstance(entry, dict) else None
+            if not (isinstance(text, str) and text.strip()):
+                return None, "each style prompt needs a non-empty string 'text'"
+            if (
+                isinstance(weight, bool)
+                or not isinstance(weight, (int, float))
+                or not math.isfinite(weight)
+                or weight < 0
+            ):
+                return None, "each style prompt 'weight' must be a finite number >= 0"
+            clean_prompts.append({"text": text, "weight": float(weight)})
+        if not any(entry["weight"] > 0 for entry in clean_prompts):
+            return None, "set_style needs at least one prompt with weight > 0"
         bpm = parsed.get("bpm")
         if bpm is not None and (
             isinstance(bpm, bool) or not isinstance(bpm, int) or not 40 <= bpm <= 240
         ):
             return None, "set_style 'bpm' must be an integer in [40, 240]"
-        return {
-            "type": "set_style",
-            "prompt_a": prompt_a,
-            "prompt_b": prompt_b,
-            # Without a second prompt there is nothing to morph toward.
-            "mix": float(mix) if prompt_b else 0.0,
-            "bpm": bpm,
-        }, None
+        return {"type": "set_style", "prompts": clean_prompts, "bpm": bpm}, None
     if kind == "set_model":
         model = parsed.get("model")
         if model in engine.KNOWN_MODELS:
