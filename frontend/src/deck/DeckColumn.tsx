@@ -455,10 +455,19 @@ export function DeckColumn({
           </Button>
         </div>
 
+        <XYPad
+          label={t('deck.style.pad')}
+          targets={padTargets}
+          cursor={cursor}
+          disabled={!operable || targets.length === 0}
+          onChange={handleCursor}
+          onTargetMove={handleTargetMove}
+        />
+
         {targets.length > 0 && (
           <ul className="deck__targets">
             {targets.map((target) => (
-              <li key={target.text} className="deck__target-chip">
+              <li key={target.text} className="deck__target-row">
                 {editing?.text === target.text ? (
                   <input
                     className="deck__target-edit"
@@ -476,8 +485,9 @@ export function DeckColumn({
                   />
                 ) : (
                   <>
+                    <span className="deck__target-text">{target.text}</span>
                     <button
-                      className="deck__target-text"
+                      className="deck__target-action"
                       onClick={() =>
                         setEditing({ text: target.text, draft: target.text })
                       }
@@ -488,10 +498,10 @@ export function DeckColumn({
                         prompt: target.text,
                       })}
                     >
-                      {target.text}
+                      ✎
                     </button>
                     <button
-                      className="deck__target-remove"
+                      className="deck__target-action"
                       onClick={() => removeTarget(target.text)}
                       disabled={!operable}
                       aria-label={t('deck.style.removeTarget', {
@@ -506,15 +516,6 @@ export function DeckColumn({
             ))}
           </ul>
         )}
-
-        <XYPad
-          label={t('deck.style.pad')}
-          targets={padTargets}
-          cursor={cursor}
-          disabled={!operable || targets.length === 0}
-          onChange={handleCursor}
-          onTargetMove={handleTargetMove}
-        />
         <p className="deck__active-prompt">{activeSummary}</p>
         {sampleError && (
           <p className="deck__error" role="alert">
