@@ -152,6 +152,11 @@
   color: var(--color-text);
 }
 
+.deck__target-edit:focus {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
 .deck__active-prompt {
   font: 500 var(--text-xs) var(--font-mono);
   min-height: 1.2em;

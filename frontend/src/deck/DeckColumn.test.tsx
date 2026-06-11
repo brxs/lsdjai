@@ -198,6 +198,116 @@ describe('DeckColumn', () => {
     expect(onSetStyle).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ['an emptied draft', '   '],
+    ['an unchanged draft', 'funk'],
+  ])('%s cancels quietly without a send', (_label, replacement) => {
+    const onSetStyle = vi.fn()
+    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
+    addTarget('funk')
+    onSetStyle.mockClear()
+
+    editTarget('funk', replacement)
+    expect(screen.getByRole('button', { name: 'Remove funk' })).toBeInTheDocument()
+    expect(onSetStyle).not.toHaveBeenCalled()
+  })
+
+  it('returns focus to the row after a keyboard commit or cancel', () => {
+    renderPanel({ connection: 'open' })
+    addTarget('fnuk')
+
+    editTarget('fnuk', 'funk') // Enter
+    expect(screen.getByRole('button', { name: 'Edit funk' })).toHaveFocus()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit funk' }))
+    const field = screen.getByRole('textbox', { name: 'Edit funk' })
+    fireEvent.keyDown(field, { key: 'Escape' })
+    expect(screen.getByRole('button', { name: 'Edit funk' })).toHaveFocus()
+  })
+
+  it('an edit open when the deck becomes inoperable cancels instead of committing', () => {
+    const onSetStyle = vi.fn()
+    const bus = createControlBus()
+    const view = renderPanel(
+      { connection: 'open' },
+      { onSetStyle: onSetStyle as () => void },
+      bus,
+    )
+    addTarget('funk')
+    onSetStyle.mockClear()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit funk' }))
+    const field = screen.getByRole('textbox', { name: 'Edit funk' })
+    fireEvent.change(field, { target: { value: 'techno' } })
+    // The model switch starts while the edit is open.
+    view.rerender(
+      <ControlBusProvider bus={bus}>
+        <DeckColumn
+          deckId="a"
+          state={{ ...initialDeckState, connection: 'open', switchingModel: true }}
+          getWaveformRange={() => [0, 0]}
+          onPlay={noop}
+          onStop={noop}
+          onSetStyle={onSetStyle as (s: object) => void}
+          onSetModel={noop as (m: string) => void}
+          onRestart={noop}
+          fx={{ kind: null, amount: 0 }}
+          onSetFx={noop as (k: unknown) => void}
+          onSetFxAmount={noop as (v: number) => void}
+          loop={{ filled: [false, false, false, false], active: null, seconds: 4 }}
+          onLoopPad={noop as (slot: number) => void}
+          onClearLoopPad={noop as (slot: number) => void}
+          onSetLoopSeconds={noop as (seconds: number) => void}
+          bpm={null}
+          onSampleOtherDeck={async () => null}
+          canSample
+          onSavePreset={noop as (preset: object) => void}
+        />
+      </ControlBusProvider>,
+    )
+    fireEvent.keyDown(
+      screen.getByRole('textbox', { name: 'Edit funk' }),
+      { key: 'Enter' },
+    )
+    expect(
+      screen.getByRole('button', { name: 'Remove funk' }),
+    ).toBeInTheDocument()
+    expect(onSetStyle).not.toHaveBeenCalled()
+    expect(
+      (loadDeckSettings('a').targets ?? []).map((target) => target.text),
+    ).toEqual(['funk'])
+  })
+
+  it('a preset load closes an open edit instead of leaving a stale draft', () => {
+    const bus = createControlBus()
+    renderPanel({ connection: 'open' }, {}, bus)
+    addTarget('funk')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit funk' }))
+    expect(screen.getByRole('textbox', { name: 'Edit funk' })).toBeInTheDocument()
+
+    act(() =>
+      bus.publish({
+        kind: 'preset_load',
+        deck: 'a',
+        preset: {
+          name: 'Other',
+          targets: [{ text: 'dub', x: 0.5, y: 0.5 }],
+          cursor: { x: 0.5, y: 0.5 },
+          fx: { kind: null, amount: 0 },
+        },
+      }),
+    )
+    expect(
+      screen.queryByRole('textbox', { name: 'Edit funk' }),
+    ).not.toBeInTheDocument()
+    // Re-adding the same text must render a plain row, not a
+    // pre-opened editor with the stale draft.
+    addTarget('funk')
+    expect(
+      screen.queryByRole('textbox', { name: 'Edit funk' }),
+    ).not.toBeInTheDocument()
+  })
+
   it('blurring the edit field commits like Enter', () => {
     const onSetStyle = vi.fn()
     renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
@@ -234,7 +344,14 @@ describe('DeckColumn', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: 'Sample deck B' }))
     await screen.findByRole('button', { name: 'Remove ⏺ B·1' })
-    expect(screen.getByRole('button', { name: 'Edit ⏺ B·1' })).toBeDisabled()
+    // aria-disabled, not disabled: the button stays focusable so a
+    // screen reader hears WHY instead of skipping the control.
+    const edit = screen.getByRole('button', { name: 'Edit ⏺ B·1' })
+    expect(edit).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.click(edit)
+    expect(
+      screen.queryByRole('textbox', { name: 'Edit ⏺ B·1' }),
+    ).not.toBeInTheDocument()
   })
 
   it('keeps the pad locked until there are two targets to blend', () => {

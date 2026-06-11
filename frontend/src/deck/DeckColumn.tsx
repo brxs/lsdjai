@@ -139,10 +139,21 @@ export function DeckColumn({
     () => loadDeckSettings(deckId).cursor ?? { x: 0.5, y: 0.5 },
   )
   const [targetDraft, setTargetDraft] = useState('')
-  // In-place prompt editing: which chip is open and its draft text.
+  // In-place prompt editing: which row is open and its draft text.
   const [editing, setEditing] = useState<{ text: string; draft: string } | null>(
     null,
   )
+  // After a keyboard-driven commit/cancel, focus returns to this
+  // row's ✎ (the input unmounts, which would otherwise drop focus to
+  // the body). A ref, not state: the commit/cancel itself re-renders
+  // via setEditing, and focusing is imperative — no render to drive.
+  const focusAfterEditRef = useRef<string | null>(null)
+  const editButtons = useRef(new Map<string, HTMLButtonElement>())
+  useEffect(() => {
+    if (focusAfterEditRef.current === null) return
+    editButtons.current.get(focusAfterEditRef.current)?.focus()
+    focusAfterEditRef.current = null
+  })
   const [presetDraft, setPresetDraft] = useState('')
   const [throttle] = useState(() => createSendThrottle(STYLE_SEND_INTERVAL_MS))
 
@@ -210,6 +221,14 @@ export function DeckColumn({
   const workerGone = state.workerDied || state.switchingModel
   if (workerGone && targets.some((target) => target.sample)) {
     setTargets(targets.filter((target) => !target.sample))
+  }
+
+  // An open edit whose target vanished (preset load, removal, the
+  // strip above) must not linger — its input unmounts without a blur,
+  // and a later same-named target would render pre-opened with the
+  // stale draft. Same render-time pattern as the strip above.
+  if (editing && !targets.some((target) => target.text === editing.text)) {
+    setEditing(null)
   }
 
   useEffect(() => {
@@ -295,18 +314,34 @@ export function DeckColumn({
   // weight, only the prompt changes — re-embedded like typing it. A
   // rename that collides with another chip (or empties) cancels, the
   // same quiet rule the Add button applies to duplicates.
-  function commitEdit() {
+  /** Commit an open edit. `restoreFocus` is set for keyboard outcomes
+   * (Enter/Escape) so focus returns to the row's ✎ instead of falling
+   * to <body>; a blur-commit means the user already clicked elsewhere,
+   * and yanking focus back would fight them. */
+  function commitEdit(restoreFocus = false) {
     if (!editing) return
     const text = editing.draft.trim()
     const original = editing.text
     setEditing(null)
-    if (!text || text === original) return
-    if (targets.some((target) => target.text === text)) return
+    // The deck may have become untouchable mid-edit (disconnect, model
+    // switch); every other mutation path is gated by a disabled
+    // control, so the open input cancels rather than committing.
+    if (!operable) return
+    const renamed = text && text !== original && !targets.some((target) => target.text === text)
+    const finalText = renamed ? text : original
+    if (restoreFocus) focusAfterEditRef.current = finalText
+    if (!renamed) return
     const next = targets.map((target) =>
       target.text === original ? { ...target, text } : target,
     )
     setTargets(next)
     sendStyle(next, cursor)
+  }
+
+  function cancelEdit() {
+    if (!editing) return
+    focusAfterEditRef.current = editing.text
+    setEditing(null)
   }
 
   function removeTarget(text: string) {
@@ -478,22 +513,31 @@ export function DeckColumn({
                       setEditing({ text: target.text, draft: event.target.value })
                     }
                     onKeyDown={(event) => {
-                      if (event.key === 'Enter') commitEdit()
-                      if (event.key === 'Escape') setEditing(null)
+                      if (event.key === 'Enter') commitEdit(true)
+                      if (event.key === 'Escape') cancelEdit()
                     }}
-                    onBlur={commitEdit}
+                    onBlur={() => commitEdit()}
                   />
                 ) : (
                   <>
                     <span className="deck__target-text">{target.text}</span>
                     <button
+                      ref={(element) => {
+                        if (element) editButtons.current.set(target.text, element)
+                        else editButtons.current.delete(target.text)
+                      }}
                       className="deck__target-action"
-                      onClick={() =>
+                      onClick={() => {
+                        // Sampled chips (M15) have no text to edit —
+                        // their label names a captured moment, not a
+                        // prompt. aria-disabled (not disabled) keeps
+                        // the button focusable so that reasoning is
+                        // announced rather than skipped.
+                        if (target.sample) return
                         setEditing({ text: target.text, draft: target.text })
-                      }
-                      // Sampled chips (M15) have no text to edit — their
-                      // label names a captured moment, not a prompt.
-                      disabled={!operable || Boolean(target.sample)}
+                      }}
+                      disabled={!operable}
+                      aria-disabled={!operable || Boolean(target.sample)}
                       aria-label={t('deck.style.editTarget', {
                         prompt: target.text,
                       })}
