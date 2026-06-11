@@ -111,11 +111,14 @@ try {
   await channelA.getByLabel('Volume').fill('0.8')
   await channelA.getByRole('button', { name: 'Auto' }).click()
 
-  await startDeck(deckB, 'soft ambient piano, sparse, quiet and gentle')
+  // A steady quiet texture, deliberately: sparse material (e.g. solo
+  // piano) swings loudness phrase-to-phrase faster than the slow
+  // tracker follows, which tests the source's variance, not the trim.
+  await startDeck(deckB, 'quiet mellow chillout, soft warm pads, smooth')
   await channelB.getByLabel('Volume').fill('0.8')
   await channelB.getByRole('button', { name: 'Auto' }).click()
   // Let the slow loudness trackers converge on both sources.
-  await page.waitForTimeout(20_000)
+  await page.waitForTimeout(25_000)
 
   const trimA = Number(await channelA.getByLabel('Trim').inputValue())
   const trimB = Number(await channelB.getByLabel('Trim').inputValue())
@@ -124,16 +127,20 @@ try {
   )
 
   await page.getByLabel('Crossfade').fill('0')
-  const rmsA = wavRms(await recordWav(8))
+  const rmsA = wavRms(await recordWav(10))
   await page.getByLabel('Crossfade').fill('1')
   await page.waitForTimeout(1_000)
-  const rmsB = wavRms(await recordWav(8))
+  const rmsB = wavRms(await recordWav(10))
   const deltaDb = Math.abs(db(rmsA / rmsB))
   console.log(
     `matched-fader loudness: deck a=${db(rmsA).toFixed(1)}dBFS deck b=${db(rmsB).toFixed(1)}dBFS delta=${deltaDb.toFixed(2)}dB`,
   )
 
   // ── Part 3: trims persist ──────────────────────────────────────────
+  // Read the trims at the instant of reload: the auto tick keeps
+  // gliding while decks play, so the earlier readings may be stale.
+  const beforeReloadA = Number(await channelA.getByLabel('Trim').inputValue())
+  const beforeReloadB = Number(await channelB.getByLabel('Trim').inputValue())
   await page.reload()
   await deckA.getByText('Connected', { exact: true }).waitFor({ timeout: 10_000 })
   const restoredA = Number(await channelA.getByLabel('Trim').inputValue())
@@ -159,7 +166,10 @@ try {
   if (!(trimB > trimA)) {
     throw new Error('the quiet deck did not receive the higher trim')
   }
-  if (Math.abs(restoredA - trimA) > 0.05 || Math.abs(restoredB - trimB) > 0.05) {
+  if (
+    Math.abs(restoredA - beforeReloadA) > 0.01 ||
+    Math.abs(restoredB - beforeReloadB) > 0.01
+  ) {
     throw new Error('trims did not survive the reload')
   }
 
