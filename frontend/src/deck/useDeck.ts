@@ -126,7 +126,7 @@ export function useDeck(deckId: DeckId): DeckControls {
     gate: createBeatGate(),
   }))
   const [loudness] = useState(() => createLoudnessTracker(SAMPLE_RATE))
-  const resetBeat = useCallback(() => {
+  const resetStreamMeasurements = useCallback(() => {
     beat.tracker.reset()
     beat.gate.reset()
     loudness.reset()
@@ -221,7 +221,7 @@ export function useDeck(deckId: DeckId): DeckControls {
             // a crashed deck goes silent rather than draining its tail under
             // the crash banner. The beat tracker forgets it too.
             channelRef.current?.reset()
-            resetBeat()
+            resetStreamMeasurements()
           }
           dispatch({ type: 'server_event', event: parsed })
         }
@@ -242,7 +242,7 @@ export function useDeck(deckId: DeckId): DeckControls {
       channelRef.current = null
       channelPromiseRef.current = null
     }
-  }, [deckId, beat, loudness, resetBeat])
+  }, [deckId, beat, loudness, resetStreamMeasurements])
 
   // One estimate per second through the honesty gate (M14); the state
   // setter is a no-op re-render-wise while the gated value holds. The
@@ -288,7 +288,7 @@ export function useDeck(deckId: DeckId): DeckControls {
       // first thing heard is the new stream, not stale chunks. The beat
       // tracker starts over with the stream.
       channel.reset()
-      resetBeat()
+      resetStreamMeasurements()
       channel.setOnAir(true)
     } catch (error) {
       dispatch({
@@ -299,7 +299,7 @@ export function useDeck(deckId: DeckId): DeckControls {
     }
     send({ type: 'play' })
     dispatch({ type: 'play_requested' })
-  }, [ensureChannel, engine, send, setPrimed, resetBeat])
+  }, [ensureChannel, engine, send, setPrimed, resetStreamMeasurements])
 
   /** Start generating off air: like play(), but muted on the master so
    * the prep is only audible over the cue tap (M10 transport CUE). */
@@ -309,7 +309,7 @@ export function useDeck(deckId: DeckId): DeckControls {
       const channel = await ensureChannel()
       await engine.resume()
       channel.reset()
-      resetBeat()
+      resetStreamMeasurements()
       channel.setOnAir(false)
     } catch (error) {
       dispatch({
@@ -321,7 +321,7 @@ export function useDeck(deckId: DeckId): DeckControls {
     setPrimed(true)
     send({ type: 'play' })
     dispatch({ type: 'play_requested' })
-  }, [ensureChannel, engine, send, setPrimed, resetBeat])
+  }, [ensureChannel, engine, send, setPrimed, resetStreamMeasurements])
 
   const stop = useCallback(() => {
     send({ type: 'stop' })
@@ -337,10 +337,10 @@ export function useDeck(deckId: DeckId): DeckControls {
     if (loopRef.current.active !== null) {
       setLoop({ ...loopRef.current, active: null })
     }
-    resetBeat()
+    resetStreamMeasurements()
     setPrimed(false)
     dispatch({ type: 'stop_requested' })
-  }, [send, setPrimed, setLoop, resetBeat])
+  }, [send, setPrimed, setLoop, resetStreamMeasurements])
 
   const setStyle = useCallback(
     (style: ActiveStyle) => {

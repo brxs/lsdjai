@@ -55,6 +55,29 @@ describe('persistence', () => {
     expect(loadDeckSettings('a').loopSeconds).toBeUndefined()
   })
 
+  it('round-trips the trim, clamps its range, and drops bad modes', () => {
+    updateDeckSettings('a', { trim: { mode: 'manual', db: -4.5 } })
+    expect(loadDeckSettings('a').trim).toEqual({ mode: 'manual', db: -4.5 })
+
+    localStorage.setItem(
+      'magenta-dj:v1',
+      JSON.stringify({ decks: { a: { trim: { mode: 'auto', db: 40 } } } }),
+    )
+    expect(loadDeckSettings('a').trim).toEqual({ mode: 'auto', db: 12 })
+
+    localStorage.setItem(
+      'magenta-dj:v1',
+      JSON.stringify({ decks: { a: { trim: { mode: 'loud', db: 0 } } } }),
+    )
+    expect(loadDeckSettings('a').trim).toBeUndefined()
+
+    localStorage.setItem(
+      'magenta-dj:v1',
+      JSON.stringify({ decks: { a: { trim: { mode: 'auto', db: 'hot' } } } }),
+    )
+    expect(loadDeckSettings('a').trim).toBeUndefined()
+  })
+
   it('round-trips and clamps deck EQ', () => {
     updateDeckSettings('a', { eq: { low: 0, mid: 0.5, high: 1 } })
     expect(loadDeckSettings('a').eq).toEqual({ low: 0, mid: 0.5, high: 1 })

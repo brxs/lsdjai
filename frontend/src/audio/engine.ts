@@ -31,6 +31,7 @@ import {
   clipGuardCurve,
   dbToGain,
   LIMITER_ATTACK_SECONDS,
+  LIMITER_MAKEUP_DB,
   LIMITER_RATIO,
   LIMITER_RELEASE_SECONDS,
   LIMITER_THRESHOLD_DB,
@@ -210,10 +211,17 @@ export function createAudioEngine(): AudioEngine {
       limiter.ratio.value = LIMITER_RATIO
       limiter.attack.value = LIMITER_ATTACK_SECONDS
       limiter.release.value = LIMITER_RELEASE_SECONDS
+      // Cancel the compressor's spec-mandated implicit makeup gain
+      // (see LIMITER_MAKEUP_DB) so the limiter is level-transparent
+      // until it works; the clip guard sees the compensated signal,
+      // keeping the ceiling guarantee intact.
+      const makeupCompensation = context.createGain()
+      makeupCompensation.gain.value = dbToGain(-LIMITER_MAKEUP_DB)
       const limited = context.createWaveShaper()
       limited.curve = clipGuardCurve()
       master.connect(limiter)
-      limiter.connect(limited)
+      limiter.connect(makeupCompensation)
+      makeupCompensation.connect(limited)
       limited.connect(context.destination)
       limiterRef = limiter
       const masterAnalyser = context.createAnalyser()
@@ -288,11 +296,11 @@ export function createAudioEngine(): AudioEngine {
         numberOfOutputs: 1,
         outputChannelCount: [2],
       })
-      // worklet → live gain → low → mid → high → volume → on-air →
-      // crossfade (M6/M10), with the cue tap branching off post-EQ,
-      // pre-fader (M9), and the freeze-pad loop source (M13) summing
-      // into the EQ next to the live gain — the loop replaces the
-      // source, so everything downstream stays live on it.
+      // worklet → live gain → trim → low → mid → high → volume →
+      // on-air → crossfade (M6/M10/M17), with the cue tap branching
+      // off post-EQ, pre-fader (M9), and the freeze-pad loop source
+      // (M13) summing into the trim next to the live gain — the loop
+      // replaces the source, so everything downstream stays live on it.
       const eqNodes = Object.fromEntries(
         EQ_BANDS.map((band) => {
           const layout = EQ_FILTERS[band]

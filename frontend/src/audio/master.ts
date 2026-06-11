@@ -24,6 +24,15 @@ export const LIMITER_RATIO = 20
 export const LIMITER_ATTACK_SECONDS = 0.002
 export const LIMITER_RELEASE_SECONDS = 0.25
 
+/** DynamicsCompressorNode applies an implicit makeup gain of
+ * (1/fullScaleGain)^0.6 (the Web Audio spec) — at these settings
+ * ~+3.4 dB on EVERYTHING, including signal that never crosses the
+ * threshold. The engine compensates with the inverse so inserting the
+ * limiter is level-transparent until it actually works, and the
+ * gain-reduction readout stays an honest account of net level change. */
+const FULL_SCALE_GAIN_DB = LIMITER_THRESHOLD_DB - LIMITER_THRESHOLD_DB / LIMITER_RATIO
+export const LIMITER_MAKEUP_DB = -0.6 * FULL_SCALE_GAIN_DB
+
 /** WaveShaper curve: linear (transparent) up to the ceiling, hard
  * ceiling beyond — residual overshoot the compressor's attack lets
  * through gets clamped, never the body of the signal. */
