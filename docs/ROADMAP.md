@@ -642,7 +642,20 @@ device against a checklist addendum.
 
 ## M17 — Master housekeeping: limiter and gain match
 
-**Status: ⬜ planned.**
+**Status: 🔶 built (2026-06-11), pending the measured e2e run.** All
+three scope items shipped: the master runs through a
+compressor-as-limiter plus a hard clip guard at a binary-exact ceiling
+(119/128 — float32 cannot round above it), with the meter, the
+recorder, and the phones' master blend all tapping post-limiter and
+the gain reduction shown in the mixer; each channel gains an
+auto-gain Trim at its chain head (pre-EQ, live stream and freeze
+loops alike) that follows a deliberately slow loudness tracker toward
+the target, holds over silence, yields to a manual move, and persists
+both mode and value; and `verify_m17.mjs` measures the exit criteria
+from the recorded WAV (peak ceiling under a deliberately hot mix —
++12 dB trim, full EQ boosts, Crush at max — and the matched-fader RMS
+delta between a loud and a quiet deck). Exit criteria await that
+script's run against a live server.
 
 **Goal:** every real mixer protects its output. Stacked EQ boosts plus
 Color FX can push the master past full scale, and decks differ in

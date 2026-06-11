@@ -61,6 +61,10 @@ cluster them), and ride the crossfader between decks.
 - **Crates** — save a deck's pad + Color FX as a named preset, browse
   the crate from the FLX4's rotary, and load onto either deck mid-set;
   export/import as JSON for backup and sharing.
+- **Master housekeeping** — a limiter on the master (the meter, the
+  recording, and the phones all hear the limited signal; its gain
+  reduction shows in the mixer) and per-channel auto-gain Trim that
+  levels decks of different loudness, with a manual override.
 - **Headphone cue** — hit a channel's **Cue**, ride the **Cue mix** knob
   between cue and master, and pick a **Phones out**: any output device the
   browser can reach, or the FLX4's own headphone jack, which is fed by the
