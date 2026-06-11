@@ -16,10 +16,18 @@ import {
 } from './control/flx4'
 import { MidiControls } from './control/MidiControls'
 import { useMidi } from './control/useMidi'
+import { CrateBrowser } from './crates/CrateBrowser'
 import { DeckColumn } from './deck/DeckColumn'
 import { useDeck } from './deck/useDeck'
 import { MixerStrip, type ChannelControls } from './mixer/MixerStrip'
-import { loadAppSettings, updateAppSettings } from './persistence'
+import {
+  deletePreset,
+  loadAppSettings,
+  loadPresets,
+  updateAppSettings,
+  upsertPresets,
+} from './persistence'
+import type { StylePreset } from './presets'
 import { combinedRamWarning } from './ramWarning'
 import { handleShortcutKey } from './shortcuts'
 
@@ -160,6 +168,19 @@ function App() {
     [sampleFromOtherDeck],
   )
 
+  // Crates (M16): the preset list is App state so the browser, the
+  // per-deck save buttons, and the hardware intents all see one truth.
+  const [presets, setPresets] = useState<StylePreset[]>(loadPresets)
+  const handleSavePreset = useCallback((preset: StylePreset) => {
+    setPresets(upsertPresets([preset]))
+  }, [])
+  const handleImportPresets = useCallback((imported: StylePreset[]) => {
+    setPresets(upsertPresets(imported))
+  }, [])
+  const handleDeletePreset = useCallback((name: string) => {
+    setPresets(deletePreset(name))
+  }, [])
+
   // Hardware intents (ADR-0005) for the state this component owns.
   // Resubscribes every render so the handler always reads current deck
   // state; the bus itself is a stable singleton.
@@ -172,6 +193,19 @@ function App() {
         { onCrossfade: handleCrossfade, onCueMix: handleCueMix },
       ),
     ),
+  )
+
+  // Loading a preset: this component owns the FX half (via the deck
+  // controls); the pad half rides the bus to the owning DeckColumn,
+  // which applies targets + cursor and sends the style.
+  const handleLoadPreset = useCallback(
+    (deck: DeckId, preset: StylePreset) => {
+      const controls = deck === 'a' ? deckA : deckB
+      controls.setFx(preset.fx.kind)
+      controls.setFxAmount(preset.fx.amount)
+      bus.publish({ kind: 'preset_load', deck, preset })
+    },
+    [deckA, deckB, bus],
   )
 
   const midi = useMidi()
@@ -307,16 +341,25 @@ function App() {
           bpm={deckA.bpm}
           onSampleOtherDeck={handleSampleForA}
           canSample={deckB.state.playing}
+          onSavePreset={handleSavePreset}
         />
-        <MixerStrip
-          channels={channels}
-          crossfade={crossfade}
-          onCrossfadeChange={handleCrossfade}
-          cueMix={cueMix}
-          onCueMixChange={handleCueMix}
-          cueDevice={cueDevice}
-          onCueDeviceChange={handleCueDevice}
-        />
+        <div className="app__center">
+          <MixerStrip
+            channels={channels}
+            crossfade={crossfade}
+            onCrossfadeChange={handleCrossfade}
+            cueMix={cueMix}
+            onCueMixChange={handleCueMix}
+            cueDevice={cueDevice}
+            onCueDeviceChange={handleCueDevice}
+          />
+          <CrateBrowser
+            presets={presets}
+            onLoad={handleLoadPreset}
+            onDelete={handleDeletePreset}
+            onImport={handleImportPresets}
+          />
+        </div>
         <DeckColumn
           deckId="b"
           state={deckB.state}
@@ -338,6 +381,7 @@ function App() {
           bpm={deckB.bpm}
           onSampleOtherDeck={handleSampleForB}
           canSample={deckA.state.playing}
+          onSavePreset={handleSavePreset}
         />
       </div>
     </main>

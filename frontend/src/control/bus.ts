@@ -4,6 +4,7 @@
 
 import type { EqBand } from '../audio/eq'
 import type { DeckId } from '../audio/engine'
+import type { StylePreset } from '../presets'
 
 export type ControlIntent =
   | { kind: 'play_toggle'; deck: DeckId }
@@ -20,6 +21,12 @@ export type ControlIntent =
   | { kind: 'fx_select'; deck: DeckId; index: number }
   | { kind: 'loop_pad'; deck: DeckId; index: number }
   | { kind: 'loop_clear'; deck: DeckId; index: number }
+  // Crates (M16): browse-rotary highlight moves and LOAD presses are
+  // handled by the crate browser; a chosen preset's pad portion rides
+  // the bus to the owning deck column.
+  | { kind: 'crate_scroll'; direction: 1 | -1 }
+  | { kind: 'crate_load'; deck: DeckId }
+  | { kind: 'preset_load'; deck: DeckId; preset: StylePreset }
 
 export type ControlBus = {
   publish: (intent: ControlIntent) => void

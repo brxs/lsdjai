@@ -18,6 +18,16 @@
       "empty": "monitoring…"
     }
   },
+  "crates": {
+    "title": "Crates",
+    "empty": "No presets yet — save a deck's style below its pad",
+    "highlight": "Select preset {{name}}",
+    "loadTo": "Load {{name}} to deck {{deck}}",
+    "delete": "Remove preset {{name}}",
+    "export": "Export",
+    "import": "Import",
+    "importFailed": "Import failed: {{message}}"
+  },
   "mixer": {
     "title": "Mixer",
     "channel": "Channel {{id}}",
@@ -59,6 +69,8 @@
       "sampleLabel": "⏺ {{deck}}·{{n}}",
       "sampleFailed": "Sampling failed: {{message}}",
       "sampleTooSoon": "the other deck hasn't played enough yet",
+      "presetName": "Preset name",
+      "savePreset": "Save preset",
       "active": "Playing: {{summary}}",
       "blendItem": "{{percent}}% {{text}}",
       "blendSeparator": " · "

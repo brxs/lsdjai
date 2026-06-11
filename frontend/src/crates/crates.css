@@ -1,0 +1,74 @@
+.crates {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.crates__title {
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-silkscreen);
+  margin: 0;
+}
+
+.crates__empty {
+  font: 500 var(--text-xs) var(--font-ui);
+  color: var(--color-text-muted);
+  margin: 0;
+}
+
+.crates__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 14rem;
+  overflow-y: auto;
+}
+
+.crates__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border-radius: var(--radius-s);
+}
+
+.crates__item--highlighted {
+  background: var(--color-surface-raised);
+  box-shadow: var(--inset-border);
+}
+
+.crates__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font: 500 var(--text-s) var(--font-ui);
+  color: var(--color-text);
+  background: none;
+  border: none;
+  padding: var(--space-1);
+  cursor: pointer;
+}
+
+.crates__io {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.crates__file {
+  display: none;
+}
+
+.crates__error {
+  font: 500 var(--text-xs) var(--font-ui);
+  color: var(--color-led-danger);
+  margin: 0;
+}

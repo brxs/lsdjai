@@ -68,6 +68,13 @@ body {
   overflow: auto;
 }
 
+.app__center {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
 @media (max-width: 64rem) {
   .app {
     height: auto;

@@ -17,6 +17,7 @@ import { WaveformStrip } from '../ui/WaveformStrip'
 import { XYPad } from '../ui/XYPad'
 import { isDeckOperable, type ActiveStyle, type DeckState } from './deckState'
 import { padWeights, spawnPosition, sweepPosition, type PadPoint } from './padWeights'
+import { MAX_PRESET_NAME_LENGTH, type StylePreset } from '../presets'
 import type { LoopState } from './useDeck'
 import { loadDeckSettings, updateDeckSettings } from '../persistence'
 import './deck.css'
@@ -90,6 +91,8 @@ type DeckColumnProps = {
   onSampleOtherDeck: () => Promise<{ label: string; sample: string } | null>
   /** Whether the other deck is currently producing something to sample. */
   canSample: boolean
+  /** Crates (M16): save this deck's pad + FX as a named preset. */
+  onSavePreset: (preset: StylePreset) => void
 }
 
 export function DeckColumn({
@@ -113,6 +116,7 @@ export function DeckColumn({
   bpm,
   onSampleOtherDeck,
   canSample,
+  onSavePreset,
 }: DeckColumnProps) {
   const { t } = useTranslation()
   const [targets, setTargets] = useState<
@@ -131,6 +135,7 @@ export function DeckColumn({
     () => loadDeckSettings(deckId).cursor ?? { x: 0.5, y: 0.5 },
   )
   const [targetDraft, setTargetDraft] = useState('')
+  const [presetDraft, setPresetDraft] = useState('')
   const [throttle] = useState(() => createSendThrottle(STYLE_SEND_INTERVAL_MS))
 
   const connected = state.connection === 'open'
@@ -238,6 +243,16 @@ export function DeckColumn({
     sendStyle(next, cursor)
   }
 
+  function savePreset() {
+    const name = presetDraft.trim().slice(0, MAX_PRESET_NAME_LENGTH)
+    const textTargets = targets
+      .filter((target) => !target.sample)
+      .map(({ text, x, y }) => ({ text, x, y }))
+    if (!name || textTargets.length === 0) return
+    onSavePreset({ name, targets: textTargets, cursor, fx })
+    setPresetDraft('')
+  }
+
   // One action (M15): capture the other deck, register the embedding,
   // land it on the pad as a blendable target. The upload resolves once
   // the embed command is queued ahead of any style send (FIFO).
@@ -280,6 +295,16 @@ export function DeckColumn({
     sendStyleThrottled(targets, next)
   }
 
+  // Loading a preset (M16) replaces the pad wholesale: targets,
+  // cursor, and an immediate style send — exactly like typing the
+  // prompts (cached embeddings make repeats cheap). Sampled chips are
+  // gone by construction: presets never contain them.
+  function applyPreset(preset: StylePreset) {
+    setTargets(preset.targets)
+    setCursor(preset.cursor)
+    sendStyle(preset.targets, preset.cursor)
+  }
+
   // Hardware style intents (ADR-0005) mirror the pointer paths and the
   // pad's gating: HOT CUE pad N snaps the cursor onto target N (immediate
   // send, like add/remove), the CFX knob sweeps the cursor with the same
@@ -287,6 +312,10 @@ export function DeckColumn({
   const bus = useControlBus()
   useEffect(() =>
     bus.subscribe((intent) => {
+      if (intent.kind === 'preset_load' && intent.deck === deckId) {
+        applyPreset(intent.preset)
+        return
+      }
       if (!operable || targets.length === 0) return
       if (intent.kind === 'style_target' && intent.deck === deckId) {
         const target = targets[intent.index]
@@ -431,6 +460,27 @@ export function DeckColumn({
             {t('deck.style.sampleFailed', { message: sampleError })}
           </p>
         )}
+
+        {/* Crates (M16): the pad's text targets + FX become a named
+            preset; sampled chips are excluded (session-only, M15). */}
+        <div className="deck__preset-row">
+          <TextField
+            label={t('deck.style.presetName')}
+            value={presetDraft}
+            onChange={(event) => setPresetDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') savePreset()
+            }}
+          />
+          <Button
+            onClick={savePreset}
+            disabled={
+              !presetDraft.trim() || targets.every((target) => target.sample)
+            }
+          >
+            {t('deck.style.savePreset')}
+          </Button>
+        </div>
       </Panel>
 
       <div className="deck__fx" role="group" aria-label={t('deck.fx.title')}>

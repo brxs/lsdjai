@@ -56,6 +56,9 @@ function renderPanel(
           } | null>) ?? (async () => null)
         }
         canSample={canSample}
+        onSavePreset={
+          (handlers.onSavePreset as (preset: object) => void) ?? noop
+        }
       />
     </ControlBusProvider>,
   )
@@ -507,6 +510,7 @@ describe('DeckColumn', () => {
             bpm={null}
             onSampleOtherDeck={onSampleOtherDeck}
             canSample
+            onSavePreset={noop as (preset: object) => void}
           />
         </ControlBusProvider>
       </StrictMode>,
@@ -606,10 +610,113 @@ describe('DeckColumn', () => {
           bpm={null}
           onSampleOtherDeck={async () => null}
           canSample
+          onSavePreset={noop as (preset: object) => void}
         />
       </ControlBusProvider>,
     )
     expect(screen.queryByText('⏺ B·1 ✕')).not.toBeInTheDocument()
+  })
+
+  it('saves the pad and FX as a named preset, excluding sampled chips', async () => {
+    const onSavePreset = vi.fn()
+    const onSampleOtherDeck = vi.fn(async () => ({
+      label: '⏺ B·1',
+      sample: 'sample:b:1',
+    }))
+    renderPanel(
+      { connection: 'open' },
+      {
+        onSavePreset: onSavePreset as () => void,
+        onSampleOtherDeck: onSampleOtherDeck as unknown as () => void,
+      },
+      createControlBus(),
+      { kind: 'dub_echo', amount: 0.4 },
+    )
+    addTarget('funk')
+    fireEvent.click(screen.getByRole('button', { name: 'Sample deck B' }))
+    await screen.findByText('⏺ B·1 ✕')
+
+    fireEvent.change(screen.getByLabelText('Preset name'), {
+      target: { value: '  Warm funk  ' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save preset' }))
+    expect(onSavePreset).toHaveBeenCalledWith({
+      name: 'Warm funk',
+      targets: [{ text: 'funk', x: 0.5, y: expect.any(Number) }],
+      cursor: { x: 0.5, y: 0.5 },
+      fx: { kind: 'dub_echo', amount: 0.4 },
+    })
+    // The name clears so the next save starts fresh.
+    expect(screen.getByLabelText('Preset name')).toHaveValue('')
+  })
+
+  it('refuses to save when only sampled chips are on the pad', async () => {
+    const onSampleOtherDeck = vi.fn(async () => ({
+      label: '⏺ B·1',
+      sample: 'sample:b:1',
+    }))
+    renderPanel(
+      { connection: 'open' },
+      { onSampleOtherDeck: onSampleOtherDeck as unknown as () => void },
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Sample deck B' }))
+    await screen.findByText('⏺ B·1 ✕')
+    fireEvent.change(screen.getByLabelText('Preset name'), {
+      target: { value: 'Only samples' },
+    })
+    expect(screen.getByRole('button', { name: 'Save preset' })).toBeDisabled()
+  })
+
+  it('applies a loaded preset wholesale and sends its style', () => {
+    const onSetStyle = vi.fn()
+    const bus = createControlBus()
+    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void }, bus)
+    addTarget('old target')
+    onSetStyle.mockClear()
+
+    act(() =>
+      bus.publish({
+        kind: 'preset_load',
+        deck: 'a',
+        preset: {
+          name: 'Warm funk',
+          targets: [
+            { text: 'warm disco funk', x: 0.2, y: 0.3 },
+            { text: 'soul breaks', x: 0.8, y: 0.7 },
+          ],
+          cursor: { x: 0.2, y: 0.3 },
+          fx: { kind: null, amount: 0 },
+        },
+      }),
+    )
+    expect(screen.getByText('warm disco funk ✕')).toBeInTheDocument()
+    expect(screen.queryByText('old target ✕')).not.toBeInTheDocument()
+    const style = onSetStyle.mock.calls.at(-1)![0]
+    expect(style.prompts[0]).toMatchObject({ text: 'warm disco funk' })
+    // Cursor sits on the first target: full weight there.
+    expect(style.prompts[0].weight).toBeCloseTo(1)
+  })
+
+  it('ignores preset loads addressed to the other deck', () => {
+    const onSetStyle = vi.fn()
+    const bus = createControlBus()
+    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void }, bus)
+    addTarget('mine')
+    onSetStyle.mockClear()
+    act(() =>
+      bus.publish({
+        kind: 'preset_load',
+        deck: 'b',
+        preset: {
+          name: 'X',
+          targets: [{ text: 'theirs', x: 0.5, y: 0.5 }],
+          cursor: { x: 0.5, y: 0.5 },
+          fx: { kind: null, amount: 0 },
+        },
+      }),
+    )
+    expect(screen.queryByText('theirs ✕')).not.toBeInTheDocument()
+    expect(onSetStyle).not.toHaveBeenCalled()
   })
 
   it('fires a loop pad on click and a clear on shift-click', () => {
