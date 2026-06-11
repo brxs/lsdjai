@@ -71,6 +71,7 @@ function makeFakeEngine(overrides: Partial<AudioEngine> = {}) {
     playLoop: vi.fn(() => true),
     stopLoop: vi.fn(),
     clearLoop: vi.fn(),
+    captureSample: vi.fn(async () => new Float32Array(2)),
     getLevel: vi.fn(() => 0),
     getWaveformRange: vi.fn(() => [0, 0] as [number, number]),
     dispose: vi.fn(),

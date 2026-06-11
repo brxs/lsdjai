@@ -84,6 +84,12 @@ type DeckColumnProps = {
   onSetLoopSeconds: (seconds: number) => void
   /** Gated tempo readout (M14): null shows an honest dash. */
   bpm: number | null
+  /** Style sampling (M15): capture the OTHER deck and register the
+   * embedding on this one; resolves to the new target, or null when
+   * the other deck has not played enough. */
+  onSampleOtherDeck: () => Promise<{ label: string; sample: string } | null>
+  /** Whether the other deck is currently producing something to sample. */
+  canSample: boolean
 }
 
 export function DeckColumn({
@@ -105,11 +111,15 @@ export function DeckColumn({
   onClearLoopPad,
   onSetLoopSeconds,
   bpm,
+  onSampleOtherDeck,
+  canSample,
 }: DeckColumnProps) {
   const { t } = useTranslation()
-  const [targets, setTargets] = useState<(PadPoint & { text: string })[]>(
-    () => loadDeckSettings(deckId).targets ?? [],
-  )
+  const [targets, setTargets] = useState<
+    (PadPoint & { text: string; sample?: string })[]
+  >(() => loadDeckSettings(deckId).targets ?? [])
+  const [sampling, setSampling] = useState(false)
+  const [sampleError, setSampleError] = useState<string | null>(null)
   const [cursor, setCursor] = useState<PadPoint>(
     () => loadDeckSettings(deckId).cursor ?? { x: 0.5, y: 0.5 },
   )
@@ -133,7 +143,7 @@ export function DeckColumn({
   const bufferTone =
     !state.playing || bufferFraction >= 0.5 ? 'ok' : bufferFraction >= 0.25 ? 'warn' : 'danger'
 
-  type Target = PadPoint & { text: string }
+  type Target = PadPoint & { text: string; sample?: string }
 
   function styleFor(nextTargets: Target[], nextCursor: PadPoint): ActiveStyle | null {
     if (nextTargets.length === 0) return null
@@ -142,6 +152,7 @@ export function DeckColumn({
       prompts: nextTargets.map((target, index) => ({
         text: target.text,
         weight: weights[index],
+        ...(target.sample ? { sample: target.sample } : {}),
       })),
     }
   }
@@ -163,9 +174,23 @@ export function DeckColumn({
   useEffect(() => () => throttle.cancel(), [throttle])
 
   // Persist the pad arrangement so a reload picks the session back up.
+  // Sampled targets stay out: their embeddings are session-only
+  // (ADR-0011), so persisting the chip would persist a dead reference.
   useEffect(() => {
-    updateDeckSettings(deckId, { targets, cursor })
+    updateDeckSettings(deckId, {
+      targets: targets.filter((target) => !target.sample),
+      cursor,
+    })
   }, [deckId, targets, cursor])
+
+  // A worker restart (crash or model switch) drops its sample cache;
+  // the chips die with it rather than poisoning every style send.
+  // Render-time adjustment (the React "derived state" pattern), so the
+  // stripped pad is what this very render shows.
+  const workerGone = state.workerDied || state.switchingModel
+  if (workerGone && targets.some((target) => target.sample)) {
+    setTargets(targets.filter((target) => !target.sample))
+  }
 
   useEffect(() => {
     onTargetCount?.(targets.length)
@@ -204,6 +229,32 @@ export function DeckColumn({
     setTargets(next)
     setTargetDraft('')
     sendStyle(next, cursor)
+  }
+
+  // One action (M15): capture the other deck, register the embedding,
+  // land it on the pad as a blendable target. The upload resolves once
+  // the embed command is queued ahead of any style send (FIFO).
+  async function sampleOtherDeck() {
+    if (sampling || targets.length >= MAX_TARGETS) return
+    setSampling(true)
+    setSampleError(null)
+    try {
+      const result = await onSampleOtherDeck()
+      if (!result) return
+      setTargets((current) => {
+        if (current.length >= MAX_TARGETS) return current
+        const next = [
+          ...current,
+          { text: result.label, sample: result.sample, ...spawnPosition(current) },
+        ]
+        sendStyle(next, cursor)
+        return next
+      })
+    } catch (error) {
+      setSampleError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSampling(false)
+    }
   }
 
   function removeTarget(text: string) {
@@ -325,6 +376,17 @@ export function DeckColumn({
           >
             {t('deck.style.addTarget')}
           </Button>
+          <Button
+            onClick={() => void sampleOtherDeck()}
+            lit={sampling}
+            disabled={
+              !operable || !canSample || sampling || targets.length >= MAX_TARGETS
+            }
+          >
+            {t('deck.style.sampleOther', {
+              deck: (deckId === 'a' ? 'b' : 'a').toUpperCase(),
+            })}
+          </Button>
         </div>
 
         {targets.length > 0 && (
@@ -353,6 +415,11 @@ export function DeckColumn({
           onTargetMove={handleTargetMove}
         />
         <p className="deck__active-prompt">{activeSummary}</p>
+        {sampleError && (
+          <p className="deck__error" role="alert">
+            {t('deck.style.sampleFailed', { message: sampleError })}
+          </p>
+        )}
       </Panel>
 
       <div className="deck__fx" role="group" aria-label={t('deck.fx.title')}>

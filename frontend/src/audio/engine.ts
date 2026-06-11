@@ -27,6 +27,7 @@ import {
   LOOP_SLOT_COUNT,
   MIN_LOOP_SECONDS,
 } from './loops'
+import { interleaveChannels, MIN_STYLE_SAMPLE_SECONDS } from './styleSample'
 import { encodeWav, floatToInt16 } from './wav'
 
 export type DeckId = 'a' | 'b'
@@ -58,6 +59,9 @@ export type DeckChannel = {
   playLoop: (slot: number) => boolean
   stopLoop: () => void
   clearLoop: (slot: number) => void
+  /** Style sampling (M15): the just-played tail as wire-format PCM,
+   * or null when too little has played to embed meaningfully. */
+  captureSample: (seconds: number) => Promise<Float32Array<ArrayBuffer> | null>
   /** Post-fader RMS level, 0..~1 (for channel meters). */
   getLevel: () => number
   /** Min/max of the latest audio window, -1..1 (for waveform strips). */
@@ -495,6 +499,17 @@ export function createAudioEngine(): AudioEngine {
         clearLoop(slot) {
           if (slot < 0 || slot >= LOOP_SLOT_COUNT) return
           loopBuffers[slot] = null
+        },
+        async captureSample(seconds) {
+          const rate = bus.context.sampleRate
+          const captured = await requestCapture(Math.round(seconds * rate))
+          if (
+            !captured ||
+            captured.left.length < Math.round(MIN_STYLE_SAMPLE_SECONDS * rate)
+          ) {
+            return null
+          }
+          return interleaveChannels(captured.left, captured.right)
         },
         getLevel() {
           return rmsLevel(analyser, analyserBuffer)

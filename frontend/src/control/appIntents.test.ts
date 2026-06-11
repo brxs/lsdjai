@@ -19,6 +19,7 @@ function fakeDeck(state: Partial<DeckState> = {}): DeckControls {
     clearLoopPad: vi.fn(),
     setLoopSeconds: vi.fn(),
     bpm: null,
+    captureStyleSample: vi.fn(async () => null),
     primed: false,
     prime: vi.fn(async () => {}),
     play: vi.fn(async () => {}),

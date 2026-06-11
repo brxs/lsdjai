@@ -8,6 +8,7 @@ import {
   LOOP_SLOT_COUNT,
   quantiseLoopSeconds,
 } from '../audio/loops'
+import { STYLE_SAMPLE_SECONDS } from '../audio/styleSample'
 import { useAudioEngine } from '../audio/engineContext'
 import { loadDeckSettings, updateDeckSettings } from '../persistence'
 import { SAMPLE_RATE, type DeckChannel, type DeckId } from '../audio/engine'
@@ -54,6 +55,9 @@ export type DeckControls = {
   /** Detected tempo of the deck's stream (M14, ADR-0010), or null
    * while the honesty gate refuses — never a wrong number. */
   bpm: number | null
+  /** Style sampling (M15): the just-played tail as wire-format PCM,
+   * or null when the deck has not played enough to embed. */
+  captureStyleSample: () => Promise<Float32Array<ArrayBuffer> | null>
   /** Generating but off air (M10): buffer fills, only the cue tap hears
    * it. play() then drops it on air without flushing what was built up. */
   primed: boolean
@@ -339,6 +343,11 @@ export function useDeck(deckId: DeckId): DeckControls {
     [],
   )
 
+  const captureStyleSample = useCallback(
+    () => channelRef.current?.captureSample(STYLE_SAMPLE_SECONDS) ?? Promise.resolve(null),
+    [],
+  )
+
   const setCue = useCallback((on: boolean) => {
     setCueState(on)
     cueRef.current = on
@@ -467,6 +476,7 @@ export function useDeck(deckId: DeckId): DeckControls {
     clearLoopPad,
     setLoopSeconds,
     bpm,
+    captureStyleSample,
     primed,
     prime,
     play,

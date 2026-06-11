@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 
 import { INITIAL_CROSSFADE, INITIAL_CUE_MIX, type DeckId } from './audio/engine'
 import { startCueStream } from './audio/cueStream'
+import { uploadStyleSample } from './audio/styleSample'
 import { useAudioEngine } from './audio/engineContext'
 import { FX_KINDS } from './audio/fx'
 import type { AudioOutputDevice } from './audio/outputs'
@@ -124,6 +125,39 @@ function App() {
       updateAppSettings({ cueDevice: device })
     },
     [engine],
+  )
+
+  // Deck-to-deck style sampling (M15): capture the OTHER deck's tail,
+  // register the embedding on the target deck's worker, hand the new
+  // pad target back to the column. Ids are session-unique; embeddings
+  // are session-only (ADR-0011).
+  const sampleCounter = useRef(0)
+  const sampleFromOtherDeck = useCallback(
+    async (target: DeckId) => {
+      const sourceId: DeckId = target === 'a' ? 'b' : 'a'
+      const source = sourceId === 'a' ? deckA : deckB
+      const samples = await source.captureStyleSample()
+      if (!samples) return null
+      const count = ++sampleCounter.current
+      const sample = `sample:${sourceId}:${count}`
+      await uploadStyleSample(target, sample, samples)
+      return {
+        label: t('deck.style.sampleLabel', {
+          deck: sourceId.toUpperCase(),
+          n: count,
+        }),
+        sample,
+      }
+    },
+    [deckA, deckB, t],
+  )
+  const handleSampleForA = useCallback(
+    () => sampleFromOtherDeck('a'),
+    [sampleFromOtherDeck],
+  )
+  const handleSampleForB = useCallback(
+    () => sampleFromOtherDeck('b'),
+    [sampleFromOtherDeck],
   )
 
   // Hardware intents (ADR-0005) for the state this component owns.
@@ -271,6 +305,8 @@ function App() {
           onClearLoopPad={deckA.clearLoopPad}
           onSetLoopSeconds={deckA.setLoopSeconds}
           bpm={deckA.bpm}
+          onSampleOtherDeck={handleSampleForA}
+          canSample={deckB.state.playing}
         />
         <MixerStrip
           channels={channels}
@@ -300,6 +336,8 @@ function App() {
           onClearLoopPad={deckB.clearLoopPad}
           onSetLoopSeconds={deckB.setLoopSeconds}
           bpm={deckB.bpm}
+          onSampleOtherDeck={handleSampleForB}
+          canSample={deckA.state.playing}
         />
       </div>
     </main>

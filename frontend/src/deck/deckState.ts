@@ -37,7 +37,9 @@ export type RamInfo = {
   estimateGbByModel: Record<string, number>
 }
 
-export type StylePrompt = { text: string; weight: number }
+/** `sample` marks a captured-audio target (M15): `text` is its display
+ * label, the id resolves the embedding in the worker's cache. */
+export type StylePrompt = { text: string; weight: number; sample?: string }
 
 /** The style the worker confirmed it is generating with. */
 export type ActiveStyle = {
