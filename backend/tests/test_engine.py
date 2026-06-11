@@ -9,18 +9,29 @@ import pytest
 from magenta_dj.engine import DeckEngine
 
 
+AUDIO_EMBEDDING = np.array([9.0, -9.0])
+
+
 def make_engine(embeddings: dict[str, np.ndarray]):
     calls = []
 
-    def embed_style(text):
-        calls.append(text)
-        return embeddings[text]
+    def embed_style(text_or_audio):
+        calls.append(text_or_audio)
+        if isinstance(text_or_audio, str):
+            return embeddings[text_or_audio]
+        return AUDIO_EMBEDDING  # a Waveform (M15 sample path)
 
     engine = DeckEngine.__new__(DeckEngine)
     engine._embed_cache = {}
+    engine._samples = {}
     engine._system = SimpleNamespace(embed_style=embed_style)
     engine._style = None
     return engine, calls
+
+
+def sample_pcm(seconds: float) -> bytes:
+    frames = int(seconds * 48_000)
+    return np.zeros(frames * 2, dtype="<f4").tobytes()
 
 
 def test_blends_weighted_embeddings_normalized():
@@ -70,3 +81,47 @@ def test_all_zero_weights_rejected():
     engine, _ = make_engine({})
     with pytest.raises(ValueError):
         engine.set_style([("funk", 0.0)])
+
+
+def test_embed_sample_then_blend_with_text():
+    engine, _ = make_engine({"funk": np.array([1.0, 1.0])})
+    engine.embed_sample("sample:a:1", sample_pcm(4))
+    engine.set_style(
+        [("funk", 0.5), ("sample:a:1", 0.5)],
+        sample_keys=frozenset({"sample:a:1"}),
+    )
+    np.testing.assert_allclose(engine._style, [5.0, -4.0])  # mean of the two
+
+
+def test_sample_key_never_hits_the_text_embedder():
+    engine, calls = make_engine({})
+    engine.embed_sample("sample:a:1", sample_pcm(4))
+    engine.set_style([("sample:a:1", 1.0)], sample_keys=frozenset({"sample:a:1"}))
+    assert all(not isinstance(call, str) for call in calls)
+    np.testing.assert_allclose(engine._style, AUDIO_EMBEDDING)
+
+
+def test_unknown_sample_id_is_a_clear_error():
+    engine, _ = make_engine({})
+    with pytest.raises(ValueError, match="re-sample"):
+        engine.set_style([("sample:gone", 1.0)], sample_keys=frozenset({"sample:gone"}))
+
+
+def test_embed_sample_rejects_malformed_pcm():
+    engine, _ = make_engine({})
+    with pytest.raises(ValueError):
+        engine.embed_sample("s", b"\x00" * 6)  # not whole stereo frames
+    with pytest.raises(ValueError):
+        engine.embed_sample("s", sample_pcm(1))  # under the minimum
+    with pytest.raises(ValueError):
+        engine.embed_sample("s", sample_pcm(20))  # over the maximum
+
+
+def test_sample_cache_is_capped(monkeypatch):
+    import magenta_dj.engine as engine_module
+
+    monkeypatch.setattr(engine_module, "SAMPLE_CACHE_SIZE", 2)
+    engine, _ = make_engine({})
+    for index in range(3):
+        engine.embed_sample(f"sample:{index}", sample_pcm(4))
+    assert list(engine._samples) == ["sample:1", "sample:2"]

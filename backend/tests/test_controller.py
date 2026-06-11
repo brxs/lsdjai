@@ -293,6 +293,24 @@ def test_stale_audio_is_drained_on_connect(client, deck):
         ({"type": "set_style", "prompts": [{"text": "x"}] * 9}, False),
         ({"type": "set_style", "prompts": [{"text": ""}]}, False),
         ({"type": "set_style", "prompts": ["funk"]}, False),
+        (
+            {
+                "type": "set_style",
+                "prompts": [{"text": "⏺ A·1", "weight": 1, "sample": "sample:a:1"}],
+            },
+            True,
+        ),
+        (
+            {"type": "set_style", "prompts": [{"text": "x", "weight": 1, "sample": 7}]},
+            False,
+        ),
+        (
+            {
+                "type": "set_style",
+                "prompts": [{"text": "x", "weight": 1, "sample": "s" * 65}],
+            },
+            False,
+        ),
         ({"type": "set_style", "prompts": [{"text": "funk", "weight": -1}]}, False),
         ({"type": "set_style", "prompts": [{"text": "funk", "weight": 0}]}, False),
         (
@@ -313,3 +331,45 @@ def test_validate_command(parsed, ok):
     command, error = validate_command(parsed)
     assert (command is not None) == ok
     assert (error is None) == ok
+
+
+SAMPLE_FRAME_BYTES = 8  # stereo float32
+
+
+def sample_body(seconds: float) -> bytes:
+    return b"\x00" * int(seconds * 48_000) * SAMPLE_FRAME_BYTES
+
+
+def test_style_sample_queues_embed_for_the_worker(client, deck):
+    response = client.post(
+        "/api/deck/a/style-sample?id=sample:a:1", content=sample_body(4)
+    )
+    assert response.status_code == 200
+    assert response.json() == {"id": "sample:a:1", "seconds": 4.0}
+    command = deck.cmd_queue.get_nowait()
+    assert command["type"] == "embed_sample"
+    assert command["id"] == "sample:a:1"
+    assert len(command["pcm"]) == len(sample_body(4))
+
+
+def test_style_sample_rejects_unknown_deck(client, deck):
+    response = client.post("/api/deck/zz/style-sample?id=s", content=sample_body(4))
+    assert response.status_code == 404
+
+
+def test_style_sample_rejected_while_restarting(client, deck):
+    deck.restarting = True
+    response = client.post("/api/deck/a/style-sample?id=s", content=sample_body(4))
+    assert response.status_code == 409
+
+
+def test_style_sample_validates_id_and_body(client, deck):
+    no_id = client.post("/api/deck/a/style-sample", content=sample_body(4))
+    assert no_id.status_code == 422
+    ragged = client.post("/api/deck/a/style-sample?id=s", content=b"\x00" * 10)
+    assert ragged.status_code == 422
+    short = client.post("/api/deck/a/style-sample?id=s", content=sample_body(1))
+    assert short.status_code == 422
+    long = client.post("/api/deck/a/style-sample?id=s", content=sample_body(20))
+    assert long.status_code == 422
+    assert deck.cmd_queue.empty()

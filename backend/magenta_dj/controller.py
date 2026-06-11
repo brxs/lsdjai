@@ -18,7 +18,7 @@ import pathlib
 import queue
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from . import cue, engine
@@ -39,6 +39,7 @@ DEFAULT_MODEL = "mrt2_small"
 # Each distinct prompt costs one MusicCoCa embed in the worker (cached, but
 # the cache is finite — see engine.EMBED_CACHE_SIZE).
 MAX_STYLE_PROMPTS = 8
+MAX_SAMPLE_ID = 64
 
 # Rough whole-process footprints (model + MusicCoCa + MLX runtime), used only
 # for the UI's "this combination looks tight" warning — not enforcement.
@@ -164,6 +165,7 @@ def validate_command(parsed: object) -> tuple[dict | None, str | None]:
         for entry in prompts:
             text = entry.get("text") if isinstance(entry, dict) else None
             weight = entry.get("weight", 1.0) if isinstance(entry, dict) else None
+            sample = entry.get("sample") if isinstance(entry, dict) else None
             if not (isinstance(text, str) and text.strip()):
                 return None, "each style prompt needs a non-empty string 'text'"
             if (
@@ -173,7 +175,14 @@ def validate_command(parsed: object) -> tuple[dict | None, str | None]:
                 or weight < 0
             ):
                 return None, "each style prompt 'weight' must be a finite number >= 0"
-            clean_prompts.append({"text": text, "weight": float(weight)})
+            clean = {"text": text, "weight": float(weight)}
+            # Sampled targets (M15): 'sample' carries the embedding id the
+            # client registered via /api/deck/{deck}/style-sample.
+            if sample is not None:
+                if not (isinstance(sample, str) and 0 < len(sample) <= MAX_SAMPLE_ID):
+                    return None, "style prompt 'sample' must be a short string id"
+                clean["sample"] = sample
+            clean_prompts.append(clean)
         if not any(entry["weight"] > 0 for entry in clean_prompts):
             return None, "set_style needs at least one prompt with weight > 0"
         return {"type": "set_style", "prompts": clean_prompts}, None
@@ -331,6 +340,42 @@ async def _pump_worker_output(deck: DeckProcess, websocket: WebSocket) -> None:
             await websocket.send_bytes(payload)
         else:
             await websocket.send_text(json.dumps(payload))
+
+
+@app.post("/api/deck/{deck_id}/style-sample")
+async def style_sample(deck_id: str, request: Request) -> dict:
+    """Register captured deck audio as a style sample (M15, ADR-0011).
+
+    The body is wire-format PCM (interleaved stereo float32 LE, 48 kHz);
+    `?id=` names the embedding in the target worker's cache. Returns once
+    the embed command is queued — the worker's FIFO command queue
+    guarantees any set_style referencing the id runs after the embed.
+    """
+    deck = decks.get(deck_id)
+    if deck is None:
+        raise HTTPException(status_code=404, detail=f"unknown deck {deck_id!r}")
+    if deck.restarting:
+        raise HTTPException(status_code=409, detail="deck is loading a model")
+    sample_id = request.query_params.get("id", "")
+    if not sample_id or len(sample_id) > MAX_SAMPLE_ID:
+        raise HTTPException(status_code=422, detail="missing or oversized 'id'")
+    body = await request.body()
+    frame_bytes = 4 * engine.CHANNELS
+    if len(body) == 0 or len(body) % frame_bytes:
+        raise HTTPException(
+            status_code=422, detail="body must be whole interleaved stereo frames"
+        )
+    seconds = len(body) / frame_bytes / engine.SAMPLE_RATE
+    if not engine.MIN_SAMPLE_SECONDS <= seconds <= engine.MAX_SAMPLE_SECONDS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"sample must be {engine.MIN_SAMPLE_SECONDS}-"
+                f"{engine.MAX_SAMPLE_SECONDS}s, got {seconds:.1f}s"
+            ),
+        )
+    deck.send({"type": "embed_sample", "id": sample_id, "pcm": body})
+    return {"id": sample_id, "seconds": round(seconds, 2)}
 
 
 @app.get("/api/cue/outputs")

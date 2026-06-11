@@ -18,13 +18,22 @@ FAKE_PCM = b"\x00" * 64
 class FakeEngine:
     def __init__(self):
         self.styles = []
+        self.style_sample_keys = []
+        self.samples = []
         self.fail_set_style = False
+        self.fail_embed_sample = False
         self.fail_generate = False
 
-    def set_style(self, prompts):
+    def set_style(self, prompts, sample_keys=frozenset()):
         if self.fail_set_style:
             raise RuntimeError("embed blew up")
         self.styles.append(prompts)
+        self.style_sample_keys.append(sample_keys)
+
+    def embed_sample(self, sample_id, pcm):
+        if self.fail_embed_sample:
+            raise RuntimeError("audio embed blew up")
+        self.samples.append((sample_id, len(pcm)))
 
     def generate_chunk(self):
         if self.fail_generate:
@@ -113,6 +122,38 @@ def test_set_style_failure_keeps_worker_alive(deck):
     assert deck.next_event("style_applied")["prompts"][0]["text"] == "recovered"
     deck.send(type="play")
     assert deck.next_event("audio") == FAKE_PCM
+
+
+def test_embed_sample_caches_and_reports(deck):
+    deck.send(type="embed_sample", id="sample:a:1", pcm=b"\x00" * 32)
+    embedded = deck.next_event("sample_embedded")
+    assert embedded["id"] == "sample:a:1"
+    assert deck.engine.samples == [("sample:a:1", 32)]
+
+
+def test_embed_sample_failure_keeps_worker_alive(deck):
+    deck.engine.fail_embed_sample = True
+    deck.send(type="embed_sample", id="sample:a:1", pcm=b"\x00" * 32)
+    assert "sample embed failed" in deck.next_event("error")["error"]
+
+    deck.send(type="play")
+    assert deck.next_event("audio") == FAKE_PCM
+
+
+def test_set_style_resolves_sampled_entries_by_id(deck):
+    prompts = [
+        {"text": "warm disco funk", "weight": 0.5},
+        {"text": "⏺ A·1", "weight": 0.5, "sample": "sample:a:1"},
+    ]
+    deck.send(type="set_style", prompts=prompts)
+    applied = deck.next_event("style_applied")
+    # The echo keeps the display entries; the engine blends by id.
+    assert applied["prompts"] == prompts
+    assert deck.engine.styles[-1] == [
+        ("warm disco funk", 0.5),
+        ("sample:a:1", 0.5),
+    ]
+    assert deck.engine.style_sample_keys[-1] == frozenset({"sample:a:1"})
 
 
 def test_generation_failure_stops_deck_but_worker_survives(deck):

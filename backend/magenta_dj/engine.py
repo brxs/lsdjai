@@ -36,6 +36,13 @@ def available_models() -> list[str]:
 # are evicted, so active pad targets stay cached through a long session.
 EMBED_CACHE_SIZE = 32
 
+# Captured-audio styles (M15, ADR-0011): a pad holds at most
+# MAX_STYLE_PROMPTS targets, so this only needs to cover a full pad of
+# samples. Embeddings die with the worker — the clip is not retained.
+SAMPLE_CACHE_SIZE = 8
+MIN_SAMPLE_SECONDS = 3
+MAX_SAMPLE_SECONDS = 12
+
 
 class DeckEngine:
     """One model instance generating a continuous stream in 1-second chunks."""
@@ -50,6 +57,7 @@ class DeckEngine:
         self._state = None
         self._style = None
         self._embed_cache: dict[str, np.ndarray] = {}
+        self._samples: dict[str, np.ndarray] = {}
 
     def _embed_cached(self, text: str) -> np.ndarray:
         if text in self._embed_cache:
@@ -65,21 +73,62 @@ class DeckEngine:
         """Embed a text prompt; takes effect on the next generate_chunk()."""
         self.set_style([(prompt, 1.0)])
 
-    def set_style(self, prompts: list[tuple[str, float]]) -> None:
+    def embed_sample(self, sample_id: str, pcm: bytes) -> None:
+        """Embed captured deck audio as a reusable style (M15, ADR-0011).
+
+        `pcm` is the wire format (interleaved stereo float32 LE at
+        SAMPLE_RATE). The embedding is cached under `sample_id`, so the
+        clip itself is dropped after this call; the FIFO command queue
+        guarantees a set_style referencing the id arrives afterwards.
+        """
+        samples = np.frombuffer(pcm, dtype="<f4")
+        if samples.size == 0 or samples.size % CHANNELS:
+            raise ValueError("sample PCM must be whole interleaved stereo frames")
+        seconds = samples.size / CHANNELS / SAMPLE_RATE
+        if not MIN_SAMPLE_SECONDS <= seconds <= MAX_SAMPLE_SECONDS:
+            raise ValueError(
+                f"sample must be {MIN_SAMPLE_SECONDS}-{MAX_SAMPLE_SECONDS}s, "
+                f"got {seconds:.1f}s"
+            )
+        from magenta_rt import audio
+
+        waveform = audio.Waveform(
+            samples=samples.reshape(-1, CHANNELS).astype(np.float32),
+            sample_rate=SAMPLE_RATE,
+        )
+        if sample_id not in self._samples and len(self._samples) >= SAMPLE_CACHE_SIZE:
+            self._samples.pop(next(iter(self._samples)))
+        self._samples[sample_id] = self._system.embed_style(waveform)
+
+    def set_style(
+        self,
+        prompts: list[tuple[str, float]],
+        sample_keys: frozenset[str] = frozenset(),
+    ) -> None:
         """Blend weighted prompt embeddings into the active style.
 
         MusicCoCa embeddings are plain 768-dim vectors (docs/spike-mrt2.md),
-        so a morph between prompts is their weighted average. Takes effect
-        on the next generate_chunk(). Tempo is emergent from style — there
-        is deliberately no tempo parameter (docs/spike-bpm.md).
+        so a morph between prompts is their weighted average. Keys in
+        `sample_keys` resolve from the captured-audio cache (M15) instead
+        of the text embedder. Takes effect on the next generate_chunk().
+        Tempo is emergent from style — there is deliberately no tempo
+        parameter (docs/spike-bpm.md).
         """
         weighted = [(text, weight) for text, weight in prompts if weight > 0]
         if not weighted:
             raise ValueError("set_style needs at least one prompt with weight > 0")
         total = sum(weight for _, weight in weighted)
         blend = np.zeros(0)
-        for text, weight in weighted:
-            embedding = self._embed_cached(text).astype(np.float32)
+        for key, weight in weighted:
+            if key in sample_keys:
+                if key not in self._samples:
+                    # The embedding died with a previous worker (restart /
+                    # model switch); the clip is gone, so re-sampling is
+                    # the only recovery.
+                    raise ValueError(f"unknown sample {key!r} — re-sample the deck")
+                embedding = self._samples[key]
+            else:
+                embedding = self._embed_cached(key).astype(np.float32)
             term = (weight / total) * embedding
             blend = term if blend.size == 0 else blend + term
         self._style = blend

@@ -69,6 +69,29 @@ def run_deck_worker(
                     pace_seconds = 0.0
             elif kind == "stop":
                 playing = False
+            elif kind == "embed_sample":
+                started = time.monotonic()
+                try:
+                    engine.embed_sample(cmd["id"], cmd["pcm"])
+                except Exception:
+                    logger.exception("deck %s: embed_sample failed", deck_id)
+                    out_queue.put(
+                        (
+                            "status",
+                            {"event": "error", "error": "sample embed failed"},
+                        )
+                    )
+                else:
+                    out_queue.put(
+                        (
+                            "status",
+                            {
+                                "event": "sample_embedded",
+                                "id": cmd["id"],
+                                "embed_seconds": round(time.monotonic() - started, 3),
+                            },
+                        )
+                    )
             elif kind in ("set_prompt", "set_style"):
                 started = time.monotonic()
                 if kind == "set_prompt":
@@ -76,8 +99,16 @@ def run_deck_worker(
                 else:
                     entries = cmd["prompts"]
                 try:
+                    # Sampled entries (M15) carry their cache id alongside
+                    # the display label; the id is the blend key.
                     engine.set_style(
-                        [(entry["text"], entry["weight"]) for entry in entries]
+                        [
+                            (entry.get("sample") or entry["text"], entry["weight"])
+                            for entry in entries
+                        ],
+                        sample_keys=frozenset(
+                            entry["sample"] for entry in entries if entry.get("sample")
+                        ),
                     )
                 except Exception:
                     # The deck must survive a bad prompt; the controller
