@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 
 import {
   crushCurve,
+  DUB_ECHO_SECONDS,
   dubEchoCurve,
+  echoDelaySeconds,
   FX_KINDS,
   filterCurve,
   fxBlend,
@@ -83,6 +85,37 @@ describe('dubEchoCurve', () => {
   it('caps feedback below unity so tails always die', () => {
     expect(dubEchoCurve(1).feedback).toBeLessThan(1)
     expect(dubEchoCurve(5).feedback).toBeLessThan(1)
+  })
+})
+
+describe('echoDelaySeconds', () => {
+  it('free-runs without a beat period', () => {
+    expect(echoDelaySeconds(null)).toBe(DUB_ECHO_SECONDS)
+    expect(echoDelaySeconds(0)).toBe(DUB_ECHO_SECONDS)
+  })
+
+  it('snaps to the beat fraction nearest its free-running character', () => {
+    // 120 bpm (0.5 s beat): 3/4 beat = 0.375 s beats 1/2 beat = 0.25 s.
+    expect(echoDelaySeconds(0.5)).toBeCloseTo(0.375, 6)
+    // 90 bpm (0.667 s beat): 1/2 beat = 0.333 s.
+    expect(echoDelaySeconds(60 / 90)).toBeCloseTo(0.5 * (60 / 90), 6)
+  })
+
+  it('always lands on a musical fraction of the beat', () => {
+    for (const bpm of [60, 90, 120, 128, 150, 174, 200]) {
+      const beat = 60 / bpm
+      const fraction = echoDelaySeconds(beat) / beat
+      expect([0.25, 0.375, 0.5, 0.75, 1]).toContainEqual(
+        expect.closeTo(fraction, 6),
+      )
+    }
+  })
+
+  it('respects the delay node ceiling on slow beats', () => {
+    // 60 bpm: a full beat is exactly the 1 s ceiling — still allowed.
+    expect(echoDelaySeconds(1)).toBeLessThanOrEqual(1)
+    // Slower than the range allows: every usable fraction fits.
+    expect(echoDelaySeconds(1.5)).toBeLessThanOrEqual(1)
   })
 })
 

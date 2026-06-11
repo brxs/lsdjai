@@ -49,6 +49,11 @@ cluster them), and ride the crossfader between decks.
   loop slots and hold the moment on air while you re-steer the model
   underneath; loops are session-only by design
   ([ADR-0009](docs/adr/0009-freeze-pads-loop-played-audio-at-the-channel-head.md)).
+- **Beat detection** — each deck shows its detected BPM behind an
+  honesty gate (a dash rather than a wrong number); with a confident
+  tempo the Dub Echo syncs to the beat and freeze captures quantise to
+  whole beats
+  ([ADR-0010](docs/adr/0010-beat-detection-on-the-output-behind-an-honesty-gate.md)).
 - **Headphone cue** — hit a channel's **Cue**, ride the **Cue mix** knob
   between cue and master, and pick a **Phones out**: any output device the
   browser can reach, or the FLX4's own headphone jack, which is fed by the

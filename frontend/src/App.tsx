@@ -270,6 +270,7 @@ function App() {
           onLoopPad={deckA.toggleLoopPad}
           onClearLoopPad={deckA.clearLoopPad}
           onSetLoopSeconds={deckA.setLoopSeconds}
+          bpm={deckA.bpm}
         />
         <MixerStrip
           channels={channels}
@@ -298,6 +299,7 @@ function App() {
           onLoopPad={deckB.toggleLoopPad}
           onClearLoopPad={deckB.clearLoopPad}
           onSetLoopSeconds={deckB.setLoopSeconds}
+          bpm={deckB.bpm}
         />
       </div>
     </main>

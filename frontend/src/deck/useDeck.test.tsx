@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { AudioEngineProvider } from '../audio/AudioEngineProvider'
 import { updateDeckSettings } from '../persistence'
+import { clickTrack } from '../test/clickTrack'
 import type { AudioEngine, DeckChannel } from '../audio/engine'
 import { useDeck } from './useDeck'
 
@@ -64,6 +65,7 @@ function makeFakeEngine(overrides: Partial<AudioEngine> = {}) {
     setCue: vi.fn(),
     setFx: vi.fn(),
     setFxAmount: vi.fn(),
+    setBeatPeriod: vi.fn(),
     setOnAir: vi.fn(),
     captureLoop: vi.fn(async () => true),
     playLoop: vi.fn(() => true),
@@ -325,6 +327,100 @@ describe('useDeck connection', () => {
     expect(result.current.state.connection).toBe('open')
     expect(warn).toHaveBeenCalled()
     warn.mockRestore()
+  })
+})
+
+describe('useDeck beat readout', () => {
+  function streamClicks(bpm: number, seconds: number) {
+    const samples = clickTrack(bpm, seconds, 48_000)
+    const chunk = 1920 * 2 // the 40 ms wire chunk
+    act(() => {
+      for (let i = 0; i < samples.length; i += chunk) {
+        socket(0).onmessage?.({ data: samples.slice(i, i + chunk).buffer })
+      }
+    })
+  }
+
+  it('surfaces a gated BPM from the deck stream and drops it on stop', async () => {
+    const { engine } = makeFakeEngine()
+    const { result } = renderDeck(engine)
+    act(() => socket(0).serverOpen())
+    await act(() => result.current.play())
+
+    streamClicks(128, 16)
+    // Three 1 Hz gate ticks: strict acquisition needs three agreeing
+    // confident estimates.
+    act(() => void vi.advanceTimersByTime(3_000))
+    expect(result.current.bpm).not.toBeNull()
+    expect(Math.abs(result.current.bpm! - 128) / 128).toBeLessThan(0.02)
+
+    act(() => result.current.stop())
+    expect(result.current.bpm).toBeNull()
+  })
+
+  it('shows nothing for a beatless stream', async () => {
+    const { engine } = makeFakeEngine()
+    const { result } = renderDeck(engine)
+    act(() => socket(0).serverOpen())
+    await act(() => result.current.play())
+
+    const silence = new Float32Array(16 * 48_000 * 2)
+    const chunk = 1920 * 2
+    act(() => {
+      for (let i = 0; i < silence.length; i += chunk) {
+        socket(0).onmessage?.({ data: silence.slice(i, i + chunk).buffer })
+      }
+    })
+    act(() => void vi.advanceTimersByTime(5_000))
+    expect(result.current.bpm).toBeNull()
+  })
+
+  it('hands the beat period to the channel and clears it with the gate', async () => {
+    const { engine, channel } = makeFakeEngine()
+    const { result } = renderDeck(engine)
+    act(() => socket(0).serverOpen())
+    await act(() => result.current.play())
+
+    streamClicks(128, 16)
+    act(() => void vi.advanceTimersByTime(3_000))
+    const bpm = result.current.bpm!
+    expect(channel.setBeatPeriod).toHaveBeenLastCalledWith(60 / bpm)
+
+    act(() => result.current.stop())
+    expect(channel.setBeatPeriod).toHaveBeenLastCalledWith(null)
+  })
+
+  it('quantises a capture to whole beats when the gate is confident', async () => {
+    const { engine, channel } = makeFakeEngine()
+    const { result } = renderDeck(engine)
+    act(() => socket(0).serverOpen())
+    await act(() => result.current.play())
+
+    streamClicks(128, 16)
+    act(() => void vi.advanceTimersByTime(3_000))
+    const bpm = result.current.bpm!
+
+    await act(async () => result.current.toggleLoopPad(0))
+    const seconds = vi.mocked(channel.captureLoop).mock.calls.at(-1)![1]
+    const beats = (seconds * bpm) / 60
+    expect(Math.abs(beats - Math.round(beats))).toBeLessThan(1e-6)
+    expect(seconds).not.toBe(4) // 4 s is off-grid at ~128 bpm
+  })
+
+  it('forgets the stream across a model switch', async () => {
+    const { engine } = makeFakeEngine()
+    const { result } = renderDeck(engine)
+    act(() => socket(0).serverOpen())
+    await act(() => result.current.play())
+    streamClicks(128, 16)
+    act(() => void vi.advanceTimersByTime(3_000))
+    expect(result.current.bpm).not.toBeNull()
+
+    act(() => socket(0).serverEvent({ event: 'model_loading', model: 'mrt2_base' }))
+    expect(result.current.bpm).toBeNull()
+    // The next tick has no accumulated audio: still nothing.
+    act(() => void vi.advanceTimersByTime(1_000))
+    expect(result.current.bpm).toBeNull()
   })
 })
 

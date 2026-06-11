@@ -139,7 +139,7 @@
 .deck__health {
   flex: 1;
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 1fr auto auto auto;
   gap: var(--space-3);
   align-items: end;
 }

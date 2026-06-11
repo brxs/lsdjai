@@ -10,6 +10,7 @@ import {
   DUB_ECHO_SECONDS,
   DUB_ECHO_TONE_HZ,
   dubEchoCurve,
+  echoDelaySeconds,
   filterCurve,
   noiseCurve,
   spaceCurve,
@@ -24,8 +25,10 @@ const RAMP_SECONDS = 0.02
 export type FxGraph = {
   input: AudioNode
   output: AudioNode
-  /** Push the knob position into the graph's parameters. */
-  apply: (amount: number, time: number) => void
+  /** Push the knob position into the graph's parameters. The beat
+   * period (M14, null while the gate refuses) only matters to graphs
+   * with a musical clock — the dub echo's synced delay. */
+  apply: (amount: number, time: number, beatPeriodSeconds: number | null) => void
   dispose: () => void
 }
 
@@ -95,10 +98,16 @@ export function buildFxGraph(context: BaseAudioContext, kind: FxKind): FxGraph {
       return {
         input,
         output: wet,
-        apply(amount, time) {
+        apply(amount, time, beatPeriodSeconds) {
           const params = dubEchoCurve(amount)
           feedback.gain.setTargetAtTime(params.feedback, time, RAMP_SECONDS)
           wet.gain.setTargetAtTime(params.wet, time, RAMP_SECONDS)
+          // Synced when the gate is confident, free-running otherwise.
+          delay.delayTime.setTargetAtTime(
+            echoDelaySeconds(beatPeriodSeconds),
+            time,
+            RAMP_SECONDS,
+          )
         },
         dispose() {
           for (const node of [input, delay, tone, feedback, wet]) {

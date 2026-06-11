@@ -97,6 +97,7 @@
     },
     "health": {
       "buffer": "Buffer",
+      "bpm": "BPM",
       "bufferSeconds": "{{seconds}}s",
       "underruns": "Underruns",
       "generationSpeed": "Gen speed",

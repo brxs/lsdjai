@@ -21,6 +21,7 @@ function renderPanel(
     active: null,
     seconds: 4,
   },
+  bpm: number | null = null,
 ) {
   return render(
     <ControlBusProvider bus={bus}>
@@ -45,6 +46,7 @@ function renderPanel(
         onSetLoopSeconds={
           (handlers.onSetLoopSeconds as (seconds: number) => void) ?? noop
         }
+        bpm={bpm}
       />
     </ControlBusProvider>,
   )
@@ -477,6 +479,22 @@ describe('DeckColumn', () => {
     expect(
       screen.getByRole('button', { name: 'Loop slot 1' }),
     ).toBeDisabled()
+  })
+
+  it('shows the gated BPM, and an honest dash without one', () => {
+    renderPanel(
+      { connection: 'open', playing: true },
+      {},
+      createControlBus(),
+      { kind: null, amount: 0 },
+      { filled: [false, false, false, false], active: null, seconds: 4 },
+      131.9,
+    )
+    const stat = screen.getByText('BPM').parentElement!
+    expect(stat).toHaveTextContent('131.9')
+
+    renderPanel({ connection: 'open', playing: true })
+    expect(screen.getAllByText('BPM').at(-1)!.parentElement).toHaveTextContent('—')
   })
 
   it('changes the loop capture length', () => {

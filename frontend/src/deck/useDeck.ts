@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 
+import { createBeatGate, createBeatTracker } from '../audio/beat'
 import { EQ_FLAT, type EqBand } from '../audio/eq'
 import { fxRestPosition, type FxKind } from '../audio/fx'
-import { DEFAULT_LOOP_SECONDS, LOOP_SLOT_COUNT } from '../audio/loops'
+import {
+  DEFAULT_LOOP_SECONDS,
+  LOOP_SLOT_COUNT,
+  quantiseLoopSeconds,
+} from '../audio/loops'
 import { useAudioEngine } from '../audio/engineContext'
 import { loadDeckSettings, updateDeckSettings } from '../persistence'
-import type { DeckChannel, DeckId } from '../audio/engine'
+import { SAMPLE_RATE, type DeckChannel, type DeckId } from '../audio/engine'
 import {
   deckReducer,
   initialDeckState,
@@ -46,6 +51,9 @@ export type DeckControls = {
   toggleLoopPad: (slot: number) => void
   clearLoopPad: (slot: number) => void
   setLoopSeconds: (seconds: number) => void
+  /** Detected tempo of the deck's stream (M14, ADR-0010), or null
+   * while the honesty gate refuses — never a wrong number. */
+  bpm: number | null
   /** Generating but off air (M10): buffer fills, only the cue tap hears
    * it. play() then drops it on air without flushing what was built up. */
   primed: boolean
@@ -93,6 +101,20 @@ export function useDeck(deckId: DeckId): DeckControls {
   // inside that window must win over the stale capture. Every loop
   // gesture bumps this, and the capture callback bails if it moved.
   const loopGestureRef = useRef(0)
+  const [bpm, setBpm] = useState<number | null>(null)
+  // Tracker + gate per deck (M14), reset on stream discontinuities so
+  // an estimate never spans two unrelated streams (the reset rule the
+  // capture history follows too, ADR-0009).
+  const [beat] = useState(() => ({
+    tracker: createBeatTracker(SAMPLE_RATE),
+    gate: createBeatGate(),
+  }))
+  const resetBeat = useCallback(() => {
+    beat.tracker.reset()
+    beat.gate.reset()
+    channelRef.current?.setBeatPeriod(null)
+    setBpm(null)
+  }, [beat])
   const [primed, setPrimedState] = useState(false)
   const primedRef = useRef(primed)
 
@@ -147,7 +169,12 @@ export function useDeck(deckId: DeckId): DeckControls {
       socket.onopen = () => dispatch({ type: 'socket_open' })
       socket.onmessage = (event) => {
         if (event.data instanceof ArrayBuffer) {
-          channelRef.current?.postPcm(new Float32Array(event.data))
+          const samples = new Float32Array(event.data)
+          // Beat tracking reads first — postPcm transfers the buffer
+          // away. (The feed runs ahead of the speakers by the buffer
+          // lead; tempo doesn't care, ADR-0010.)
+          beat.tracker.push(samples)
+          channelRef.current?.postPcm(samples)
         } else {
           let parsed: ServerEvent
           try {
@@ -159,8 +186,9 @@ export function useDeck(deckId: DeckId): DeckControls {
           if (parsed.event === 'model_loading' || parsed.event === 'worker_died') {
             // The stream this buffer came from is gone with the old worker;
             // a crashed deck goes silent rather than draining its tail under
-            // the crash banner.
+            // the crash banner. The beat tracker forgets it too.
             channelRef.current?.reset()
+            resetBeat()
           }
           dispatch({ type: 'server_event', event: parsed })
         }
@@ -181,7 +209,21 @@ export function useDeck(deckId: DeckId): DeckControls {
       channelRef.current = null
       channelPromiseRef.current = null
     }
-  }, [deckId])
+  }, [deckId, beat, resetBeat])
+
+  // One estimate per second through the honesty gate (M14); the state
+  // setter is a no-op re-render-wise while the gated value holds. The
+  // channel follows so the synced dub echo has its clock.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const displayed = beat.gate.push(beat.tracker.estimate())
+      setBpm(displayed)
+      channelRef.current?.setBeatPeriod(
+        displayed === null ? null : 60 / displayed,
+      )
+    }, 1_000)
+    return () => clearInterval(timer)
+  }, [beat])
 
   const send = useCallback((command: object) => {
     const socket = socketRef.current
@@ -202,8 +244,10 @@ export function useDeck(deckId: DeckId): DeckControls {
       const channel = await ensureChannel()
       await engine.resume()
       // Drop whatever an earlier session left in the ring buffer, so the
-      // first thing heard is the new stream, not stale chunks.
+      // first thing heard is the new stream, not stale chunks. The beat
+      // tracker starts over with the stream.
       channel.reset()
+      resetBeat()
       channel.setOnAir(true)
     } catch (error) {
       dispatch({
@@ -214,7 +258,7 @@ export function useDeck(deckId: DeckId): DeckControls {
     }
     send({ type: 'play' })
     dispatch({ type: 'play_requested' })
-  }, [ensureChannel, engine, send, setPrimed])
+  }, [ensureChannel, engine, send, setPrimed, resetBeat])
 
   /** Start generating off air: like play(), but muted on the master so
    * the prep is only audible over the cue tap (M10 transport CUE). */
@@ -224,6 +268,7 @@ export function useDeck(deckId: DeckId): DeckControls {
       const channel = await ensureChannel()
       await engine.resume()
       channel.reset()
+      resetBeat()
       channel.setOnAir(false)
     } catch (error) {
       dispatch({
@@ -235,7 +280,7 @@ export function useDeck(deckId: DeckId): DeckControls {
     setPrimed(true)
     send({ type: 'play' })
     dispatch({ type: 'play_requested' })
-  }, [ensureChannel, engine, send, setPrimed])
+  }, [ensureChannel, engine, send, setPrimed, resetBeat])
 
   const stop = useCallback(() => {
     send({ type: 'stop' })
@@ -251,9 +296,10 @@ export function useDeck(deckId: DeckId): DeckControls {
     if (loopRef.current.active !== null) {
       setLoop({ ...loopRef.current, active: null })
     }
+    resetBeat()
     setPrimed(false)
     dispatch({ type: 'stop_requested' })
-  }, [send, setPrimed, setLoop])
+  }, [send, setPrimed, setLoop, resetBeat])
 
   const setStyle = useCallback(
     (style: ActiveStyle) => {
@@ -339,8 +385,14 @@ export function useDeck(deckId: DeckId): DeckControls {
       }
       // One gesture: capture the just-played tail AND freeze onto it.
       // The press is refused (no state change) when too little has
-      // played to loop (ADR-0009).
-      void channel.captureLoop(slot, current.seconds).then((captured) => {
+      // played to loop (ADR-0009). A gated tempo snaps the length to
+      // whole beats (M14).
+      const gatedBpm = beat.gate.current()
+      const seconds =
+        gatedBpm === null
+          ? current.seconds
+          : quantiseLoopSeconds(current.seconds, gatedBpm)
+      void channel.captureLoop(slot, seconds).then((captured) => {
         if (!captured || channelRef.current !== channel) return
         if (loopGestureRef.current !== gesture) {
           // Overtaken by STOP or a newer press: drop the buffer too, so
@@ -359,7 +411,7 @@ export function useDeck(deckId: DeckId): DeckControls {
         })
       })
     },
-    [setLoop],
+    [setLoop, beat],
   )
 
   const clearLoopPad = useCallback(
@@ -414,6 +466,7 @@ export function useDeck(deckId: DeckId): DeckControls {
     toggleLoopPad,
     clearLoopPad,
     setLoopSeconds,
+    bpm,
     primed,
     prime,
     play,

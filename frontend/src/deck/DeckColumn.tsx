@@ -82,6 +82,8 @@ type DeckColumnProps = {
   onLoopPad: (slot: number) => void
   onClearLoopPad: (slot: number) => void
   onSetLoopSeconds: (seconds: number) => void
+  /** Gated tempo readout (M14): null shows an honest dash. */
+  bpm: number | null
 }
 
 export function DeckColumn({
@@ -102,6 +104,7 @@ export function DeckColumn({
   onLoopPad,
   onClearLoopPad,
   onSetLoopSeconds,
+  bpm,
 }: DeckColumnProps) {
   const { t } = useTranslation()
   const [targets, setTargets] = useState<(PadPoint & { text: string })[]>(
@@ -438,6 +441,10 @@ export function DeckColumn({
             })}
             fraction={bufferFraction}
             tone={bufferTone}
+          />
+          <Stat
+            label={t('deck.health.bpm')}
+            value={bpm === null ? t('deck.health.noData') : bpm.toFixed(1)}
           />
           <Stat
             label={t('deck.health.underruns')}

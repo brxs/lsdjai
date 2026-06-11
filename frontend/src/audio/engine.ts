@@ -43,6 +43,9 @@ export type DeckChannel = {
   /** Knob position for the active effect; inside the effect's dead zone
    * the insert is bit-transparently bypassed (ADR-0008). */
   setFxAmount: (amount: number) => void
+  /** Detected beat period (M14), null while the gate refuses — graphs
+   * with a musical clock (the synced dub echo) follow it. */
+  setBeatPeriod: (seconds: number | null) => void
   /** Off-air mutes the channel's master feed only — generation, meters,
    * and the cue tap stay live. The primed-deck state (M10). */
   setOnAir: (on: boolean) => void
@@ -100,7 +103,8 @@ export type AudioEngine = {
   stopRecording: () => Promise<Blob>
 }
 
-const SAMPLE_RATE = 48_000
+/** The wire and graph rate end to end (backend workers generate 48 k). */
+export const SAMPLE_RATE = 48_000
 const PARAM_RAMP_SECONDS = 0.02
 const FLUSH_TIMEOUT_MS = 2_000
 
@@ -289,6 +293,7 @@ export function createAudioEngine(): AudioEngine {
       let fxKind: FxKind | null = null
       let fxAmount = 0
       let fxGraph: FxGraph | null = null
+      let beatPeriod: number | null = null
       function applyFx() {
         const time = bus.context.currentTime
         const kind = fxKind
@@ -299,7 +304,7 @@ export function createAudioEngine(): AudioEngine {
           snapRamp(fxDry.gain, fxBlend(kind) === 'add' ? 1 : 0, time)
           snapRamp(fxWet.gain, 1, time)
         }
-        fxGraph?.apply(fxAmount, time)
+        fxGraph?.apply(fxAmount, time, beatPeriod)
       }
       function swapFx(kind: FxKind | null) {
         if (kind === fxKind) return
@@ -424,6 +429,11 @@ export function createAudioEngine(): AudioEngine {
         setFxAmount(amount) {
           fxAmount = amount
           applyFx()
+        },
+        setBeatPeriod(seconds) {
+          if (seconds === beatPeriod) return
+          beatPeriod = seconds
+          fxGraph?.apply(fxAmount, bus.context.currentTime, beatPeriod)
         },
         setOnAir(on) {
           onAir.gain.setTargetAtTime(
