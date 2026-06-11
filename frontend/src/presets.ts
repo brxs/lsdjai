@@ -105,6 +105,11 @@ export function parsePresetsExport(json: string): StylePreset[] {
   if (typeof file !== 'object' || file === null || !Array.isArray(file.presets)) {
     throw new Error('not a crates export')
   }
+  // A future format bumps the version; refusing with a clear reason
+  // beats silently filtering a newer file down to nothing.
+  if (file.version !== EXPORT_VERSION) {
+    throw new Error('file from a different crates version')
+  }
   const presets = file.presets.map(parsePreset).filter(
     (preset): preset is StylePreset => preset !== null,
   )

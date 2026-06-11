@@ -118,6 +118,9 @@ describe('export / import', () => {
     expect(() => parsePresetsExport('{nope')).toThrow('not a JSON file')
     expect(() => parsePresetsExport('{"foo": 1}')).toThrow('not a crates export')
     expect(() =>
+      parsePresetsExport(JSON.stringify({ version: 2, presets: [FUNK] })),
+    ).toThrow('different crates version')
+    expect(() =>
       parsePresetsExport(JSON.stringify({ version: 1, presets: [{ name: 'x' }] })),
     ).toThrow('no usable presets')
   })
