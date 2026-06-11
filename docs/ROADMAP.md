@@ -504,7 +504,22 @@ addendum.
 
 ## M14 — Beat detection: a tempo estimate from the output
 
-**Status: ⬜ planned.**
+**Status: ✅ done (2026-06-11).** The spike came back ship
+([`spike-beat-detection.md`](spike-beat-detection.md)): on a ten-style
+generated corpus the shipping estimator tracks every solidly rhythmic
+style on a defensible metrical level and never once shows a number
+for beatless material — the ambient drone peaks a hair under the
+rhythmic styles' confidence, and the gate's stability requirement,
+not the threshold, holds that line. Detection runs in the frontend on
+the wire feed behind an honesty gate (ADR-0010); the dub echo syncs
+to the beat fraction nearest its free-running character and freeze
+captures quantise to whole beats, both level-tolerant, both reverting
+to free-running the moment the gate blanks. Phase was deliberately
+dropped from the scope's `{bpm, confidence, phase}` — no shipped
+consumer needs it. Exit criteria verified by ear against
+[`m14-hardware-checklist.md`](m14-hardware-checklist.md): the readout
+held a hand count for a minute, the synced echo landed on the taps,
+and the quantised loops never drifted.
 
 **Goal:** ADR-0004 stands — tempo is not a *generation* parameter — but
 detecting tempo on the generated stream is a different question. A
