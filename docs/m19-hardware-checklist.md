@@ -10,11 +10,10 @@ half no script can tick (ADR-0013).
 
 - [ ] DDJ-FLX4 connected, app open in Chromium, MIDI connected (green
       LED in the statusbar).
-- [ ] **SA3 medium pre-warm (one-time):** the medium DiT is a 5.9 GB
-      download the first time it runs — generate one clip manually
-      from the checkout (`./sa3` with `--dit medium --decoder same-l`)
-      so the weights land outside a request. Skip if already warm; the
-      Magenta engine needs no pre-warm.
+- [ ] **SA3 weights warm (one-time):** `just setup-sa3` (also part of
+      `just setup`) pre-warms all three DiTs — the medium track model
+      is a 5.9 GB download that must never happen inside a request.
+      Skip if already warm; the Magenta engine needs no pre-warm.
 - [ ] Deck A streaming a style (e.g. `driving techno, four on the
       floor`); deck B idle.
 

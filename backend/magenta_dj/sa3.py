@@ -33,12 +33,10 @@ MAX_PROMPT_LENGTH = 500
 TIMEOUT_SECONDS = 120
 
 SETUP_HINT = (
-    "sa3_mlx checkout not found - clone "
-    "https://github.com/Stability-AI/stable-audio-3 to ~/Repos or "
-    "~/Documents/Magenta (or set SA3_MLX_HOME), run its "
-    "optimized/mlx/install.sh, and generate one clip manually per DiT you "
-    "plan to use (tracks need the medium DiT, a 5.9 GB download) so the "
-    "weights download outside a request"
+    "sa3_mlx checkout not found - run `just setup-sa3` (clones "
+    "https://github.com/Stability-AI/stable-audio-3, installs its MLX venv, "
+    "and pre-warms all three DiTs' weights, ~8 GB), or point SA3_MLX_HOME "
+    "at an existing checkout"
 )
 
 

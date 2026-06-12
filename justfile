@@ -3,13 +3,48 @@
 default:
     @just --list
 
-# One-time setup: backend deps, model weights, frontend deps + build.
+# One-time setup: backend deps, model weights (Magenta + Stable Audio 3),
+# frontend deps + build.
 setup:
     cd backend && uv sync
     cd backend && uv run mrt models init
     cd backend && uv run mrt models download mrt2_small
+    just setup-sa3
     cd frontend && npm install
     just build
+
+# Stable Audio 3 (ADR-0012/0013): the pinned checkout, its venv, and a
+# warm-up clip per DiT so the weights (~8 GB, medium included) download
+# here and never inside a request. Idempotent; honours SA3_MLX_HOME and
+# an existing checkout, and leaves an existing checkout's commit alone.
+setup-sa3:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    checkout="${SA3_MLX_HOME:-}"
+    if [ -z "$checkout" ]; then
+      for candidate in "$HOME/Documents/Magenta/stable-audio-3" "$HOME/Repos/stable-audio-3"; do
+        if [ -e "$candidate" ]; then checkout="$candidate"; break; fi
+      done
+    fi
+    if [ -z "$checkout" ]; then
+      checkout="$HOME/Repos/stable-audio-3"
+      git clone https://github.com/Stability-AI/stable-audio-3 "$checkout"
+      # The CLI vocabulary the backend speaks is measured at this commit
+      # (backend/magenta_dj/sa3.py); a fresh clone honours the pin.
+      git -C "$checkout" checkout bccf5b7
+    fi
+    mlx="$checkout/optimized/mlx"
+    if [ ! -x "$mlx/.venv/bin/python" ]; then
+      (cd "$mlx" && ./install.sh)
+    fi
+    for spec in "sm-sfx same-s" "sm-music same-s" "medium same-l"; do
+      set -- $spec
+      out="$(mktemp -d)/warm.wav"
+      echo "warming $1/$2…"
+      (cd "$mlx" && .venv/bin/python scripts/sa3_mlx.py --prompt "setup warm-up" \
+        --dit "$1" --decoder "$2" --seconds 1 --steps 1 --out "$out")
+      rm -f "$out"
+    done
 
 # Optional: the higher-quality deck model (per-deck picker in the UI).
 download-base-model:

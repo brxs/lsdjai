@@ -11,7 +11,8 @@ headphones, and playable from a Pioneer DDJ-FLX4. See
 
 - Apple Silicon Mac (MLX backend)
 - [uv](https://docs.astral.sh/uv/)
-- ~2 GB disk for model weights (downloaded on first setup)
+- ~10 GB disk for model weights (downloaded on first setup: Magenta
+  ~1.8 GB, Stable Audio 3 ~8 GB including the medium track model)
 - A Chromium-based browser (the app leans on Web Audio worklets and Web MIDI;
   it is developed and verified against Chrome)
 - Optional: a Pioneer DDJ-FLX4 for hardware control and its headphone jack
@@ -21,13 +22,17 @@ All common tasks live in the [`justfile`](justfile) — run `just` to list them.
 ## Setup
 
 ```sh
-just setup   # backend deps, model weights (~1.8 GB), frontend deps + build
+just setup   # backend deps, all model weights (~10 GB), frontend deps + build
 ```
 
-Models land in `~/Documents/Magenta/magenta-rt-v2` (override with
-`MAGENTA_HOME`). `just download-base-model` additionally fetches `mrt2_base`,
-selectable per deck in the UI — heavier and higher-quality; the app warns
-when the combined selection looks tight for your RAM.
+Magenta models land in `~/Documents/Magenta/magenta-rt-v2` (override with
+`MAGENTA_HOME`). Stable Audio 3 — generated pads and tracks — is cloned to
+`~/Repos/stable-audio-3` (override with `SA3_MLX_HOME`; an existing checkout
+is reused) and its weights are pre-warmed so no request ever pays for a
+download; `just setup-sa3` re-runs that half alone. `just
+download-base-model` additionally fetches `mrt2_base`, selectable per deck
+in the UI — heavier and higher-quality; the app warns when the combined
+selection looks tight for your RAM.
 
 ## Run
 
