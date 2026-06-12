@@ -110,3 +110,4 @@ verify-ui:
     cd frontend && node scripts/verify_m17.mjs
     cd frontend && node scripts/verify_m18.mjs
     cd frontend && node scripts/verify_m19.mjs
+    cd frontend && node scripts/verify_m20.mjs

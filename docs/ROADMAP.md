@@ -169,7 +169,19 @@ deck keeps rolling across mode switches. Measured: SA3 medium composes
 
 ## M20 — Beatgrids and sync: the track follows the booth
 
-**Status: ⬜ planned.**
+**Status: 🔶 built (2026-06-12), pending hardware verification.** All
+four scope items shipped on ADR-0014: the offline grid pass (period
+refined by fold-resultant search, drift refused by half-split
+agreement — a 120→126 splice yields no grid), varispeed with the
+tempo sliders mapped at last, SYNC from gated BPMs alone (the grid
+cannot take tempo-matching down with it), the dual-role jog
+(paused = seek, playing = stepped-bend phase nudge), grid ticks on
+the overview, and a phase meter comparing the track's grid clock
+against the live deck's beat **at the speakers** — the worklet now
+reports consumed frames in its own clock, because the wire feed
+leads the room by the buffer. Scripted half in `verify_m20.mjs`;
+the audible lock awaits
+[`m20-hardware-checklist.md`](m20-hardware-checklist.md).
 
 **Goal:** real beat-matching. A playback deck holds its entire decoded
 buffer, so a proper **beatgrid** — BPM *and* beat phase — is computable
