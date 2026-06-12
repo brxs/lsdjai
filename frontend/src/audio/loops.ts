@@ -35,6 +35,29 @@ export function quantiseLoopSeconds(seconds: number, bpm: number): number {
   return beats * beat
 }
 
+/** The music model breaks up below ~4 s (measured 2026-06-12: a 3.6 s
+ * request came back garbled from CLI and API alike, while 7.2 s and the
+ * spike's 7.74 s were clean), so generated loops never ask for less
+ * than this — more bars beat broken audio. */
+export const GENERATED_LOOP_MIN_SECONDS = 7
+
+/** Request length for a generated loop (M18). Quantised to whole BARS,
+ * not beats: a generated phrase is composed material, and wrapping it
+ * mid-bar throws away the musical sentence the prompt asked for. Four
+ * beats to the bar — the idiom of everything the decks produce. The
+ * quality floor above is enforced in both branches (ceil, so rounding
+ * can never dip back under it). */
+export function generatedLoopSeconds(seconds: number, bpm: number | null): number {
+  const floored = Math.max(seconds, GENERATED_LOOP_MIN_SECONDS)
+  if (bpm === null) return floored
+  const bar = (60 / bpm) * 4
+  const bars = Math.max(
+    Math.ceil(GENERATED_LOOP_MIN_SECONDS / bar),
+    Math.round(floored / bar),
+  )
+  return bars * bar
+}
+
 /** Build a seamless loop from a captured channel: the first
  * `crossfadeFrames` of the output blend the capture's surplus tail into
  * its head, so the wrap point is continuous by construction. The fade

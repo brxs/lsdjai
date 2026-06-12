@@ -691,7 +691,25 @@ by level measurement in e2e like M6.
 
 ## M18 — Generated pads: text-to-audio into the loop slots
 
-**Status: ⬜ planned.**
+**Status: ✅ done (2026-06-12).** All five scope items shipped on
+ADR-0012's architecture, plus one mid-milestone upgrade: Magenta
+rendering got promoted from "borrow a stopped deck's worker" to a
+dedicated third engine, so pads fill with the booth's own sound world
+while both decks stream. Measured on this machine (Apple M5, 16 GB):
+sa3_mlx generates a clip in ~1–1.5 s of whole-process wall (model
+load included) at ≤1.5 GB transient, and the integration listen
+caught sm-music breaking up below ~4 s — generated loops are floored
+at 7 s in whole bars (a 3.6 s request was garbled from CLI and API
+alike; 7.2 s clean). Exit criteria verified live (`verify_m18.mjs`,
+in `just verify-ui`): zero underruns on both decks through all three
+engines — including the render worker's lazy spawn and model load —
+the intercepted loop request sat at exactly 4 bars of the locked
+134 BPM with the tempo stamped into the prompt, pending → ready
+honest on every slot, and a one-shot fired over an active loop left
+it frozen. The audible half ticked by ear against
+[`m18-checklist.md`](m18-checklist.md): floored loops clean, Magenta
+clips unmistakably the booth's engine, one-shots overlaying with EQ
+live, SAMPLER LEDs truthful throughout.
 
 **Goal:** the freeze pads (M13) can only capture what a deck already
 played. Stable Audio 3's open-weight models generate finished audio
@@ -704,18 +722,21 @@ sound exists, so it complements the decks and never replaces them.
 
 Scope, ordered by risk:
 
-1. **Backend generator (ADR).** A generation module under ADR-0002's
-   isolation rule: only it imports `stable_audio_tools`. Open weights
-   under the Stability AI Community License — Small SFX (459M) for
-   one-shots, Small (0.6B) for musical loops — stored beside the
-   Magenta weights under `MAGENTA_HOME`. One endpoint takes
-   `{prompt, seconds, kind}` and returns a WAV. Models lazy-load on
-   first request behind an M3-style memory guardrail. The published
-   numbers ("seconds on an M4") are unverified and torch must coexist
-   with the MLX stack in one venv (fallback: its own worker process,
-   a pattern the backend already has) — the first build measures
-   load time, generation latency, and quality per model and records
-   them in the ADR; if quality disappoints, the milestone parks there.
+1. **Backend generator (ADR).** Stability's own MLX port —
+   `optimized/mlx` in the `stable-audio-3` repo — pure MLX, no torch,
+   no `stable-audio-tools` (whose Python `<3.11` pin shuts it out of
+   this backend regardless). The checkout lives outside the repo like
+   the Magenta weights, pinned to a commit; the backend never imports
+   it — one module spawns its `sa3` CLI per generation and reads back
+   the WAV, an isolation rule even stronger than ADR-0002's. Each run
+   is a short-lived process with progressive model freeing, so peak
+   RAM is transient and nothing competes with the deck workers
+   between generations — no resident model, no guardrail. Weights
+   (sm-sfx + sm-music + shared codec, ~2.3 GB) auto-download from HF
+   under the Community License. Stability's published M4-Pro numbers
+   (sm-music: a 5 s clip in 0.8 s wall, ~1.9 GB peak) need confirming
+   on this machine and quality is judged by ear; if quality
+   disappoints, the milestone parks there.
 2. **Pad integration.** The WAV decodes (`decodeAudioData` resamples
    to the engine's 48 kHz) into one of the four M13 slots — same
    playback path, same live/loop gain pair, same SAMPLER pads and
@@ -724,21 +745,30 @@ Scope, ordered by risk:
    one-shots fire once and fall silent. Session-only like captures
    (ADR-0009). Generation is async: the slot shows a pending state
    and lights when ready — the M15 sampled-target lifecycle pattern.
-3. **UI.** A generate row per deck: prompt field, SFX/loop toggle,
-   length. For loops, the deck's locked BPM (M14) feeds the prompt
-   text and the length quantises to whole bars through the existing
-   beat math — free-length the moment the gate blanks, honest like
-   every M14 consumer.
-4. **Hardware.** Nothing new to map: the M13 SAMPLER bank already
+3. **UI.** A generate row per deck: prompt field, an engine picker,
+   a one-shot/loop toggle, length. For music-model loops, the deck's
+   locked BPM (M14) feeds the prompt text and the length quantises to
+   whole bars through the existing beat math — free-length the moment
+   the gate blanks, honest like every M14 consumer — plus a measured
+   quality floor (sm-music breaks up under ~4 s).
+4. **Magenta as the third engine.** A dedicated render worker — the
+   deck worker loop reused, never told to play — fills pads with the
+   booth's own sound world while both decks stream. Spawned lazily on
+   first use (~2 GB resident after; the first request carries the
+   model load in its pending state), fresh generation state per clip,
+   results on a dedicated queue.
+5. **Hardware.** Nothing new to map: the M13 SAMPLER bank already
    fires the slots. Generation itself needs text — on-screen by
    design.
 
 **Exit criteria:** typing a prompt fills a chosen pad slot while both
 decks keep streaming with zero underruns; an SFX one-shot and a
 BPM-quantised musical loop each play through the existing loop path
-with EQ and Color FX live; pending → ready states are honest
-throughout; measured latency and model-choice findings recorded in
-the ADR; the decode and quantisation seams unit-tested.
+with EQ and Color FX live; a Magenta-rendered clip fills a pad the
+same way while both decks keep playing; pending → ready states are
+honest throughout; measured latency and model-choice findings
+recorded in the ADR; the decode, quantisation, render, and endpoint
+seams unit-tested.
 
 ## M19 — Track deck: trade the stream for a composed track
 
@@ -760,14 +790,16 @@ Scope, ordered by risk:
    waveform strip, beat tracker (M14), freeze capture (M13), and
    style sampling (M15) all keep working unexamined — but the ADR
    decides that against a separate buffer-source path, and what
-   happens to the model worker in track mode (likely released, to
-   fund the 1.4B generator's memory; restart-on-return is M3's
-   recovery machinery).
+   happens to the model worker in track mode (idle-but-warm for an
+   instant return, or released to cut footprint with restart-on-return
+   as M3's recovery machinery; generation itself is a transient
+   subprocess either way).
 2. **Generation pane.** In track mode the style pad pane swaps for a
    generation pane: prompt, length, generate (the M18 endpoint with a
-   longer `seconds_total`, Medium model), then a track overview with
-   position. Regenerate replaces; the prompt persists, the audio is
-   session-only like every captured artefact.
+   longer duration, the medium DiT — ~15 s wall for a 2-minute track
+   on M4-Pro-class hardware, ~5 GB transient), then a track overview
+   with position. Regenerate replaces; the prompt persists, the audio
+   is session-only like every captured artefact.
 3. **Transport.** PLAY/PAUSE drives track playback through the
    existing intent; CUE returns to the top (deck-prep semantics,
    adapted); seek on the waveform strip; position readout in the deck
@@ -809,5 +841,5 @@ Ideas parked deliberately — each would get its own ADR if picked up:
 | Memory pressure with `mrt2_base` decks | Crashes mid-session | RAM guardrails in model picker (M3); worker-death recovery |
 | FLX4 MIDI map differs from docs / firmware | Dead or wrong controls | Map sourced from the proven Mixxx mapping (docs/midi-ddj-flx4.md); in-app monitor verifies against the device |
 | Web MIDI is Chromium-only | No hardware control elsewhere | Accepted (ADR-0005); on-screen UI unaffected |
-| Stable Audio latency/quality unmeasured on target hardware (M18/M19) | Generated pads underwhelm or stall adoption | Generation is async and off the audio path; the first build measures and records numbers in the ADR, with a park-here kill criterion |
-| torch (`stable-audio-tools`) alongside the MLX stack in one backend | Dependency clash or memory blowup | Isolated behind one module like `magenta_rt` (ADR-0002 pattern); separate worker process as fallback; lazy-load + RAM guardrail |
+| Stable Audio quality on this machine unjudged (M18/M19) | Generated pads underwhelm or stall adoption | Generation is async and off the audio path; Stability publishes M4-Pro-class benchmarks and the first build re-measures locally, with a park-here kill criterion |
+| `sa3_mlx` is a checkout + CLI, not a pinned package | Upstream drift breaks generation | Checkout pinned to a commit; one backend module owns the spawn contract; a missing or failing CLI degrades to a clear error with the decks unaffected |

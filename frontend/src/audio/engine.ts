@@ -66,11 +66,24 @@ export type DeckChannel = {
   /** Freeze pads (M13, ADR-0009): capture the just-played tail into a
    * slot. Resolves false when too little has been played to loop. */
   captureLoop: (slot: number, seconds: number) => Promise<boolean>
+  /** Generated pads (M18, ADR-0012): decode a WAV into a slot. Loops
+   * arrive with a surplus seam tail and get the capture treatment
+   * (fold + wrap); one-shots are stored as-is. False on a bad slot or
+   * an undecodable body. */
+  loadGeneratedLoop: (
+    slot: number,
+    wav: ArrayBuffer,
+    oneShot: boolean,
+  ) => Promise<boolean>
   /** Swap the channel source from the live stream to a filled slot's
    * loop (false when the slot is empty). The stream keeps running,
-   * muted, so stopLoop returns to fresh material instantly. */
+   * muted, so stopLoop returns to fresh material instantly. One-shot
+   * slots overlay instead: they sum onto whatever is playing, fire
+   * once, and fall silent — the live/loop handover is untouched. */
   playLoop: (slot: number) => boolean
   stopLoop: () => void
+  /** Cut a ringing one-shot (deck STOP silences everything). */
+  stopOneShot: () => void
   clearLoop: (slot: number) => void
   /** Style sampling (M15): the just-played tail as wire-format PCM,
    * or null when too little has played to embed meaningfully. */
@@ -137,6 +150,11 @@ function snapRamp(param: AudioParam, target: number, time: number) {
   param.cancelAndHoldAtTime(time)
   param.setTargetAtTime(target, time, PARAM_RAMP_SECONDS)
   param.setValueAtTime(target, time + SNAP_AFTER_SECONDS)
+}
+
+/** A channel of a decoded buffer; a mono decode serves both sides. */
+function channelData(buffer: AudioBuffer, channel: number): Float32Array {
+  return buffer.getChannelData(Math.min(channel, buffer.numberOfChannels - 1))
 }
 
 /** Centre position; the single source for App state and the bus default. */
@@ -381,9 +399,20 @@ export function createAudioEngine(): AudioEngine {
       // live with the channel; the source node swaps in behind the
       // live/loop gain pair above. Captures are answered by the player
       // worklet from its played history, matched by id.
-      const loopBuffers: (AudioBuffer | null)[] =
-        Array<AudioBuffer | null>(LOOP_SLOT_COUNT).fill(null)
+      type LoopSlotBuffer = { buffer: AudioBuffer; oneShot: boolean }
+      const loopBuffers: (LoopSlotBuffer | null)[] =
+        Array<LoopSlotBuffer | null>(LOOP_SLOT_COUNT).fill(null)
       let loopSource: AudioBufferSourceNode | null = null
+      // One ringing one-shot at a time: a re-fire cuts the previous
+      // (the per-pad mono convention of hardware samplers).
+      let oneShotSource: AudioBufferSourceNode | null = null
+      function stopOneShotSource() {
+        const source = oneShotSource
+        if (!source) return
+        oneShotSource = null
+        source.onended = () => source.disconnect()
+        source.stop()
+      }
       let nextCaptureId = 0
       type Captured = { left: Float32Array; right: Float32Array }
       const pendingCaptures = new Map<number, (captured: Captured) => void>()
@@ -521,20 +550,62 @@ export function createAudioEngine(): AudioEngine {
           const buffer = bus.context.createBuffer(2, left.length, rate)
           buffer.copyToChannel(left, 0)
           buffer.copyToChannel(right, 1)
-          loopBuffers[slot] = buffer
+          loopBuffers[slot] = { buffer, oneShot: false }
+          return true
+        },
+        async loadGeneratedLoop(slot, wav, oneShot) {
+          if (slot < 0 || slot >= LOOP_SLOT_COUNT) return false
+          let decoded: AudioBuffer
+          try {
+            // decodeAudioData resamples to the context rate, so the
+            // generator's 44.1 kHz lands on the graph's 48 k for free.
+            decoded = await bus.context.decodeAudioData(wav)
+          } catch {
+            return false
+          }
+          if (oneShot) {
+            loopBuffers[slot] = { buffer: decoded, oneShot: true }
+            return true
+          }
+          // Loops get the capture treatment: the request carried a
+          // surplus seam tail, folded here so the wrap point is
+          // continuous and the musical length stays exact.
+          const rate = bus.context.sampleRate
+          const fadeFrames = Math.round(LOOP_CROSSFADE_SECONDS * rate)
+          const left = buildLoopChannel(channelData(decoded, 0), fadeFrames)
+          const right = buildLoopChannel(channelData(decoded, 1), fadeFrames)
+          const buffer = bus.context.createBuffer(2, left.length, rate)
+          buffer.copyToChannel(left, 0)
+          buffer.copyToChannel(right, 1)
+          loopBuffers[slot] = { buffer, oneShot: false }
           return true
         },
         playLoop(slot) {
-          const buffer = loopBuffers[slot]
-          if (!buffer) return false
+          const filled = loopBuffers[slot]
+          if (!filled) return false
           const time = bus.context.currentTime
+          if (filled.oneShot) {
+            // Overlay, not handover: the one-shot sums into the trim
+            // head next to whatever is playing and ends itself.
+            stopOneShotSource()
+            const source = bus.context.createBufferSource()
+            source.buffer = filled.buffer
+            source.connect(trim)
+            source.onended = () => {
+              source.disconnect()
+              if (oneShotSource === source) oneShotSource = null
+            }
+            source.start(time)
+            oneShotSource = source
+            return true
+          }
           // Loop→loop swaps cut hard (the sampler convention); only the
           // live↔loop handover below is ramped. A source still fading
           // out from a recent stopLoop is cut too.
           cutFadingLoopSource(time)
           stopLoopSource(time)
           const source = bus.context.createBufferSource()
-          source.buffer = buffer
+          source.buffer = filled.buffer
           source.loop = true
           source.connect(loopGain)
           source.start(time)
@@ -550,6 +621,9 @@ export function createAudioEngine(): AudioEngine {
           snapRamp(loopGain.gain, 0, time)
           // The source rings through the down-ramp, then stops.
           stopLoopSource(time + SNAP_AFTER_SECONDS)
+        },
+        stopOneShot() {
+          stopOneShotSource()
         },
         clearLoop(slot) {
           if (slot < 0 || slot >= LOOP_SLOT_COUNT) return
@@ -578,6 +652,7 @@ export function createAudioEngine(): AudioEngine {
           worklet.disconnect()
           cutFadingLoopSource(bus.context.currentTime)
           stopLoopSource(bus.context.currentTime)
+          stopOneShotSource()
           liveGain.disconnect()
           loopGain.disconnect()
           trim.disconnect()

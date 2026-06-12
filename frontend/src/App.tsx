@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { INITIAL_CROSSFADE, INITIAL_CUE_MIX, type DeckId } from './audio/engine'
@@ -252,12 +252,22 @@ function App() {
     setFxPadLeds('b', deckB.fx.kind ? FX_KINDS.indexOf(deckB.fx.kind) : null)
   }, [midiStatus, setFxPadLeds, deckA.fx.kind, deckB.fx.kind, ledEpoch])
 
-  // SAMPLER bank LEDs (M13): filled freeze-loop slots lit per deck.
+  // SAMPLER bank LEDs (M13): filled pad slots lit per deck — captures
+  // and generated slots alike (M18); a pending generation stays dark
+  // until it's actually playable.
+  const loopLedsA = useMemo(
+    () => deckA.loop.slots.map((slot) => slot.state === 'filled'),
+    [deckA.loop.slots],
+  )
+  const loopLedsB = useMemo(
+    () => deckB.loop.slots.map((slot) => slot.state === 'filled'),
+    [deckB.loop.slots],
+  )
   useEffect(() => {
     if (midiStatus !== 'connected') return
-    setLoopPadLeds('a', deckA.loop.filled)
-    setLoopPadLeds('b', deckB.loop.filled)
-  }, [midiStatus, setLoopPadLeds, deckA.loop.filled, deckB.loop.filled, ledEpoch])
+    setLoopPadLeds('a', loopLedsA)
+    setLoopPadLeds('b', loopLedsB)
+  }, [midiStatus, setLoopPadLeds, loopLedsA, loopLedsB, ledEpoch])
 
   // Cue LEDs (M10): channel CUE mirrors the headphone-cue toggles,
   // transport CUE lights while a deck is primed off air.
@@ -344,6 +354,8 @@ function App() {
           onLoopPad={deckA.toggleLoopPad}
           onClearLoopPad={deckA.clearLoopPad}
           onSetLoopSeconds={deckA.setLoopSeconds}
+          onGenerateToPad={deckA.generateToPad}
+          generateError={deckA.generateError}
           bpm={deckA.bpm}
           onSampleOtherDeck={handleSampleForA}
           canSample={deckB.state.playing}
@@ -384,6 +396,8 @@ function App() {
           onLoopPad={deckB.toggleLoopPad}
           onClearLoopPad={deckB.clearLoopPad}
           onSetLoopSeconds={deckB.setLoopSeconds}
+          onGenerateToPad={deckB.generateToPad}
+          generateError={deckB.generateError}
           bpm={deckB.bpm}
           onSampleOtherDeck={handleSampleForB}
           canSample={deckA.state.playing}

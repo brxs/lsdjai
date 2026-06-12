@@ -99,8 +99,22 @@
     "loop": {
       "title": "Freeze loops",
       "slot": "Loop slot {{n}}",
+      "slotPending": "Loop slot {{n}} — generating",
       "length": "Loop length",
       "lengthOption": "{{seconds}} s"
+    },
+    "generate": {
+      "title": "Generate to pad",
+      "prompt": "Generate prompt",
+      "engine": "Engine",
+      "engineSfx": "SFX (Stable Audio 3)",
+      "engineMusic": "Music (Stable Audio 3)",
+      "engineMagenta": "Magenta",
+      "kind": "Type",
+      "kindOneShot": "One-shot",
+      "kindLoop": "Loop",
+      "action": "Generate",
+      "failed": "Generation failed: {{message}}"
     },
     "play": "Play",
     "stop": "Stop",

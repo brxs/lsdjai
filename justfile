@@ -68,3 +68,4 @@ verify-ui:
     cd frontend && node scripts/verify_m5.mjs
     cd frontend && node scripts/verify_m6.mjs
     cd frontend && node scripts/verify_m17.mjs
+    cd frontend && node scripts/verify_m18.mjs

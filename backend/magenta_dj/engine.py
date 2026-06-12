@@ -5,6 +5,8 @@ measured facts this wrapper relies on); everything else in the backend
 depends on this interface instead of magenta_rt directly.
 """
 
+import math
+
 import numpy as np
 
 SAMPLE_RATE = 48_000
@@ -152,3 +154,23 @@ class DeckEngine:
             style=self._style, frames=FRAMES_PER_CHUNK, state=self._state
         )
         return waveform.samples.astype(np.float32).tobytes()
+
+    def render_clip(self, prompt: str, seconds: float) -> bytes:
+        """Render a standalone clip from a text prompt (M18, ADR-0012).
+
+        Deliberately independent of the live stream: fresh generation
+        state and its own style blend, so `self._state`/`self._style`
+        — the stream's continuity — are never touched. The worker only
+        runs this while the deck is stopped, so render time cannot
+        stall pacing. Returns wire-format PCM trimmed to `seconds`.
+        """
+        style = self._embed_cached(prompt).astype(np.float32)
+        state = None
+        pieces = []
+        for _ in range(math.ceil(seconds / CHUNK_SECONDS)):
+            waveform, state = self._system.generate(
+                style=style, frames=FRAMES_PER_CHUNK, state=state
+            )
+            pieces.append(waveform.samples.astype(np.float32))
+        samples = np.concatenate(pieces)[: round(seconds * SAMPLE_RATE)]
+        return samples.tobytes()

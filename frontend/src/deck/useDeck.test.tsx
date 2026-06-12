@@ -69,8 +69,10 @@ function makeFakeEngine(overrides: Partial<AudioEngine> = {}) {
     setTrim: vi.fn(),
     setOnAir: vi.fn(),
     captureLoop: vi.fn(async () => true),
+    loadGeneratedLoop: vi.fn(async () => true),
     playLoop: vi.fn(() => true),
     stopLoop: vi.fn(),
+    stopOneShot: vi.fn(),
     clearLoop: vi.fn(),
     captureSample: vi.fn(async () => new Float32Array(2)),
     getLevel: vi.fn(() => 0),
@@ -513,7 +515,7 @@ describe('useDeck freeze loops', () => {
     await act(async () => result.current.toggleLoopPad(1))
     expect(channel.captureLoop).toHaveBeenCalledWith(1, 4)
     expect(channel.playLoop).toHaveBeenCalledWith(1)
-    expect(result.current.loop.filled[1]).toBe(true)
+    expect(result.current.loop.slots[1].state).toBe('filled')
     expect(result.current.loop.active).toBe(1)
   })
 
@@ -525,7 +527,7 @@ describe('useDeck freeze loops', () => {
     await act(async () => result.current.toggleLoopPad(0))
     expect(channel.stopLoop).toHaveBeenCalled()
     expect(result.current.loop.active).toBeNull()
-    expect(result.current.loop.filled[0]).toBe(true)
+    expect(result.current.loop.slots[0].state).toBe('filled')
   })
 
   it('swaps onto a filled slot without recapturing', async () => {
@@ -548,7 +550,7 @@ describe('useDeck freeze loops', () => {
 
     await act(async () => result.current.toggleLoopPad(0))
     expect(channel.playLoop).not.toHaveBeenCalled()
-    expect(result.current.loop.filled[0]).toBe(false)
+    expect(result.current.loop.slots[0].state).toBe('empty')
     expect(result.current.loop.active).toBeNull()
   })
 
@@ -558,7 +560,7 @@ describe('useDeck freeze loops', () => {
 
     act(() => result.current.toggleLoopPad(0))
     expect(channel.captureLoop).not.toHaveBeenCalled()
-    expect(result.current.loop.filled[0]).toBe(false)
+    expect(result.current.loop.slots[0].state).toBe('empty')
   })
 
   it('stop() drops the loop but keeps the capture', async () => {
@@ -569,7 +571,7 @@ describe('useDeck freeze loops', () => {
     act(() => result.current.stop())
     expect(channel.stopLoop).toHaveBeenCalled()
     expect(result.current.loop.active).toBeNull()
-    expect(result.current.loop.filled[2]).toBe(true)
+    expect(result.current.loop.slots[2].state).toBe('filled')
   })
 
   it('clears a slot, stopping it first when it is the active one', async () => {
@@ -580,7 +582,7 @@ describe('useDeck freeze loops', () => {
     act(() => result.current.clearLoopPad(3))
     expect(channel.stopLoop).toHaveBeenCalled()
     expect(channel.clearLoop).toHaveBeenCalledWith(3)
-    expect(result.current.loop.filled[3]).toBe(false)
+    expect(result.current.loop.slots[3].state).toBe('empty')
     expect(result.current.loop.active).toBeNull()
   })
 
@@ -597,7 +599,7 @@ describe('useDeck freeze loops', () => {
     await act(async () => finishCapture(true))
 
     expect(channel.playLoop).not.toHaveBeenCalled()
-    expect(result.current.loop.filled[0]).toBe(false)
+    expect(result.current.loop.slots[0].state).toBe('empty')
     expect(result.current.loop.active).toBeNull()
   })
 
@@ -619,5 +621,253 @@ describe('useDeck freeze loops', () => {
     act(() => result.current.setLoopSeconds(2))
     await act(async () => result.current.toggleLoopPad(0))
     expect(channel.captureLoop).toHaveBeenCalledWith(0, 2)
+  })
+})
+
+describe('useDeck generated pads', () => {
+  async function playingDeck(engine: AudioEngine) {
+    const rendered = renderDeck(engine)
+    act(() => socket(0).serverOpen())
+    await act(() => rendered.result.current.play())
+    return rendered
+  }
+
+  function streamClicks(bpm: number, seconds: number) {
+    const samples = clickTrack(bpm, seconds, 48_000)
+    const chunk = 1920 * 2 // the 40 ms wire chunk
+    act(() => {
+      for (let i = 0; i < samples.length; i += chunk) {
+        socket(0).onmessage?.({ data: samples.slice(i, i + chunk).buffer })
+      }
+    })
+  }
+
+  function stubFetchOk() {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      arrayBuffer: async () => new ArrayBuffer(16),
+      json: async () => ({}),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  function requestBody(fetchMock: ReturnType<typeof vi.fn>) {
+    const [, init] = fetchMock.mock.calls.at(-1)! as [string, { body: string }]
+    return JSON.parse(init.body) as {
+      prompt: string
+      seconds: number
+      kind: string
+    }
+  }
+
+  it('generates an sfx one-shot into the first empty slot', async () => {
+    const fetchMock = stubFetchOk()
+    const { engine, channel } = makeFakeEngine()
+    const { result } = await playingDeck(engine)
+
+    act(() => result.current.generateToPad('  vinyl spinback  ', 'sfx', true))
+    expect(result.current.loop.slots[0]).toEqual({
+      state: 'pending',
+      label: 'vinyl spinback',
+      oneShot: true,
+    })
+
+    await act(async () => {})
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/generate',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(requestBody(fetchMock)).toEqual({
+      prompt: 'vinyl spinback',
+      seconds: 4,
+      kind: 'sfx',
+    })
+    expect(channel.loadGeneratedLoop).toHaveBeenCalledWith(
+      0,
+      expect.any(ArrayBuffer),
+      true,
+    )
+    expect(result.current.loop.slots[0]).toEqual({
+      state: 'filled',
+      label: 'vinyl spinback',
+      oneShot: true,
+    })
+    expect(result.current.loop.active).toBeNull()
+  })
+
+  it('shapes a loop by the locked tempo: whole bars, BPM in the prompt', async () => {
+    const fetchMock = stubFetchOk()
+    const { engine } = makeFakeEngine()
+    const { result } = await playingDeck(engine)
+    streamClicks(128, 16)
+    act(() => void vi.advanceTimersByTime(3_000))
+    const bpm = result.current.bpm!
+
+    act(() => result.current.generateToPad('deep house groove', 'music', false))
+    await act(async () => {})
+    const body = requestBody(fetchMock)
+    expect(body.kind).toBe('music')
+    expect(body.prompt).toBe(`deep house groove, ${Math.round(bpm)} BPM`)
+    // The request carries the seam surplus on top of a whole-bar length
+    // that clears the model's quality floor.
+    const bars = ((body.seconds - 0.03) * bpm) / 60 / 4
+    expect(Math.abs(bars - Math.round(bars))).toBeLessThan(1e-6)
+    expect(body.seconds).toBeGreaterThanOrEqual(7)
+  })
+
+  it('renders through the third Magenta engine', async () => {
+    const fetchMock = stubFetchOk()
+    const { engine, channel } = makeFakeEngine()
+    const { result } = await playingDeck(engine)
+    streamClicks(128, 16)
+    act(() => void vi.advanceTimersByTime(3_000))
+
+    act(() => result.current.generateToPad('dub chords', 'magenta', false))
+    await act(async () => {})
+    const [url] = fetchMock.mock.calls.at(-1)! as unknown as [string]
+    expect(url).toBe('/api/render')
+    const body = requestBody(fetchMock)
+    // No kind field, no BPM stamp (Magenta ignores tempo text by
+    // design), no sm-music quality floor — the picker's length plus
+    // the seam surplus.
+    expect(body).toEqual({ prompt: 'dub chords', seconds: 4.03 })
+    expect(channel.loadGeneratedLoop).toHaveBeenCalledWith(
+      0,
+      expect.any(ArrayBuffer),
+      false,
+    )
+  })
+
+  it('an sfx-model loop keeps the picker length without the music floor', async () => {
+    const fetchMock = stubFetchOk()
+    const { engine } = makeFakeEngine()
+    const { result } = await playingDeck(engine)
+
+    act(() => result.current.generateToPad('crackle texture', 'sfx', false))
+    await act(async () => {})
+    const body = requestBody(fetchMock)
+    expect(body.kind).toBe('sfx')
+    expect(body.seconds).toBeCloseTo(4 + 0.03, 6)
+  })
+
+  it('floors the length and keeps the bare prompt while the gate is blank', async () => {
+    const fetchMock = stubFetchOk()
+    const { engine } = makeFakeEngine()
+    const { result } = await playingDeck(engine)
+
+    act(() => result.current.generateToPad('dub siren', 'music', false))
+    await act(async () => {})
+    const body = requestBody(fetchMock)
+    expect(body.prompt).toBe('dub siren')
+    // 4 s from the picker would come back garbled (the measured floor).
+    expect(body.seconds).toBeCloseTo(7 + 0.03, 6)
+  })
+
+  it('fires a filled one-shot as an overlay, never as the active loop', async () => {
+    stubFetchOk()
+    const { engine, channel } = makeFakeEngine()
+    const { result } = await playingDeck(engine)
+    act(() => result.current.generateToPad('air horn', 'sfx', true))
+    await act(async () => {})
+
+    await act(async () => result.current.toggleLoopPad(0))
+    expect(channel.playLoop).toHaveBeenCalledWith(0)
+    expect(result.current.loop.active).toBeNull()
+  })
+
+  it('a clear during the flight wins over the result', async () => {
+    let finish!: (response: unknown) => void
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise((resolve) => (finish = resolve))),
+    )
+    const { engine, channel } = makeFakeEngine()
+    const { result } = await playingDeck(engine)
+
+    act(() => result.current.generateToPad('riser', 'sfx', true))
+    act(() => result.current.clearLoopPad(0))
+    await act(async () =>
+      finish({
+        ok: true,
+        arrayBuffer: async () => new ArrayBuffer(16),
+        json: async () => ({}),
+      }),
+    )
+
+    expect(channel.loadGeneratedLoop).not.toHaveBeenCalled()
+    expect(result.current.loop.slots[0].state).toBe('empty')
+  })
+
+  it('reverts the slot and surfaces the backend detail on failure', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 503,
+        json: async () => ({ detail: 'sa3_mlx checkout not found' }),
+      })),
+    )
+    const { engine } = makeFakeEngine()
+    const { result } = await playingDeck(engine)
+
+    act(() => result.current.generateToPad('riser', 'sfx', true))
+    await act(async () => {})
+    expect(result.current.loop.slots[0].state).toBe('empty')
+    expect(result.current.generateError).toBe('sa3_mlx checkout not found')
+
+    // The next attempt starts clean.
+    stubFetchOk()
+    act(() => result.current.generateToPad('riser', 'sfx', true))
+    expect(result.current.generateError).toBeNull()
+  })
+
+  it('an undecodable body is a failure, not a filled slot', async () => {
+    stubFetchOk()
+    const { engine, channel } = makeFakeEngine()
+    vi.mocked(channel.loadGeneratedLoop).mockResolvedValue(false)
+    const { result } = await playingDeck(engine)
+
+    act(() => result.current.generateToPad('riser', 'sfx', true))
+    await act(async () => {})
+    expect(result.current.loop.slots[0].state).toBe('empty')
+    expect(result.current.generateError).toMatch(/decoded/)
+  })
+
+  it('does nothing without an empty slot or a prompt', async () => {
+    const fetchMock = stubFetchOk()
+    const { engine, channel } = makeFakeEngine()
+    const { result } = await playingDeck(engine)
+
+    act(() => result.current.generateToPad('   ', 'sfx', true))
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    for (let slot = 0; slot < 4; slot++) {
+      await act(async () => result.current.toggleLoopPad(slot))
+    }
+    vi.mocked(channel.captureLoop).mockClear()
+    act(() => result.current.generateToPad('riser', 'sfx', true))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('stop() cuts a ringing one-shot', async () => {
+    const { engine, channel } = makeFakeEngine()
+    const { result } = await playingDeck(engine)
+
+    act(() => result.current.stop())
+    expect(channel.stopOneShot).toHaveBeenCalled()
+  })
+
+  it('creates the channel on demand: pads fill before the deck plays', async () => {
+    stubFetchOk()
+    const { engine, channel } = makeFakeEngine()
+    const { result } = renderDeck(engine)
+    act(() => socket(0).serverOpen())
+
+    act(() => result.current.generateToPad('air horn', 'sfx', true))
+    await act(async () => {})
+    expect(engine.createDeckChannel).toHaveBeenCalled()
+    expect(channel.loadGeneratedLoop).toHaveBeenCalled()
+    expect(result.current.loop.slots[0].state).toBe('filled')
   })
 })

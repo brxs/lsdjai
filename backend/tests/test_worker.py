@@ -20,9 +20,17 @@ class FakeEngine:
         self.styles = []
         self.style_sample_keys = []
         self.samples = []
+        self.renders = []
         self.fail_set_style = False
         self.fail_embed_sample = False
         self.fail_generate = False
+        self.fail_render = False
+
+    def render_clip(self, prompt, seconds):
+        if self.fail_render:
+            raise RuntimeError("render blew up")
+        self.renders.append((prompt, seconds))
+        return FAKE_PCM
 
     def set_style(self, prompts, sample_keys=frozenset()):
         if self.fail_set_style:
@@ -42,14 +50,20 @@ class FakeEngine:
 
 
 class DeckHarness:
-    def __init__(self):
+    def __init__(self, with_clip_queue=True):
         self.engine = FakeEngine()
         self.cmd_queue = queue.Queue()
         self.out_queue = queue.Queue()
+        # Production deck workers run without a clip queue — only the
+        # render worker gets one (M18).
+        self.clip_queue = queue.Queue() if with_clip_queue else None
         self.thread = threading.Thread(
             target=run_deck_worker,
             args=("test", "fake", self.cmd_queue, self.out_queue),
-            kwargs={"engine_factory": lambda model: self.engine},
+            kwargs={
+                "engine_factory": lambda model: self.engine,
+                "clip_queue": self.clip_queue,
+            },
             daemon=True,
         )
 
@@ -166,3 +180,48 @@ def test_generation_failure_stops_deck_but_worker_survives(deck):
     deck.engine.fail_generate = False
     deck.send(type="play")
     assert deck.next_event("audio") == FAKE_PCM
+
+
+def test_render_clip_answers_on_the_clip_queue(deck):
+    deck.send(type="render_clip", id="clip-1", prompt="air horn", seconds=2.0)
+    result_id, result = deck.clip_queue.get(timeout=3.0)
+    assert result_id == "clip-1"
+    assert result == {"pcm": FAKE_PCM}
+    assert deck.engine.renders == [("air horn", 2.0)]
+
+
+def test_render_clip_refuses_while_playing(deck):
+    deck.send(type="play")
+    deck.next_event("audio")
+    deck.send(type="render_clip", id="clip-2", prompt="air horn", seconds=2.0)
+    result_id, result = deck.clip_queue.get(timeout=3.0)
+    assert result_id == "clip-2"
+    assert result == {"error": "deck is playing"}
+    assert deck.engine.renders == []
+
+
+def test_render_failure_answers_an_error_and_worker_survives(deck):
+    deck.engine.fail_render = True
+    deck.send(type="render_clip", id="clip-3", prompt="air horn", seconds=2.0)
+    _, result = deck.clip_queue.get(timeout=3.0)
+    assert result == {"error": "render failed"}
+
+    deck.send(type="play")
+    assert deck.next_event("audio") == FAKE_PCM
+
+
+def test_render_clip_with_no_clip_queue_is_dropped_not_fatal():
+    # A misrouted render at a queue-less deck worker has nowhere to
+    # answer; it must be dropped, not crash the stream (ADR-0012).
+    harness = DeckHarness(with_clip_queue=False)
+    harness.thread.start()
+    harness.next_event("ready")
+    harness.send(type="render_clip", id="clip-9", prompt="air horn", seconds=2.0)
+    harness.send(type="set_prompt", prompt="proof of life")
+    assert harness.next_event("style_applied")["prompts"] == [
+        {"text": "proof of life", "weight": 1.0}
+    ]
+    assert harness.engine.renders == []
+    harness.send(type="shutdown")
+    harness.thread.join(timeout=2)
+    assert not harness.thread.is_alive()

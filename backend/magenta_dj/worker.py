@@ -2,7 +2,9 @@
 
 Commands arrive on cmd_queue as dicts ({"type": "play" | "stop" |
 "set_prompt" | "shutdown", ...}). Output goes to out_queue as
-("audio", bytes) and ("status", dict) tuples.
+("audio", bytes) and ("status", dict) tuples. Clip renders (M18) answer
+on the dedicated clip_queue as (id, {"pcm": ...} | {"error": ...}) so
+multi-second results never sit behind the audio stream.
 
 Pacing: the model generates faster than real time, so the worker throttles
 itself to stay TARGET_AHEAD_SECONDS ahead of wall-clock playback — enough
@@ -24,7 +26,12 @@ TARGET_AHEAD_SECONDS = 3.0
 
 
 def run_deck_worker(
-    deck_id: str, model: str, cmd_queue, out_queue, engine_factory=DeckEngine
+    deck_id: str,
+    model: str,
+    cmd_queue,
+    out_queue,
+    engine_factory=DeckEngine,
+    clip_queue=None,
 ) -> None:
     logging.basicConfig(level=logging.INFO)
     logger.info("deck %s: loading %s", deck_id, model)
@@ -69,6 +76,26 @@ def run_deck_worker(
                     pace_seconds = 0.0
             elif kind == "stop":
                 playing = False
+            elif kind == "render_clip":
+                # Worker-side gate, where the truth lives: rendering on a
+                # playing deck would stall the pacing loop for seconds.
+                if clip_queue is None:
+                    # Deck workers ship without a clip queue — only the
+                    # render worker gets one. A misrouted render has nowhere
+                    # to answer; drop it rather than crash the stream.
+                    logger.warning(
+                        "deck %s: render_clip with no clip queue; dropped", deck_id
+                    )
+                elif playing:
+                    clip_queue.put((cmd["id"], {"error": "deck is playing"}))
+                else:
+                    try:
+                        pcm = engine.render_clip(cmd["prompt"], cmd["seconds"])
+                    except Exception:
+                        logger.exception("deck %s: render_clip failed", deck_id)
+                        clip_queue.put((cmd["id"], {"error": "render failed"}))
+                    else:
+                        clip_queue.put((cmd["id"], {"pcm": pcm}))
             elif kind == "embed_sample":
                 started = time.monotonic()
                 try:

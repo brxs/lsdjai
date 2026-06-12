@@ -85,6 +85,33 @@
   gap: var(--space-2);
 }
 
+.deck__generate {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.deck__generate-options {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.deck__generate-options > * {
+  flex: 1;
+  min-width: 0;
+}
+
+.deck__generate-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-end;
+}
+
+.deck__generate-prompt {
+  flex: 1;
+  min-width: 0;
+}
+
 .deck__prompt-row {
   display: flex;
   gap: var(--space-2);

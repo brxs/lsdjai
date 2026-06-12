@@ -155,3 +155,39 @@ def test_failed_embed_does_not_evict(monkeypatch):
     with pytest.raises(RuntimeError):
         engine.embed_sample("sample:new", sample_pcm(4))
     assert list(engine._samples) == ["sample:kept"]
+
+
+def test_render_clip_leaves_the_stream_untouched():
+    engine, _ = make_engine({"air horn": np.array([1.0, 0.0])})
+    chunk_calls = []
+
+    def generate(style=None, frames=None, state=None):
+        chunk_calls.append((frames, state))
+        samples = np.full((48_000, 2), 0.5, dtype=np.float32)
+        return SimpleNamespace(samples=samples), "clip-state"
+
+    engine._system.generate = generate
+    engine._state = "stream-state"
+    engine._style = "stream-style"
+
+    pcm = engine.render_clip("air horn", 1.5)
+    # Trimmed to exactly 1.5 s of interleaved stereo float32.
+    assert len(pcm) == int(1.5 * 48_000) * 2 * 4
+    # ceil(1.5 / CHUNK_SECONDS) = 2 chunks, threaded through a state of
+    # their own...
+    assert [frames for frames, _ in chunk_calls] == [25, 25]
+    assert chunk_calls[1][1] == "clip-state"
+    # ...while the live stream's continuity stays untouched.
+    assert engine._state == "stream-state"
+    assert engine._style == "stream-style"
+
+
+def test_render_clip_reuses_the_text_embed_cache():
+    engine, calls = make_engine({"air horn": np.array([1.0, 0.0])})
+    engine._system.generate = lambda style=None, frames=None, state=None: (
+        SimpleNamespace(samples=np.zeros((48_000, 2), dtype=np.float32)),
+        None,
+    )
+    engine.render_clip("air horn", 1.0)
+    engine.render_clip("air horn", 1.0)
+    assert calls == ["air horn"]
