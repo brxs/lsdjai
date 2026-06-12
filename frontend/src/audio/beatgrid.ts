@@ -21,15 +21,18 @@ export type Beatgrid = {
 
 const HOP_FRAMES = 512
 const EPS = 1e-10
-// Honesty thresholds, measured against the synthetic corpus in
-// beatgrid.test.ts: a steady click track folds to a resultant near
-// 1.0; noise and drifting material fall well under the floor or
-// fail the half-split agreement. The resultant (mean unit-vector
-// length) is the search metric because it peaks exactly at the true
-// period — a windowed-mass count plateaus across nearby periods and
-// lets the search pick a drifting edge.
+// Honesty thresholds, measured against synthetic fixtures AND real
+// renders: sterile clicks fold to ~0.95, real minimal techno hit
+// 0.97, real rolling techno with basslines and ghost kicks lands
+// 0.50–0.65 — texture spreads the fold without making the grid
+// wrong. The floor only asks "is there a coherent phase at all";
+// drift and incoherence are the half-split check's job, and beatless
+// material never gets past the coarse gate. The resultant (mean
+// unit-vector length) is the search metric because it peaks exactly
+// at the true period — a windowed-mass count plateaus across nearby
+// periods and lets the search pick a drifting edge.
 const MIN_ONSETS = 16
-const MIN_RESULTANT = 0.7
+const MIN_RESULTANT = 0.35
 /** Fine search around the coarse BPM: ±2 % covers the estimator's
  * tolerance band, steps small enough that residual smear over a
  * 6-minute track stays under a tenth of a beat. */
@@ -41,24 +44,39 @@ const HALF_AGREEMENT = 0.15
 
 type Onset = { hop: number; weight: number }
 
-/** Half-wave-rectified log-energy flux per hop on the mono mix — the
- * estimator's onset recipe, run offline over the whole buffer. */
-function onsetEnvelope(left: Float32Array, right: Float32Array): Float32Array {
+/** Low-band onset cutoff: the phase question is "where is the kick".
+ * A four-on-the-floor with offbeat hats puts full-band onsets at
+ * phase 0 AND 0.5, and folding that by the beat period cancels — the
+ * low band carries the beat alone. Matches the tracker's crossover. */
+const LOW_CROSSOVER_HZ = 200
+
+/** Half-wave-rectified LINEAR energy rise of the LOW band per hop —
+ * the kick detector, run offline. Log flux would rate a hat rising
+ * from the quiet floor as highly as a kick (ratios, not amounts);
+ * linear rise keeps the 60 Hz thump ~30× ahead. */
+function onsetEnvelope(
+  left: Float32Array,
+  right: Float32Array,
+  sampleRate: number,
+): Float32Array {
   const hops = Math.floor(left.length / HOP_FRAMES)
   const envelope = new Float32Array(hops)
-  let previousLog: number | null = null
+  const alpha = 1 - Math.exp((-2 * Math.PI * LOW_CROSSOVER_HZ) / sampleRate)
+  let lowState = 0
+  let previous: number | null = null
   for (let hop = 0; hop < hops; hop++) {
     let energy = 0
     const start = hop * HOP_FRAMES
     for (let i = start; i < start + HOP_FRAMES; i++) {
       const mono = (left[i] + right[i]) / 2
-      energy += mono * mono
+      lowState += alpha * (mono - lowState)
+      energy += lowState * lowState
     }
-    const log = Math.log(energy + EPS)
-    if (previousLog !== null) {
-      envelope[hop] = Math.max(0, log - previousLog)
+    const mean = energy / HOP_FRAMES
+    if (previous !== null) {
+      envelope[hop] = Math.max(0, mean - previous)
     }
-    previousLog = log
+    previous = mean
   }
   return envelope
 }
@@ -83,21 +101,6 @@ function pickOnsets(envelope: Float32Array): Onset[] {
     }
   }
   return onsets
-}
-
-/** Weighted circular mean of phases (turns, 0..1); null when the
- * vectors cancel (no coherent phase). */
-function circularMean(phases: number[], weights: number[]): number | null {
-  let x = 0
-  let y = 0
-  for (let i = 0; i < phases.length; i++) {
-    const angle = 2 * Math.PI * phases[i]
-    x += Math.cos(angle) * weights[i]
-    y += Math.sin(angle) * weights[i]
-  }
-  if (Math.hypot(x, y) < EPS) return null
-  const turns = Math.atan2(y, x) / (2 * Math.PI)
-  return (turns + 1) % 1
 }
 
 /** Shortest circular distance between two phases, in turns. */
@@ -138,8 +141,9 @@ export function trackBeatgrid(
 ): Beatgrid | null {
   const coarseBpm = coarse ?? trackBpm(left, right, sampleRate)
   if (coarseBpm === null) return null
-  const envelope = onsetEnvelope(left, right)
+  const envelope = onsetEnvelope(left, right, sampleRate)
   const onsets = pickOnsets(envelope)
+  console.debug('[beatgrid] onsets', onsets.length)
   if (onsets.length < MIN_ONSETS) return null
 
   const hopSeconds = HOP_FRAMES / sampleRate
@@ -157,25 +161,26 @@ export function trackBeatgrid(
       best = { periodHops, ...fold }
     }
   }
+  console.debug('[beatgrid] resultant', best?.resultant)
   if (best === null || best.resultant < MIN_RESULTANT) return null
 
-  // The drift check: both halves of the material must put beat 0 in
-  // the same place. A tempo change or creeping phase fails here even
-  // when each half folds tightly on its own.
+  // The drift check: both halves must fold coherently ON THEIR OWN
+  // and put beat 0 in the same place. A spliced tempo can satisfy
+  // the combined fold (one half carries the average) and its
+  // incoherent half still yields a — meaningless — mean phase, so
+  // each half owes its own resultant before agreement counts.
   const midpoint = onsets[Math.floor(onsets.length / 2)].hop
   const firstHalf = onsets.filter((onset) => onset.hop < midpoint)
   const secondHalf = onsets.filter((onset) => onset.hop >= midpoint)
-  const phaseOf = (half: Onset[]) =>
-    circularMean(
-      half.map((onset) => (onset.hop / best.periodHops) % 1),
-      half.map((onset) => onset.weight),
-    )
-  const firstPhase = phaseOf(firstHalf)
-  const secondPhase = phaseOf(secondHalf)
+  const first = foldResultant(firstHalf, best.periodHops)
+  const second = foldResultant(secondHalf, best.periodHops)
+  console.debug('[beatgrid] halves', first, second)
   if (
-    firstPhase === null ||
-    secondPhase === null ||
-    circularDistance(firstPhase, secondPhase) > HALF_AGREEMENT
+    first === null ||
+    second === null ||
+    first.resultant < MIN_RESULTANT ||
+    second.resultant < MIN_RESULTANT ||
+    circularDistance(first.phase, second.phase) > HALF_AGREEMENT
   ) {
     return null
   }

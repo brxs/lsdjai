@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { trackBeatgrid } from './beatgrid'
-import { clickTrack, noiseSource } from '../test/clickTrack'
+import { clickTrack, kickHatTrack, noiseSource } from '../test/clickTrack'
 
 const SAMPLE_RATE = 48_000
 
@@ -90,3 +90,43 @@ function circularGap(a: number, b: number): number {
   const diff = Math.abs(a - b) % 1
   return Math.min(diff, 1 - diff)
 }
+
+describe('offbeat material (M20)', () => {
+  it('grids textured material — ghost kicks spread the fold, honestly', () => {
+    // Real renders measured 0.50-0.65 resultants: kicks plus a busy
+    // low end. Caricature: ghost low bumps on the off-eighths.
+    const base = kickHatTrack(128, 30, SAMPLE_RATE)
+    const frames = base.length / 2
+    const period = Math.round((60 / 128) * SAMPLE_RATE)
+    const ghost = noiseSource(5)
+    for (let i = 0; i < frames; i++) {
+      const sinceEighth = (i + period / 4) % Math.round(period / 2)
+      if (sinceEighth < 0.04 * SAMPLE_RATE) {
+        const bump =
+          Math.sin((2 * Math.PI * 70 * sinceEighth) / SAMPLE_RATE) *
+          0.35 *
+          (0.5 + 0.5 * Math.abs(ghost())) *
+          (1 - sinceEighth / (0.04 * SAMPLE_RATE))
+        base[2 * i] += bump
+        base[2 * i + 1] += bump
+      }
+    }
+    const [left, right] = deinterleave(base)
+    const grid = trackBeatgrid(left, right, SAMPLE_RATE)
+    expect(grid).not.toBeNull()
+    const periodSeconds = 60 / grid!.bpm
+    const phase = (grid!.firstBeatSeconds / periodSeconds) % 1
+    expect(Math.min(phase, 1 - phase)).toBeLessThanOrEqual(0.12)
+  })
+
+  it('puts the phase on the kicks, never the hats', () => {
+    const [left, right] = deinterleave(kickHatTrack(128, 30, SAMPLE_RATE))
+    const grid = trackBeatgrid(left, right, SAMPLE_RATE)
+    expect(grid).not.toBeNull()
+    const period = 60 / grid!.bpm
+    const phase = (grid!.firstBeatSeconds / period) % 1
+    // Kicks sit on the lattice (phase ~0); hats at 0.5 — a full-band
+    // fold either cancels (no grid) or lands on the louder hats.
+    expect(Math.min(phase, 1 - phase)).toBeLessThanOrEqual(0.1)
+  })
+})

@@ -1116,6 +1116,50 @@ describe('useDeck beat clocks (M20)', () => {
     expect(result.current.getLiveBeat()).toBeNull()
   })
 
+  it('rides out one breathing estimate without blanking the clock', async () => {
+    const { engine, captured } = makeFakeEngine()
+    const { result } = renderDeck(engine)
+    act(() => socket(0).serverOpen())
+    await act(() => result.current.play())
+
+    const { samples } = clickChannels(128, 14)
+    const frameStride = 48_000 * 2
+    for (let second = 0; second < 14; second++) {
+      const chunk = samples.slice(second * frameStride, (second + 1) * frameStride)
+      act(() => socket(0).onmessage?.({ data: chunk.buffer }))
+      act(() => void vi.advanceTimersByTime(1_000))
+    }
+    act(() =>
+      captured.onStats?.({
+        underruns: 0,
+        bufferedSeconds: 2,
+        playing: true,
+        playedFrames: 10 * 48_000,
+        contextTime: 100,
+      }),
+    )
+    expect(result.current.getLiveBeat()).not.toBeNull()
+
+    // One second of half-period-shifted clicks: the anchor measurement
+    // misses (contradiction or incoherence) — the held clock must ride
+    // it out rather than strobe the meter.
+    const shifted = clickChannels(128, 3).samples
+    const halfPeriod = Math.round(((60 / 128) * 48_000) / 2) * 2
+    const slice = shifted.slice(halfPeriod, halfPeriod + frameStride)
+    act(() => socket(0).onmessage?.({ data: slice.buffer }))
+    act(() => void vi.advanceTimersByTime(1_000))
+    act(() =>
+      captured.onStats?.({
+        underruns: 0,
+        bufferedSeconds: 2,
+        playing: true,
+        playedFrames: 11 * 48_000,
+        contextTime: 101,
+      }),
+    )
+    expect(result.current.getLiveBeat()).not.toBeNull()
+  })
+
   it('derives the track beat clock from the grid, rate-aware', async () => {
     const { engine, channel } = makeFakeEngine()
     const { left, right } = clickChannels(120, 24)

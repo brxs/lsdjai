@@ -245,6 +245,7 @@ export function useDeck(deckId: DeckId): DeckControls {
     receivedAt: number
   } | null>(null)
   const anchorCandidateRef = useRef<{ anchorFrame: number } | null>(null)
+  const anchorMissesRef = useRef(0)
   const liveBeatRef = useRef<{ anchorFrame: number; bpm: number } | null>(null)
   // Tracker + gate per deck (M14), and the loudness tracker behind
   // auto-gain (M17) — all reset on stream discontinuities so an
@@ -263,6 +264,7 @@ export function useDeck(deckId: DeckId): DeckControls {
     channelRef.current?.setBeatPeriod(null)
     setBpm(null)
     anchorCandidateRef.current = null
+    anchorMissesRef.current = 0
     liveBeatRef.current = null
   }, [beat, loudness])
   const [trim, setTrimState] = useState<TrimState>(
@@ -400,9 +402,24 @@ export function useDeck(deckId: DeckId): DeckControls {
         displayed === null ? null : 60 / displayed,
       )
       // Live beat anchor (M20): exposed only while the gate shows AND
-      // consecutive anchors agree modulo the period — the meter must
-      // never flicker per estimate.
-      if (displayed !== null && estimate?.anchorFrame !== undefined) {
+      // consecutive anchors agree modulo the period. Generative music
+      // breathes, so a single miss — an incoherent fold or one
+      // contradicting anchor — rides out on the held clock (the
+      // gate's grace pattern, M14), which stays valid modulo the
+      // period while the tempo holds; the second consecutive miss
+      // drops the meter, and a blank gate drops it instantly.
+      const miss = () => {
+        anchorMissesRef.current += 1
+        if (anchorMissesRef.current > 1) liveBeatRef.current = null
+      }
+      if (displayed === null) {
+        anchorCandidateRef.current = null
+        anchorMissesRef.current = 0
+        liveBeatRef.current = null
+      } else if (estimate?.anchorFrame === undefined) {
+        anchorCandidateRef.current = null
+        miss()
+      } else {
         const periodFrames = (60 / displayed) * SAMPLE_RATE
         const previous = anchorCandidateRef.current
         anchorCandidateRef.current = { anchorFrame: estimate.anchorFrame }
@@ -411,15 +428,16 @@ export function useDeck(deckId: DeckId): DeckControls {
             (((estimate.anchorFrame - previous.anchorFrame) % periodFrames) +
               periodFrames) %
             periodFrames
-          const continuous =
-            Math.min(gap, periodFrames - gap) <= periodFrames * 0.15
-          liveBeatRef.current = continuous
-            ? { anchorFrame: estimate.anchorFrame, bpm: displayed }
-            : null
+          if (Math.min(gap, periodFrames - gap) <= periodFrames * 0.15) {
+            anchorMissesRef.current = 0
+            liveBeatRef.current = {
+              anchorFrame: estimate.anchorFrame,
+              bpm: displayed,
+            }
+          } else {
+            miss()
+          }
         }
-      } else {
-        anchorCandidateRef.current = null
-        liveBeatRef.current = null
       }
       if (trimRef.current.mode === 'auto') {
         const db = trimDbFor(loudness.rms())
@@ -587,6 +605,9 @@ export function useDeck(deckId: DeckId): DeckControls {
         coarseTempo,
       )
       const trackTempo = grid?.bpm ?? coarseTempo
+      // One debug line per load: "why no ticks?" answers itself in
+      // the console (the beatgrid pass logs its refusal numbers too).
+      console.debug('[beatgrid] verdict', deckId, grid, 'coarse', coarseTempo)
       trackMetaRef.current = { bpm: trackTempo, grid }
       trackRateRef.current = 1
       channel.setBeatPeriod(trackTempo === null ? null : 60 / trackTempo)

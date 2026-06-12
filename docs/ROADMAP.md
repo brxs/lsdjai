@@ -179,8 +179,15 @@ cannot take tempo-matching down with it), the dual-role jog
 the overview, and a phase meter comparing the track's grid clock
 against the live deck's beat **at the speakers** — the worklet now
 reports consumed frames in its own clock, because the wire feed
-leads the room by the buffer. Scripted half in `verify_m20.mjs`;
-the audible lock awaits
+leads the room by the buffer. Hardened against real material: both
+folds ride the LOW band's linear energy rise (full-band and even
+log-domain folds cancel against offbeat hats), the grid floor is
+calibrated on real renders (rolling techno folds at 0.50–0.65;
+each half owes its own coherence so a spliced tempo still refuses),
+and a single breathing estimate rides out on the gate's grace.
+Measured live (`verify_m20.mjs`): SYNC landed the gated stream BPM
+to the decimal, and a track-to-track lock held a full minute at
+**0.000 beats/min drift**. The audible half awaits
 [`m20-hardware-checklist.md`](m20-hardware-checklist.md).
 
 **Goal:** real beat-matching. A playback deck holds its entire decoded

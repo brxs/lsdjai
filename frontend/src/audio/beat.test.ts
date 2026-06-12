@@ -7,7 +7,11 @@ import {
   trackBpm,
   type BeatEstimate,
 } from './beat'
-import { clickTrack as sharedClickTrack, noiseSource } from '../test/clickTrack'
+import {
+  clickTrack as sharedClickTrack,
+  kickHatTrack,
+  noiseSource,
+} from '../test/clickTrack'
 
 const SAMPLE_RATE = 48_000
 const CHUNK_FRAMES = 1920 // the deck wire chunk: 40 ms
@@ -241,6 +245,17 @@ describe('beat anchor (M20)', () => {
       16 * SAMPLE_RATE - 3 * periodFrames,
     )
     expect(estimate.anchorFrame!).toBeLessThanOrEqual(16 * SAMPLE_RATE)
+  })
+
+  it('anchors on the kicks through offbeat hats (M20)', () => {
+    const tracker = createBeatTracker(SAMPLE_RATE)
+    feed(tracker, kickHatTrack(128, 16, SAMPLE_RATE))
+    const estimate = tracker.estimate()!
+    expect(estimate.anchorFrame).toBeDefined()
+    const periodFrames = (60 / 128) * SAMPLE_RATE
+    const phase = (estimate.anchorFrame! % periodFrames) / periodFrames
+    // On the kick lattice — not half a period off on the louder hats.
+    expect(Math.min(phase, 1 - phase)).toBeLessThanOrEqual(0.12)
   })
 
   it('withholds the anchor when the fold is incoherent', () => {

@@ -71,6 +71,14 @@ export function createBeatTracker(sampleRate: number): BeatTracker {
   const hopSeconds = HOP_FRAMES / sampleRate
   const capacity = Math.max(16, Math.round(WINDOW_SECONDS / hopSeconds))
   const flux = new Float32Array(capacity)
+  // The low band's LINEAR energy rise, for the beat anchor (M20):
+  // offbeat hats put full-band onsets at half-period positions and
+  // cancel a fold, and even a low-band LOG flux rates a hat rising
+  // from the quiet floor as highly as a kick — linear rise is the
+  // honest kick detector (a 60 Hz thump carries ~30× a hat's
+  // sub-crossover energy).
+  const lowFlux = new Float32Array(capacity)
+  let previousLowEnergy: number | null = null
   let head = 0
   let filled = 0
   const lowAlpha = 1 - Math.exp((-2 * Math.PI * LOW_CROSSOVER_HZ) / sampleRate)
@@ -94,6 +102,12 @@ export function createBeatTracker(sampleRate: number): BeatTracker {
         rise += Math.max(0, logEnergy[band] - previousLogEnergy[band])
       }
       flux[head] = rise
+      const lowEnergy = hopEnergy[0] / HOP_FRAMES
+      lowFlux[head] =
+        previousLowEnergy === null
+          ? 0
+          : Math.max(0, lowEnergy - previousLowEnergy)
+      previousLowEnergy = lowEnergy
       head = (head + 1) % capacity
       filled = Math.min(filled + 1, capacity)
       hopsPushed += 1
@@ -204,17 +218,19 @@ export function createBeatTracker(sampleRate: number): BeatTracker {
       const bpm = 60 / ((bestLag + shift) * hopSeconds)
       const confidence = Math.max(0, Math.min(1, beta))
 
-      // Beat anchor (M20): fold the window's onset energy by the
-      // period, recency-weighted (half-life ~4 beats) so the phase
-      // tracks where the beat is NOW rather than averaging the whole
-      // window — a coarse period would smear an unweighted fold.
+      // Beat anchor (M20): fold the window's LOW-band onset energy by
+      // the period — the kick carries the phase; full-band onsets
+      // with offbeat hats cancel — recency-weighted (half-life ~4
+      // beats) so the phase tracks where the beat is NOW rather than
+      // averaging the whole window.
       const periodHops = bestLag + shift
       const tau = 4 * periodHops
       let ax = 0
       let ay = 0
       let aw = 0
       for (let i = 0; i < n; i++) {
-        const weight = x[i] > 0 ? x[i] * Math.exp((i - n) / tau) : 0
+        const low = lowFlux[(start + i) % capacity]
+        const weight = low > 0 ? low * Math.exp((i - n) / tau) : 0
         if (weight === 0) continue
         const globalHop = hopsPushed - n + i
         const angle = 2 * Math.PI * ((globalHop / periodHops) % 1)
@@ -242,6 +258,8 @@ export function createBeatTracker(sampleRate: number): BeatTracker {
       hopFill = 0
       previousLogEnergy = null
       hopsPushed = 0
+      lowFlux.fill(0)
+      previousLowEnergy = null
     },
   }
 }

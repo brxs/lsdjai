@@ -36,3 +36,42 @@ export function clickTrack(
   }
   return out
 }
+
+/** Four-on-the-floor caricature with offbeat hats (M20): a low thump
+ * on every beat, a brighter noise tick half a period later. The
+ * fixture that catches full-band fold cancellation — phase must land
+ * on the kicks, never the hats. */
+export function kickHatTrack(
+  bpm: number,
+  seconds: number,
+  sampleRate: number,
+  seed = 1,
+): Float32Array {
+  const noise = noiseSource(seed)
+  const frames = Math.round(seconds * sampleRate)
+  const beatPeriod = Math.round((60 / bpm) * sampleRate)
+  const half = Math.round(beatPeriod / 2)
+  const kickFrames = Math.round(0.06 * sampleRate)
+  const hatFrames = Math.round(0.015 * sampleRate)
+  const out = new Float32Array(frames * 2)
+  for (let i = 0; i < frames; i++) {
+    const sinceBeat = i % beatPeriod
+    let sample = noise() * 0.005
+    if (sinceBeat < kickFrames) {
+      // The kick: a 60 Hz thump, decaying.
+      sample +=
+        Math.sin((2 * Math.PI * 60 * sinceBeat) / sampleRate) *
+        0.8 *
+        (1 - sinceBeat / kickFrames)
+    }
+    const sinceHat = (sinceBeat - half + beatPeriod) % beatPeriod
+    if (sinceHat < hatFrames) {
+      // The hat: full-band noise, deliberately louder than the kick's
+      // broadband content.
+      sample += noise() * 0.9 * (1 - sinceHat / hatFrames)
+    }
+    out[2 * i] = sample
+    out[2 * i + 1] = sample
+  }
+  return out
+}
