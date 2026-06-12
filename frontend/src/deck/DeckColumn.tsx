@@ -229,8 +229,9 @@ export function DeckColumn({
     !state.playing || bufferFraction >= 0.5 ? 'ok' : bufferFraction >= 0.25 ? 'warn' : 'danger'
 
   // The overview envelope is static per track — recompute only when a
-  // different track lands, not on every playhead tick.
-  const trackKey = track ? `${track.title}:${track.duration}` : null
+  // different load lands (the monotonic id; titles can repeat), not on
+  // every playhead tick.
+  const trackKey = track ? track.loadId : null
   const trackPeaksData = useMemo(
     () => (trackKey === null ? null : getTrackPeaks(TRACK_OVERVIEW_BUCKETS)),
     [trackKey, getTrackPeaks],

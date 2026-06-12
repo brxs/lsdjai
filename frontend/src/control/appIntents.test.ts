@@ -224,6 +224,7 @@ describe('applyAppIntent', () => {
       ...fakeDeck(),
       mode: 'playback' as const,
       track: {
+        loadId: 1,
         title: 'Warehouse Anthem',
         duration: 120,
         position: 30,

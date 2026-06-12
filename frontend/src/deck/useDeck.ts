@@ -59,6 +59,9 @@ export type DeckMode = 'realtime' | 'playback'
 /** The UI's view of the loaded track; the audio itself is session-only
  * in the channel, like every captured artefact. */
 export type TrackState = {
+  /** Monotonic per load — the collision-proof identity for derived
+   * work like the overview envelope (titles can repeat). */
+  loadId: number
   title: string
   duration: number
   position: number
@@ -194,6 +197,7 @@ export function useDeck(deckId: DeckId): DeckControls {
     modeRef.current = next
   }, [])
   const [track, setTrack] = useState<TrackState | null>(null)
+  const trackLoadRef = useRef(0)
   // Tracker + gate per deck (M14), and the loudness tracker behind
   // auto-gain (M17) — all reset on stream discontinuities so an
   // estimate never spans two unrelated streams (the reset rule the
@@ -484,10 +488,13 @@ export function useDeck(deckId: DeckId): DeckControls {
       }
       // A rolling deck keeps rolling across a load: read it before the
       // load replaces the channel's track and STOP parks the source.
+      // "Rolling" means ON AIR — a primed deck is audible only in the
+      // phones, so its track loads parked rather than blasting the
+      // master (the deck-prep semantics, ADR-0013).
       const wasPlaying =
         modeRef.current === 'playback'
           ? (channel.getTrackStatus()?.playing ?? false)
-          : state.playing
+          : state.playing && !primedRef.current
       const decoded = await channel.loadTrack(wav)
       if (!decoded) return false
       // Park whatever was running — the live stream's worker idles
@@ -500,6 +507,7 @@ export function useDeck(deckId: DeckId): DeckControls {
       setMode('playback')
       if (wasPlaying) channel.playTrack()
       setTrack({
+        loadId: ++trackLoadRef.current,
         title,
         duration: decoded.duration,
         position: 0,

@@ -44,7 +44,7 @@ function stubFetch(response: Partial<Response> = {}) {
 }
 
 async function composeTrack(title: string) {
-  fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
+  fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
   fireEvent.change(screen.getByLabelText('Track prompt'), {
     target: { value: title },
   })
@@ -115,7 +115,7 @@ describe('MediaExplorer', () => {
   it('routes Magenta tracks to the render engine within its cap', async () => {
     const fetchMock = stubFetch()
     renderExplorer()
-    fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
     // A length past Magenta's cap must snap back into range when the
     // engine switches (the render worker caps at 3 minutes).
     fireEvent.change(screen.getByLabelText('Length'), {
@@ -179,7 +179,7 @@ describe('MediaExplorer', () => {
   it('offers the small models too, with their shorter length menu', async () => {
     const fetchMock = stubFetch()
     renderExplorer()
-    fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
     fireEvent.change(screen.getByLabelText('Engine'), {
       target: { value: 'sfx' },
     })
@@ -235,7 +235,7 @@ describe('MediaExplorer', () => {
 
   it('says so when folder browsing is unsupported', () => {
     renderExplorer()
-    fireEvent.click(screen.getByRole('button', { name: 'Folder' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Folder' }))
     fireEvent.click(screen.getByRole('button', { name: 'Choose folder' }))
     expect(
       screen.getByText(
@@ -265,7 +265,7 @@ describe('MediaExplorer', () => {
     )
     const onLoadTrack = vi.fn(async () => true)
     renderExplorer({ onLoadTrack })
-    fireEvent.click(screen.getByRole('button', { name: 'Folder' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Folder' }))
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Choose folder' }))
     })

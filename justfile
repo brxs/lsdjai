@@ -38,14 +38,22 @@ setup-sa3:
     if [ ! -x "$mlx/.venv/bin/python" ]; then
       (cd "$mlx" && ./install.sh)
     fi
+    # The warm-ups exist to download weights; once stamped, repeat
+    # setups skip the three model loads (rm the stamp to re-warm).
+    stamp="$mlx/.magenta-dj-warmed"
+    if [ -f "$stamp" ]; then
+      echo "sa3 weights already warmed ($stamp)"
+      exit 0
+    fi
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
     for spec in "sm-sfx same-s" "sm-music same-s" "medium same-l"; do
       set -- $spec
-      out="$(mktemp -d)/warm.wav"
       echo "warming $1/$2…"
       (cd "$mlx" && .venv/bin/python scripts/sa3_mlx.py --prompt "setup warm-up" \
-        --dit "$1" --decoder "$2" --seconds 1 --steps 1 --out "$out")
-      rm -f "$out"
+        --dit "$1" --decoder "$2" --seconds 1 --steps 1 --out "$tmp/warm.wav")
     done
+    touch "$stamp"
 
 # Build the frontend (the backend serves frontend/dist).
 build:

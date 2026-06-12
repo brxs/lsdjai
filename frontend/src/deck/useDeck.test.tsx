@@ -983,6 +983,20 @@ describe('useDeck playback mode (M19)', () => {
     expect(socket(0).sent).toHaveLength(sentBefore)
   })
 
+  it('a primed deck loads a track parked — prep audio never hits the master', async () => {
+    const { engine, channel } = makeFakeEngine()
+    const { result } = renderDeck(engine)
+    act(() => socket(0).serverOpen())
+    await act(() => result.current.prime())
+    expect(result.current.state.playing).toBe(true) // rolling, but off air
+
+    await act(async () => {
+      await result.current.loadTrack(new ArrayBuffer(8), 'Headphone Special')
+    })
+    expect(channel.playTrack).not.toHaveBeenCalled()
+    expect(result.current.track).toMatchObject({ playing: false })
+  })
+
   it('a streaming deck keeps playing through a track load', async () => {
     const { engine, channel } = makeFakeEngine()
     const { result } = renderDeck(engine)

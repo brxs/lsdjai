@@ -1183,6 +1183,7 @@ describe('DeckColumn', () => {
 
 describe('DeckColumn playback mode (M19)', () => {
   const aTrack = (overrides: Partial<TrackState> = {}): TrackState => ({
+    loadId: 1,
     title: 'Warehouse Anthem',
     duration: 125,
     position: 65.4,

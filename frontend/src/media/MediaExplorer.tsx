@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { DeckId } from '../audio/engine'
@@ -107,7 +107,9 @@ export function MediaExplorer({
   // keeps its own inside CrateBrowser (mounted only while visible, so
   // exactly one list answers the hardware at a time).
   const [highlight, setHighlight] = useState(0)
-  const [nextId, setNextId] = useState(1)
+  // A ref, not state: two composes batched into one render (Enter +
+  // click) must not mint the same id.
+  const nextIdRef = useRef(1)
 
   const ready = tracks.filter(
     (track): track is GeneratedTrack & { state: 'ready' } =>
@@ -169,9 +171,8 @@ export function MediaExplorer({
   function generateTrack() {
     const trimmed = prompt.trim()
     if (!trimmed) return
-    const id = nextId
+    const id = nextIdRef.current++
     const requestEngine = engine
-    setNextId(id + 1)
     setGenerateError(null)
     setTracks((current) => [
       ...current,
@@ -262,6 +263,8 @@ export function MediaExplorer({
             <Button
               key={name}
               lit={tab === name}
+              role="tab"
+              aria-selected={tab === name}
               aria-label={t(`media.tabs.${name}`)}
               onClick={() => {
                 setTab(name)
