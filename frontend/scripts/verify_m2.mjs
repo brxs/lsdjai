@@ -1,5 +1,5 @@
 // M2 exit-criteria verification: drives the real React UI in headless
-// Chromium against a running backend (uv run magenta-dj) and checks that the
+// Chromium against a running backend (uv run slipmate) and checks that the
 // deck is fully usable and that stream health is visible in the UI.
 //
 // Run: node scripts/verify_m2.mjs

@@ -10,7 +10,7 @@ import pathlib
 
 import pytest
 
-from magenta_dj import sa3
+from slipmate import sa3
 
 FAKE_WAV = b"RIFFfakewavdata"
 

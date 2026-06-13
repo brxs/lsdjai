@@ -45,7 +45,7 @@ The bytes come from the Mixxx chart — verify with the monitor:
 
 ## Export / import
 
-- [ ] Export downloads `magenta-dj-crates.json`; importing it back
+- [ ] Export downloads `slipmate-crates.json`; importing it back
       (after deleting a preset) restores the deleted preset.
 - [ ] Importing a non-JSON file shows the inline reason and changes
       nothing.

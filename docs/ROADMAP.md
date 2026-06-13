@@ -1,4 +1,4 @@
-# magenta-dj Roadmap
+# SlipMate Roadmap
 
 A DJ interface over [Magenta RealTime 2](https://github.com/magenta/magenta-realtime):
 two locally-running model "decks" steered by text prompts, blended with a

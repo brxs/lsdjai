@@ -1,4 +1,4 @@
-# magenta-dj task runner — `just` lists recipes, `just <recipe>` runs one.
+# SlipMate task runner — `just` lists recipes, `just <recipe>` runs one.
 
 default:
     @just --list
@@ -31,7 +31,7 @@ setup-sa3:
       checkout="$HOME/Repos/stable-audio-3"
       git clone https://github.com/Stability-AI/stable-audio-3 "$checkout"
       # The CLI vocabulary the backend speaks is measured at this commit
-      # (backend/magenta_dj/sa3.py); a fresh clone honours the pin.
+      # (backend/slipmate/sa3.py); a fresh clone honours the pin.
       git -C "$checkout" checkout bccf5b7
     fi
     mlx="$checkout/optimized/mlx"
@@ -40,7 +40,7 @@ setup-sa3:
     fi
     # The warm-ups exist to download weights; once stamped, repeat
     # setups skip the three model loads (rm the stamp to re-warm).
-    stamp="$mlx/.magenta-dj-warmed"
+    stamp="$mlx/.slipmate-warmed"
     if [ -f "$stamp" ]; then
       echo "sa3 weights already warmed ($stamp)"
       exit 0
@@ -61,11 +61,11 @@ build:
 
 # Run the app: backend on http://127.0.0.1:8000 serving the built frontend.
 run: build
-    cd backend && uv run magenta-dj
+    cd backend && uv run slipmate
 
 # Backend only, for frontend development (pair with `just dev-frontend`).
 dev-backend:
-    cd backend && uv run magenta-dj
+    cd backend && uv run slipmate
 
 # Vite dev server with /ws proxied to the backend (run `just dev-backend` too).
 dev-frontend:

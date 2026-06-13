@@ -1,9 +1,11 @@
-# magenta-dj
+# SlipMate
 
-A DJ rig over [Magenta RealTime 2](https://github.com/magenta/magenta-realtime):
-two locally-running model decks steered by text prompts, mixed with
-three-band EQ, one-knob Color FX, and a crossfader, pre-listened in
-headphones, and playable from a Pioneer DDJ-FLX4. See
+**Your generative DJ mate** — a DJ instrument for real-time AI music. Two
+locally-running model decks, steered by text prompts and mixed like vinyl:
+three-band EQ, one-knob Color FX, a crossfader, headphone cue, and full
+Pioneer DDJ-FLX4 control. The live decks run on
+[Magenta RealTime 2](https://github.com/magenta/magenta-realtime); generated
+pads and finished tracks come from Stable Audio 3. See
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for how it got here and
 [`docs/adr/`](docs/adr/) for the architecture decisions.
 

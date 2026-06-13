@@ -28,14 +28,18 @@ export type DeckSettings = {
  * or off. */
 export type BeatViewLayout = 'center' | 'vertical' | 'top' | 'off'
 
+/** User-selectable master accent (SlipMate). Default is 'lime'. */
+export type AccentTheme = 'lime' | 'violet' | 'cyan'
+
 export type AppSettings = {
   crossfade: number
   cueMix: number
   cueDevice: AudioOutputDevice | null
   beatView: BeatViewLayout
+  accent: AccentTheme
 }
 
-const STORAGE_KEY = 'magenta-dj:v1'
+const STORAGE_KEY = 'slipmate:v1'
 
 type Persisted = {
   decks?: Partial<Record<DeckId, Partial<DeckSettings>>>
@@ -153,6 +157,13 @@ export function loadAppSettings(): Partial<AppSettings> {
     stored.beatView === 'off'
   ) {
     settings.beatView = stored.beatView
+  }
+  if (
+    stored.accent === 'lime' ||
+    stored.accent === 'violet' ||
+    stored.accent === 'cyan'
+  ) {
+    settings.accent = stored.accent
   }
   const cueDevice = stored.cueDevice
   if (cueDevice === null) {

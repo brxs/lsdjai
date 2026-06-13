@@ -6,7 +6,7 @@
 
 ## Context
 
-magenta-dj is a DJ interface over Magenta RealTime 2 (MRT2): two independently
+SlipMate is a DJ interface over Magenta RealTime 2 (MRT2): two independently
 steerable "decks" of generated audio, blended with a crossfader. The model
 dictates most of the constraints:
 

@@ -1,35 +1,59 @@
-/* Design tokens v2 — instrument vocabulary (roadmap M8). The single source
-   for colour, spacing, type, and shape; components reference these
-   variables only, no literal values in component styles. */
+/* Design tokens v3 — brutalist instrument vocabulary (roadmap M8, retuned
+   M24). The single source for colour, spacing, type, and shape; components
+   reference these variables only, no literal values in component styles.
+   M24 look-and-feel: deeper matte black, hard square corners, clearer
+   bright module borders, and a fully monospaced typeface (Space Mono). */
 
 :root {
-  /* Surfaces: near-black flat panels with inset borders, no floating cards */
-  --color-bg: #08080a;
-  --color-surface: #101014;
-  --color-surface-raised: #18181e;
-  --color-surface-inset: #0c0c0f;
-  --color-border: #26262e;
-  --color-border-strong: #34343e;
+  /* Surfaces: deep matte black flat panels, separated by bright hard
+     borders rather than shadows — every module reads as its own block. */
+  --color-bg: #050507;
+  --color-surface: #0e0e12;
+  --color-surface-raised: #17171d;
+  --color-surface-inset: #09090c;
+  --color-border: #3a3a46;
+  --color-border-strong: #56565f;
 
   /* Text */
   --color-text: #e8e8ec;
   --color-text-muted: #7c7c8a;
   --color-text-silkscreen: #5a5a68;
 
-  /* Per-deck accents: deck A warm, deck B cool */
-  --color-deck-a: #ff9f43;
-  --color-deck-a-dim: #7a4f24;
-  --color-deck-b: #54a0ff;
-  --color-deck-b-dim: #2a5080;
+  /* The accent triad as fixed, theme-independent tokens — one source the
+     swatches show literally and the [data-accent] themes map onto the
+     master/deck roles below. base / strong (bright) / dim (waveform low). */
+  --color-accent-lime: #bef264;
+  --color-accent-lime-strong: #d9f99d;
+  --color-accent-lime-dim: #7d9b30;
+  --color-accent-violet: #a855f7;
+  --color-accent-violet-strong: #c084fc;
+  --color-accent-violet-dim: #6b3fa8;
+  --color-accent-cyan: #22d3ee;
+  --color-accent-cyan-strong: #67e8f9;
+  --color-accent-cyan-dim: #178fa6;
 
-  /* Brand / master accent */
-  --color-accent: #e91e8c;
-  --color-accent-strong: #ff4dac;
+  /* Per-deck accents (SlipMate): drawn from the triad — the two hues the
+     master accent isn't using. Default master is Cyan, so deck A is lime
+     and deck B violet. The -dim shade doubles as each deck's waveform low
+     band. Overridden per theme in the [data-accent] blocks. */
+  --color-deck-a: var(--color-accent-lime);
+  --color-deck-a-dim: var(--color-accent-lime-dim);
+  --color-deck-b: var(--color-accent-violet);
+  --color-deck-b-dim: var(--color-accent-violet-dim);
 
-  /* Band-coloured waveforms (M22): lows / mids / highs, plus the
-     beatgrid mark — red so it reads over all three band colours */
-  --color-wave-low: #3d6fe0;
-  --color-wave-mid: #e0a33c;
+  /* Master accent — user-selectable (SlipMate). Default Cyan; the hue is
+     themed via [data-accent] on <html> (blocks below) and drives the logo,
+     master/crossfader, playhead, focus rings, and primary buttons.
+     --color-on-accent is the ink laid ON the accent: all three accents are
+     bright, so a near-black ink keeps button text legible. */
+  --color-accent: var(--color-accent-cyan);
+  --color-accent-strong: var(--color-accent-cyan-strong);
+  --color-on-accent: #07070a;
+
+  /* Waveforms (SlipMate): the close-up tints to each deck's accent — low =
+     the deck's dim shade, mid = its full colour (see ZoomStrip) — while
+     highs stay near-white for transient sparkle and the beat mark stays red
+     so it reads over every accent. */
   --color-wave-high: #e8edf2;
   --color-wave-beat: #ff4757;
   /* Hot-cue marker (M21): a mint that reads over the band colours and
@@ -50,20 +74,56 @@
   --space-5: 1.3rem;
   --space-6: 2rem;
 
-  /* Typography */
-  --font-ui: 'Inter', system-ui, -apple-system, sans-serif;
-  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
-  --text-xs: 0.62rem;
-  --text-s: 0.75rem;
-  --text-m: 0.9rem;
-  --text-l: 1.15rem;
+  /* Typography: fully monospaced — Space Mono is the instrument typeface.
+     It runs wide and tall, so the type scale is a touch tighter than v2. */
+  --font-ui: 'Space Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --font-mono: 'Space Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --text-xs: 0.58rem;
+  --text-s: 0.72rem;
+  --text-m: 0.85rem;
+  --text-l: 1.1rem;
 
-  /* Silkscreen labels: uppercase micro-type */
-  --silkscreen: 600 var(--text-xs) var(--font-ui);
-  --silkscreen-spacing: 0.08em;
+  /* Silkscreen labels: uppercase micro-type. Space Mono has no 600 weight,
+     so 700 is the bold; tracking is lighter since mono is already wide. */
+  --silkscreen: 700 var(--text-xs) var(--font-ui);
+  --silkscreen-spacing: 0.05em;
 
-  /* Shape: small hardware radii, inset bevels instead of drop shadows */
-  --radius-s: 3px;
-  --radius-m: 6px;
+  /* Shape: hard square corners (M24) — no rounded edges on any rectangular
+     surface. Genuinely circular controls (knobs, LEDs) keep their own 50%. */
+  --radius-s: 0;
+  --radius-m: 0;
   --inset-border: inset 0 0 0 1px var(--color-border);
+}
+
+/* Accent themes (SlipMate). The user picks one of the lime/violet/cyan triad
+   as the master accent; the other two become the Deck A / Deck B accents, so
+   the whole instrument — chrome AND waveforms — is drawn from one harmonious
+   set. :root mirrors the Cyan default so the first paint is correct before JS
+   restores the saved choice onto <html data-accent>. Deck reads warmer→A
+   where the remaining pair allows; -dim doubles as the waveform low band. */
+[data-accent='lime'] {
+  --color-accent: var(--color-accent-lime);
+  --color-accent-strong: var(--color-accent-lime-strong);
+  --color-deck-a: var(--color-accent-violet);
+  --color-deck-a-dim: var(--color-accent-violet-dim);
+  --color-deck-b: var(--color-accent-cyan);
+  --color-deck-b-dim: var(--color-accent-cyan-dim);
+}
+
+[data-accent='violet'] {
+  --color-accent: var(--color-accent-violet);
+  --color-accent-strong: var(--color-accent-violet-strong);
+  --color-deck-a: var(--color-accent-lime);
+  --color-deck-a-dim: var(--color-accent-lime-dim);
+  --color-deck-b: var(--color-accent-cyan);
+  --color-deck-b-dim: var(--color-accent-cyan-dim);
+}
+
+[data-accent='cyan'] {
+  --color-accent: var(--color-accent-cyan);
+  --color-accent-strong: var(--color-accent-cyan-strong);
+  --color-deck-a: var(--color-accent-lime);
+  --color-deck-a-dim: var(--color-accent-lime-dim);
+  --color-deck-b: var(--color-accent-violet);
+  --color-deck-b-dim: var(--color-accent-violet-dim);
 }

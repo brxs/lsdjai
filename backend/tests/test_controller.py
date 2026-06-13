@@ -11,8 +11,8 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from magenta_dj import controller
-from magenta_dj.controller import validate_command
+from slipmate import controller
+from slipmate.controller import validate_command
 
 
 class FakeProcess:

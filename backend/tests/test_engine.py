@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from magenta_dj.engine import DeckEngine
+from slipmate.engine import DeckEngine
 
 
 AUDIO_EMBEDDING = np.array([9.0, -9.0])
@@ -52,7 +52,7 @@ def test_embeddings_are_cached_across_morph_moves():
 
 
 def test_cache_evicts_least_recently_used_not_oldest(monkeypatch):
-    import magenta_dj.engine as engine_module
+    import slipmate.engine as engine_module
 
     monkeypatch.setattr(engine_module, "EMBED_CACHE_SIZE", 2)
     engine, calls = make_engine(
@@ -118,7 +118,7 @@ def test_embed_sample_rejects_malformed_pcm():
 
 
 def test_sample_cache_is_capped(monkeypatch):
-    import magenta_dj.engine as engine_module
+    import slipmate.engine as engine_module
 
     monkeypatch.setattr(engine_module, "SAMPLE_CACHE_SIZE", 2)
     engine, _ = make_engine({})
@@ -130,7 +130,7 @@ def test_sample_cache_is_capped(monkeypatch):
 def test_sample_cache_evicts_least_recently_used_not_oldest(monkeypatch):
     # A sample still on the pad is touched by every style send, so it
     # must never be the eviction victim while it is live.
-    import magenta_dj.engine as engine_module
+    import slipmate.engine as engine_module
 
     monkeypatch.setattr(engine_module, "SAMPLE_CACHE_SIZE", 2)
     engine, _ = make_engine({})
@@ -142,7 +142,7 @@ def test_sample_cache_evicts_least_recently_used_not_oldest(monkeypatch):
 
 
 def test_failed_embed_does_not_evict(monkeypatch):
-    import magenta_dj.engine as engine_module
+    import slipmate.engine as engine_module
 
     monkeypatch.setattr(engine_module, "SAMPLE_CACHE_SIZE", 1)
     engine, _ = make_engine({})

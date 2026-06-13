@@ -30,7 +30,9 @@ type ZoomStripSource = {
 
 type ZoomStripProps = {
   label: string
-  accent: 'a' | 'b'
+  /** Which deck this strip draws — selects its CSS palette (--a / --b)
+   * and colours the playhead, loop wash and band tint. */
+  deck: 'a' | 'b'
   /** Time runs downward instead of rightward (the Serato vertical
    * waveform convention) — same drawing, transposed onto the canvas. */
   vertical?: boolean
@@ -43,7 +45,7 @@ type ZoomStripProps = {
  * highs as colour, the playhead fixed mid-strip, beat marks from the
  * deck's M20 clock where confident. Canvas-rendered per frame; React
  * never sees the scroll. */
-export function ZoomStrip({ label, accent, vertical, getSource }: ZoomStripProps) {
+export function ZoomStrip({ label, deck, vertical, getSource }: ZoomStripProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   useEffect(() => {
@@ -53,12 +55,23 @@ export function ZoomStrip({ label, accent, vertical, getSource }: ZoomStripProps
     const styles = getComputedStyle(canvas)
     const colour = (token: string, fallback: string) =>
       styles.getPropertyValue(token).trim() || fallback
-    const low = colour('--color-wave-low', '#3d6fe0')
-    const mid = colour('--color-wave-mid', '#e0a33c')
-    const high = colour('--color-wave-high', '#e8edf2')
-    const marks = colour('--color-wave-beat', '#ff4757')
-    const cueColour = colour('--color-cue', '#26de81')
-    const playhead = colour(`--color-deck-${accent}`, '#ffffff')
+    // Each strip's palette is owned by CSS (see .ui-zoomstrip--a / --b),
+    // themed via <html data-accent>, so the two decks are styleable
+    // independently. Bands tint to the deck's accent: low = the dim shade,
+    // mid = the full colour, high = near-white for sparkle.
+    const readPalette = () => ({
+      low: colour('--wave-low', '#6b3fa8'),
+      mid: colour('--wave-mid', '#a855f7'),
+      high: colour('--wave-high', '#e8edf2'),
+      marks: colour('--wave-beat', '#ff4757'),
+      cue: colour('--wave-cue', '#26de81'),
+      playhead: colour('--wave-accent', '#ffffff'),
+    })
+    // Re-read on an accent switch so a live change recolours the strip and
+    // it stays matched to its deck; the cheap dataset check keeps the
+    // steady state off the style-recalc path.
+    let themeKey = document.documentElement.dataset.accent ?? ''
+    let palette = readPalette()
     const scratch = {
       low: new Float32Array(MAX_HOPS),
       mid: new Float32Array(MAX_HOPS),
@@ -68,6 +81,11 @@ export function ZoomStrip({ label, accent, vertical, getSource }: ZoomStripProps
     let frame = 0
     const draw = () => {
       frame = requestAnimationFrame(draw)
+      const theme = document.documentElement.dataset.accent ?? ''
+      if (theme !== themeKey) {
+        themeKey = theme
+        palette = readPalette()
+      }
       context.setTransform(1, 0, 0, 1, 0, 0)
       context.clearRect(0, 0, canvas.width, canvas.height)
       // Vertical strips transpose the same drawing: the horizontal
@@ -100,7 +118,7 @@ export function ZoomStrip({ label, accent, vertical, getSource }: ZoomStripProps
         const left = Math.max(0, (source.loop.startHop - fromHop) * pxPerHop)
         const right = Math.min(WIDTH, (source.loop.endHop - fromHop) * pxPerHop)
         if (right > left) {
-          context.fillStyle = playhead
+          context.fillStyle = palette.playhead
           context.globalAlpha = 0.18
           context.fillRect(left, 0, right - left, HEIGHT)
           context.globalAlpha = 1
@@ -113,9 +131,9 @@ export function ZoomStrip({ label, accent, vertical, getSource }: ZoomStripProps
         const x = (flooredFrom + i - fromHop) * pxPerHop
         const width = Math.max(1, pxPerHop)
         const bands = [
-          [window.low[i], low],
-          [window.mid[i], mid],
-          [window.high[i], high],
+          [window.low[i], palette.low],
+          [window.mid[i], palette.mid],
+          [window.high[i], palette.high],
         ] as const
         for (const [value, fill] of bands) {
           if (value <= 0) continue
@@ -131,7 +149,7 @@ export function ZoomStrip({ label, accent, vertical, getSource }: ZoomStripProps
       // the per-beat lattice, not necessarily on the heavy ones.
       if (source.beat) {
         const { periodHops, anchorHop } = source.beat
-        context.fillStyle = marks
+        context.fillStyle = palette.marks
         const firstIndex = Math.ceil((fromHop - anchorHop) / periodHops)
         for (let k = firstIndex; ; k++) {
           const hop = anchorHop + k * periodHops
@@ -151,7 +169,7 @@ export function ZoomStrip({ label, accent, vertical, getSource }: ZoomStripProps
       for (const cueHop of source.cues) {
         if (cueHop < fromHop || cueHop >= fromHop + hops) continue
         const x = Math.round((cueHop - fromHop) * pxPerHop)
-        context.fillStyle = cueColour
+        context.fillStyle = palette.cue
         context.globalAlpha = 0.5
         context.fillRect(x, 0, 2, HEIGHT)
         context.globalAlpha = 1
@@ -163,7 +181,7 @@ export function ZoomStrip({ label, accent, vertical, getSource }: ZoomStripProps
       // off-screen edge draws nothing, never a false boundary.
       if (source.loop) {
         const capHeight = 14
-        context.fillStyle = playhead
+        context.fillStyle = palette.playhead
         for (const edgeHop of [source.loop.startHop, source.loop.endHop]) {
           if (edgeHop < fromHop || edgeHop > fromHop + hops) continue
           const x = Math.round((edgeHop - fromHop) * pxPerHop)
@@ -172,17 +190,17 @@ export function ZoomStrip({ label, accent, vertical, getSource }: ZoomStripProps
         }
       }
       // The playhead sits mid-strip; the audio scrolls beneath it.
-      context.fillStyle = playhead
+      context.fillStyle = palette.playhead
       context.fillRect(WIDTH / 2 - 1, 0, 2, HEIGHT)
     }
     frame = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(frame)
-  }, [getSource, accent, vertical])
+  }, [getSource, deck, vertical])
 
   return (
     <canvas
       ref={canvasRef}
-      className={`ui-zoomstrip${vertical ? ' ui-zoomstrip--vertical' : ''}`}
+      className={`ui-zoomstrip ui-zoomstrip--${deck}${vertical ? ' ui-zoomstrip--vertical' : ''}`}
       width={vertical ? HEIGHT : WIDTH}
       height={vertical ? WIDTH : HEIGHT}
       role="img"

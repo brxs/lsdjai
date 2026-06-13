@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from magenta_dj import controller, cue
+from slipmate import controller, cue
 
 
 def stereo(*pairs: tuple[float, float]) -> np.ndarray:

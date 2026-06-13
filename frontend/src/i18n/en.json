@@ -1,8 +1,20 @@
 {
   "app": {
-    "title": "magenta-dj",
-    "ramWarning": "Selected models need roughly {{combined}} GB on a {{total}} GB machine — real-time playback may struggle.",
-    "shortcutsHint": "Shortcuts: A / B focus a deck's style target · X focuses the crossfader"
+    "title": "SlipMate",
+    "brand": {
+      "slip": "Slip",
+      "mate": "Mate"
+    },
+    "tagline": "Generative DJ",
+    "ramWarning": "Selected models need roughly {{combined}} GB on a {{total}} GB machine — real-time playback may struggle."
+  },
+  "accent": {
+    "label": "Accent",
+    "options": {
+      "lime": "Acid Lime",
+      "violet": "Violet",
+      "cyan": "Cyan"
+    }
   },
   "midi": {
     "connect": "Connect MIDI",

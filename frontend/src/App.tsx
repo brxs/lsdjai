@@ -21,15 +21,18 @@ import { DeckColumn } from './deck/DeckColumn'
 import { useDeck } from './deck/useDeck'
 import { BeatView } from './mixer/BeatView'
 import { MixerStrip, type ChannelControls } from './mixer/MixerStrip'
-import { Select } from './ui/Select'
+import { AccentPicker } from './ui/AccentPicker'
+import { BeatViewPicker } from './ui/BeatViewPicker'
 import {
   deletePreset,
   loadAppSettings,
   loadPresets,
   updateAppSettings,
   upsertPresets,
+  type AccentTheme,
   type BeatViewLayout,
 } from './persistence'
+import { Logo } from './ui/Logo'
 import type { StylePreset } from './presets'
 import { combinedRamWarning } from './ramWarning'
 import { phaseOffsetBeats } from './audio/track'
@@ -56,6 +59,20 @@ function App() {
   const handleBeatView = useCallback((layout: BeatViewLayout) => {
     setBeatView(layout)
     updateAppSettings({ beatView: layout })
+  }, [])
+
+  // Master accent (SlipMate): the chosen hue rides on <html data-accent>,
+  // where the theme blocks in tokens.css pick it up. Persisted like the
+  // other app settings; default Acid Lime.
+  const [accent, setAccent] = useState<AccentTheme>(
+    () => loadAppSettings().accent ?? 'cyan',
+  )
+  useEffect(() => {
+    document.documentElement.dataset.accent = accent
+  }, [accent])
+  const handleAccent = useCallback((value: AccentTheme) => {
+    setAccent(value)
+    updateAppSettings({ accent: value })
   }, [])
 
   // A live backend cue stream's stop function (ADR-0007); null while the
@@ -396,30 +413,38 @@ function App() {
   return (
     <main className="app">
       <header className="app__statusbar">
-        <h1 className="app__title">{t('app.title')}</h1>
-        {ramWarning && (
-          <p className="app__warning" role="status">
-            {t('app.ramWarning', ramWarning)}
-          </p>
-        )}
-        <p className="app__hint">{t('app.shortcutsHint')}</p>
-        <div className="app__beatview-switch">
-          <Select
+        <Logo />
+        <div className="app__statusbar-right">
+          {ramWarning && (
+            <p className="app__warning" role="status">
+              {t('app.ramWarning', ramWarning)}
+            </p>
+          )}
+          <BeatViewPicker
             label={t('beatview.layout')}
             value={beatView}
             options={(['center', 'vertical', 'top', 'off'] as const).map((layout) => ({
               value: layout,
               label: t(`beatview.layouts.${layout}`),
             }))}
-            onChange={(value) => handleBeatView(value as BeatViewLayout)}
+            onChange={handleBeatView}
+          />
+          <AccentPicker
+            label={t('accent.label')}
+            value={accent}
+            options={(['lime', 'violet', 'cyan'] as const).map((option) => ({
+              value: option,
+              label: t(`accent.options.${option}`),
+            }))}
+            onChange={handleAccent}
+          />
+          <MidiControls
+            status={midi.status}
+            deviceName={midi.deviceName}
+            onConnect={midi.connect}
+            readMonitor={midi.readMonitor}
           />
         </div>
-        <MidiControls
-          status={midi.status}
-          deviceName={midi.deviceName}
-          onConnect={midi.connect}
-          readMonitor={midi.readMonitor}
-        />
       </header>
       {beatView === 'top' && (
         <BeatView

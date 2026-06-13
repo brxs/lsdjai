@@ -38,7 +38,7 @@ describe('persistence', () => {
     expect(loadDeckSettings('a').fx).toEqual({ kind: null, amount: 0 })
 
     localStorage.setItem(
-      'magenta-dj:v1',
+      'slipmate:v1',
       JSON.stringify({ decks: { a: { fx: { kind: 'megaverb', amount: 2 } } } }),
     )
     expect(loadDeckSettings('a').fx).toBeUndefined()
@@ -49,7 +49,7 @@ describe('persistence', () => {
     expect(loadDeckSettings('a').loopSeconds).toBe(8)
 
     localStorage.setItem(
-      'magenta-dj:v1',
+      'slipmate:v1',
       JSON.stringify({ decks: { a: { loopSeconds: 7 } } }),
     )
     expect(loadDeckSettings('a').loopSeconds).toBeUndefined()
@@ -60,19 +60,19 @@ describe('persistence', () => {
     expect(loadDeckSettings('a').trim).toEqual({ mode: 'manual', db: -4.5 })
 
     localStorage.setItem(
-      'magenta-dj:v1',
+      'slipmate:v1',
       JSON.stringify({ decks: { a: { trim: { mode: 'auto', db: 40 } } } }),
     )
     expect(loadDeckSettings('a').trim).toEqual({ mode: 'auto', db: 12 })
 
     localStorage.setItem(
-      'magenta-dj:v1',
+      'slipmate:v1',
       JSON.stringify({ decks: { a: { trim: { mode: 'loud', db: 0 } } } }),
     )
     expect(loadDeckSettings('a').trim).toBeUndefined()
 
     localStorage.setItem(
-      'magenta-dj:v1',
+      'slipmate:v1',
       JSON.stringify({ decks: { a: { trim: { mode: 'auto', db: 'hot' } } } }),
     )
     expect(loadDeckSettings('a').trim).toBeUndefined()
@@ -83,7 +83,7 @@ describe('persistence', () => {
     expect(loadDeckSettings('a').eq).toEqual({ low: 0, mid: 0.5, high: 1 })
 
     localStorage.setItem(
-      'magenta-dj:v1',
+      'slipmate:v1',
       JSON.stringify({ decks: { a: { eq: { low: -3, mid: 'loud', high: 9 } } } }),
     )
     expect(loadDeckSettings('a').eq).toBeUndefined() // mid invalid → field dropped
@@ -130,21 +130,21 @@ describe('persistence', () => {
 
   it('drops a malformed cue device but keeps the cue mix', () => {
     localStorage.setItem(
-      'magenta-dj:v1',
+      'slipmate:v1',
       JSON.stringify({ app: { cueMix: 2, cueDevice: { deviceId: 7 } } }),
     )
     expect(loadAppSettings()).toEqual({ cueMix: 1 }) // clamped, device dropped
   })
 
   it('treats corrupt storage as absent', () => {
-    localStorage.setItem('magenta-dj:v1', '{nope')
+    localStorage.setItem('slipmate:v1', '{nope')
     expect(loadDeckSettings('a')).toEqual({})
     expect(loadAppSettings()).toEqual({})
   })
 
   it('drops malformed fields but keeps valid ones', () => {
     localStorage.setItem(
-      'magenta-dj:v1',
+      'slipmate:v1',
       JSON.stringify({
         decks: {
           a: {

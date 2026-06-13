@@ -1,7 +1,7 @@
 [project]
-name = "magenta-dj-backend"
+name = "slipmate-backend"
 version = "0.1.0"
-description = "magenta-dj backend: MRT2 deck workers behind a FastAPI WebSocket controller"
+description = "SlipMate backend: MRT2 deck workers behind a FastAPI WebSocket controller"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.136.3",
@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-magenta-dj = "magenta_dj.controller:main"
+slipmate = "slipmate.controller:main"
 
 [dependency-groups]
 dev = [
@@ -26,4 +26,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["magenta_dj"]
+packages = ["slipmate"]

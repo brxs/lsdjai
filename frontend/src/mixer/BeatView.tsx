@@ -24,13 +24,13 @@ export function BeatView({ vertical, getSourceA, getSourceB }: BeatViewProps) {
     >
       <ZoomStrip
         label={t('beatview.deck', { id: 'A' })}
-        accent="a"
+        deck="a"
         vertical={vertical}
         getSource={getSourceA}
       />
       <ZoomStrip
         label={t('beatview.deck', { id: 'B' })}
-        accent="b"
+        deck="b"
         vertical={vertical}
         getSource={getSourceB}
       />
