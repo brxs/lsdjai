@@ -275,6 +275,7 @@ function App() {
     setPadLeds,
     setFxPadLeds,
     setLoopPadLeds,
+    setCuePadLeds,
     ledEpoch,
   } = midi
   const [padCounts, setPadCounts] = useState<Record<DeckId, number>>({
@@ -295,15 +296,29 @@ function App() {
     [handleTargetCount],
   )
 
-  // LED feedback (M7 stretch): pads 1–N lit for the N style targets,
-  // re-sent on reconnect so a hot-plugged controller picks the state
-  // back up, and on every ledEpoch bump — a pad-mode switch clears the
-  // device's pad LEDs, so each bank repaints.
+  // LED feedback (M7 stretch): the HOT CUE bank's meaning follows the
+  // deck mode (M21, ADR-0015) — pads 1–N lit for N style targets on a
+  // realtime deck, filled hot cues lit on a playback deck. Re-sent on
+  // reconnect so a hot-plugged controller picks the state back up, and
+  // on every ledEpoch bump — a pad-mode switch clears the device's pad
+  // LEDs, so each bank repaints. Exactly one painter per deck.
+  const cueLedsA = deckA.mode === 'playback' ? deckA.track?.cues : undefined
+  const cueLedsB = deckB.mode === 'playback' ? deckB.track?.cues : undefined
   useEffect(() => {
     if (midiStatus !== 'connected') return
-    setPadLeds('a', padCounts.a)
-    setPadLeds('b', padCounts.b)
-  }, [midiStatus, setPadLeds, padCounts, ledEpoch])
+    if (cueLedsA) setCuePadLeds('a', cueLedsA.map((cue) => cue !== null))
+    else setPadLeds('a', padCounts.a)
+    if (cueLedsB) setCuePadLeds('b', cueLedsB.map((cue) => cue !== null))
+    else setPadLeds('b', padCounts.b)
+  }, [
+    midiStatus,
+    setPadLeds,
+    setCuePadLeds,
+    padCounts,
+    cueLedsA,
+    cueLedsB,
+    ledEpoch,
+  ])
 
   // PAD FX bank LEDs (M12): the active effect's pad lit per deck.
   useEffect(() => {
@@ -442,6 +457,11 @@ function App() {
           onSeekTrack={deckA.seekTrack}
           onSetTrackRate={deckA.setTrackRate}
           onSyncTrack={handleSyncA}
+          onHotCuePad={deckA.hotCuePad}
+          onClearHotCue={deckA.clearHotCue}
+          onLoopIn={deckA.loopIn}
+          onLoopOut={deckA.loopOut}
+          onLoopExit={deckA.loopExit}
           getTrackPeaks={deckA.getTrackPeaks}
         />
         <div className="app__center">
@@ -492,6 +512,11 @@ function App() {
           onSeekTrack={deckB.seekTrack}
           onSetTrackRate={deckB.setTrackRate}
           onSyncTrack={handleSyncB}
+          onHotCuePad={deckB.hotCuePad}
+          onClearHotCue={deckB.clearHotCue}
+          onLoopIn={deckB.loopIn}
+          onLoopOut={deckB.loopOut}
+          onLoopExit={deckB.loopExit}
           getTrackPeaks={deckB.getTrackPeaks}
         />
       </div>

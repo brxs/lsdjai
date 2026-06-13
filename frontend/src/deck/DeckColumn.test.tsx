@@ -78,6 +78,11 @@ function renderPanel(
         onSyncTrack={
           (handlers.onSyncTrack as () => 'synced') ?? (() => 'synced' as const)
         }
+        onHotCuePad={(handlers.onHotCuePad as (i: number) => void) ?? noop}
+        onClearHotCue={(handlers.onClearHotCue as (i: number) => void) ?? noop}
+        onLoopIn={handlers.onLoopIn ?? noop}
+        onLoopOut={handlers.onLoopOut ?? noop}
+        onLoopExit={handlers.onLoopExit ?? noop}
         getTrackPeaks={() => null}
       />
     </ControlBusProvider>,
@@ -289,6 +294,11 @@ describe('DeckColumn', () => {
           onSeekTrack={noop as (s: number) => void}
           onSetTrackRate={noop as (r: number) => void}
           onSyncTrack={() => 'synced' as const}
+          onHotCuePad={noop}
+          onClearHotCue={noop}
+          onLoopIn={noop}
+          onLoopOut={noop}
+          onLoopExit={noop}
           getTrackPeaks={() => null}
         />
       </ControlBusProvider>,
@@ -758,7 +768,12 @@ describe('DeckColumn', () => {
             onSeekTrack={noop as (s: number) => void}
             onSetTrackRate={noop as (r: number) => void}
             onSyncTrack={() => 'synced' as const}
-            getTrackPeaks={() => null}
+            onHotCuePad={noop}
+          onClearHotCue={noop}
+          onLoopIn={noop}
+          onLoopOut={noop}
+          onLoopExit={noop}
+          getTrackPeaks={() => null}
           />
         </ControlBusProvider>
       </StrictMode>,
@@ -866,6 +881,11 @@ describe('DeckColumn', () => {
           onSeekTrack={noop as (s: number) => void}
           onSetTrackRate={noop as (r: number) => void}
           onSyncTrack={() => 'synced' as const}
+          onHotCuePad={noop}
+          onClearHotCue={noop}
+          onLoopIn={noop}
+          onLoopOut={noop}
+          onLoopExit={noop}
           getTrackPeaks={() => null}
         />
       </ControlBusProvider>,
@@ -1310,5 +1330,62 @@ describe('DeckColumn playback mode (M19)', () => {
     renderPlayback(aTrack(), { onLeavePlayback })
     fireEvent.click(screen.getByRole('button', { name: 'Back to live' }))
     expect(onLeavePlayback).toHaveBeenCalled()
+  })
+
+  it('hot cue pads set on click and clear on SHIFT+click (M21)', () => {
+    const onHotCuePad = vi.fn()
+    const onClearHotCue = vi.fn()
+    const cues = Array<number | null>(8).fill(null)
+    cues[1] = 32.25
+    renderPlayback(aTrack({ cues }), {
+      onHotCuePad: onHotCuePad as unknown as () => void,
+      onClearHotCue: onClearHotCue as unknown as () => void,
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Hot cue 3' }))
+    expect(onHotCuePad).toHaveBeenCalledWith(2)
+    fireEvent.click(screen.getByRole('button', { name: 'Hot cue 2' }), {
+      shiftKey: true,
+    })
+    expect(onClearHotCue).toHaveBeenCalledWith(1)
+    // The filled pad is the lit one — LEDs and screen agree.
+    expect(
+      screen.getByRole('button', { name: 'Hot cue 2' }).className,
+    ).toContain('--lit')
+    expect(
+      screen.getByRole('button', { name: 'Hot cue 3' }).className,
+    ).not.toContain('--lit')
+  })
+
+  it('loop controls arm IN and gate OUT/EXIT on having work (M21)', () => {
+    const onLoopIn = vi.fn()
+    renderPlayback(aTrack(), { onLoopIn })
+    // No IN armed: OUT cannot close a region; no loop: nothing to exit.
+    expect(screen.getByRole('button', { name: 'Loop out' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Exit loop' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Loop in' }))
+    expect(onLoopIn).toHaveBeenCalled()
+  })
+
+  it('an active loop enables EXIT and names its whole-beat length (M21)', () => {
+    const onLoopExit = vi.fn()
+    renderPlayback(
+      aTrack({
+        grid: { bpm: 120, firstBeatSeconds: 0 },
+        loop: { start: 64, end: 66 },
+      }),
+      { onLoopExit },
+    )
+    // 2 s at 120 BPM: four beats, said outright.
+    expect(screen.getByText('4-beat loop')).toBeInTheDocument()
+    const exit = screen.getByRole('button', { name: 'Exit loop' })
+    expect(exit).toBeEnabled()
+    fireEvent.click(exit)
+    expect(onLoopExit).toHaveBeenCalled()
+  })
+
+  it('claims no beat length for a gridless loop — the honesty rule', () => {
+    renderPlayback(aTrack({ loop: { start: 64, end: 66 } }))
+    expect(screen.queryByText(/-beat loop/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Exit loop' })).toBeEnabled()
   })
 })

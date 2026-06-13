@@ -179,7 +179,13 @@
       "tempo": "Tempo",
       "sync": "Sync",
       "syncOutOfRange": "Sync refused — tempo out of range",
-      "syncNoTempo": "Sync refused — no tempo to sync to"
+      "syncNoTempo": "Sync refused — no tempo to sync to",
+      "cues": "Hot cues",
+      "cue": "Hot cue {{n}}",
+      "loopIn": "Loop in",
+      "loopOut": "Loop out",
+      "loopExit": "Exit loop",
+      "loopBeats": "{{beats}}-beat loop"
     },
     "health": {
       "buffer": "Buffer",

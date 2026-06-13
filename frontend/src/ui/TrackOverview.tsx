@@ -19,6 +19,11 @@ type TrackOverviewProps = {
   /** Beatgrid ticks (M20), drawn only while a grid is confident —
    * downbeats heavier. Null draws no ticks. */
   grid: { bpm: number; firstBeatSeconds: number } | null
+  /** Hot cue markers (M21): filled slots draw numbered-by-position
+   * flags in the deck accent. */
+  cues?: (number | null)[]
+  /** The active loop region, shaded in the deck accent. */
+  loop?: { start: number; end: number } | null
   accent: 'a' | 'b'
   disabled?: boolean
   onSeek: (seconds: number) => void
@@ -33,6 +38,8 @@ export function TrackOverview({
   position,
   duration,
   grid,
+  cues,
+  loop,
   accent,
   disabled,
   onSeek,
@@ -48,6 +55,16 @@ export function TrackOverview({
         .getPropertyValue(`--color-deck-${accent}`)
         .trim() || '#ffffff'
     context.clearRect(0, 0, WIDTH, HEIGHT)
+    // The loop region (M21) shades beneath the envelope so the
+    // waveform stays readable inside it.
+    if (loop && duration > 0) {
+      const left = (loop.start / duration) * WIDTH
+      const right = (loop.end / duration) * WIDTH
+      context.globalAlpha = 0.25
+      context.fillStyle = trace
+      context.fillRect(left, 0, Math.max(right - left, 2), HEIGHT)
+      context.globalAlpha = 1
+    }
     context.fillStyle = trace
     const buckets = Math.min(peaks.min.length, WIDTH)
     for (let x = 0; x < buckets; x++) {
@@ -81,7 +98,18 @@ export function TrackOverview({
         context.fillRect(x, 0, heavy ? 2 : 1, heavy ? 14 : 7)
       }
     }
-  }, [peaks, accent, grid, duration])
+    // Hot cue flags (M21): bottom edge, deck accent — distinct from
+    // the grid-red beat ticks along the top.
+    if (cues && duration > 0) {
+      context.fillStyle = trace
+      for (const cue of cues) {
+        if (cue === null) continue
+        const x = Math.round((cue / duration) * WIDTH)
+        context.fillRect(x, HEIGHT - 16, 2, 16)
+        context.fillRect(x, HEIGHT - 16, 6, 5)
+      }
+    }
+  }, [peaks, accent, grid, cues, loop, duration])
 
   function seekFromPointer(event: React.PointerEvent<HTMLDivElement>) {
     if (disabled || duration <= 0) return

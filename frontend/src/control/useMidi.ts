@@ -34,7 +34,15 @@ export function useMidi() {
   const [ledEpoch, setLedEpoch] = useState(0)
 
   const [
-    { connect, readMonitor, setLed, setPadLeds, setFxPadLeds, setLoopPadLeds },
+    {
+      connect,
+      readMonitor,
+      setLed,
+      setPadLeds,
+      setFxPadLeds,
+      setLoopPadLeds,
+      setCuePadLeds,
+    },
   ] = useState(() => {
     let entries: MidiMonitorEntry[] = []
     let nextEntryId = 0
@@ -88,6 +96,14 @@ export function useMidi() {
           setLed(PAD_STATUS_BY_DECK[deck], LOOP_NOTE_BASE + pad, Boolean(filled[pad]))
         }
       },
+      /** Light filled hot cues in the HOT CUE bank (M21) — the same
+       * notes setPadLeds drives; the caller picks one meaning per
+       * deck mode, never both. */
+      setCuePadLeds: (deck: DeckId, filled: boolean[]) => {
+        for (let pad = 0; pad < PAD_COUNT; pad++) {
+          setLed(PAD_STATUS_BY_DECK[deck], pad, Boolean(filled[pad]))
+        }
+      },
     }
   })
 
@@ -100,6 +116,7 @@ export function useMidi() {
     setPadLeds,
     setFxPadLeds,
     setLoopPadLeds,
+    setCuePadLeds,
     ledEpoch,
   }
 }
