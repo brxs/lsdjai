@@ -1,7 +1,14 @@
-# SlipMate
+<p align="center">
+  <img src="docs/img/slipmate-demo.gif" alt="SlipMate — generative DJ" width="640">
+</p>
 
-**Your generative DJ mate** — a DJ instrument for real-time AI music. Two
-locally-running model decks, steered by text prompts and mixed like vinyl:
+<p align="center"><strong>Your generative DJ mate</strong> — a DJ instrument for real-time AI music.</p>
+
+<p align="center">
+  <a href="https://buymeacoffee.com/brxs"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy me a coffee" height="42"></a>
+</p>
+
+Two locally-running model decks, steered by text prompts and mixed like vinyl:
 three-band EQ, one-knob Color FX, a crossfader, headphone cue, and full
 Pioneer DDJ-FLX4 control. The live decks run on
 [Magenta RealTime 2](https://github.com/magenta/magenta-realtime); generated

@@ -1,2 +1,5 @@
 .DS_Store
 node_modules/
+
+# Raw demo footage (large; only the composed clip in docs/img/ is committed)
+demo-raw/
