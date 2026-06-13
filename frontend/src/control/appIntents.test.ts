@@ -224,7 +224,7 @@ describe('applyAppIntent', () => {
     const onCrossfade = vi.fn()
     const handlers = { ...noHandlers, onCrossfade }
     applyAppIntent(
-      { kind: 'style_target', deck: 'a', index: 0 },
+      { kind: 'hot_cue_pad', deck: 'a', index: 0 },
       decks(a),
       handlers,
     )
@@ -327,6 +327,53 @@ describe('applyAppIntent', () => {
       noHandlers,
     )
     expect(live.setTrackRate).not.toHaveBeenCalled()
+  })
+
+  it('HOT CUE pads mean position on a playback deck (M21)', () => {
+    const deck = playbackDeck(true)
+    applyAppIntent(
+      { kind: 'hot_cue_pad', deck: 'a', index: 3 },
+      decks(deck),
+      noHandlers,
+    )
+    expect(deck.hotCuePad).toHaveBeenCalledWith(3)
+
+    applyAppIntent(
+      { kind: 'hot_cue_clear', deck: 'a', index: 3 },
+      decks(deck),
+      noHandlers,
+    )
+    expect(deck.clearHotCue).toHaveBeenCalledWith(3)
+  })
+
+  it('a realtime deck leaves the pad gesture to its style owner', () => {
+    const deck = fakeDeck()
+    applyAppIntent(
+      { kind: 'hot_cue_pad', deck: 'a', index: 3 },
+      decks(deck),
+      noHandlers,
+    )
+    applyAppIntent(
+      { kind: 'hot_cue_clear', deck: 'a', index: 3 },
+      decks(deck),
+      noHandlers,
+    )
+    expect(deck.hotCuePad).not.toHaveBeenCalled()
+    expect(deck.clearHotCue).not.toHaveBeenCalled()
+  })
+
+  it('routes the LOOP section to a playback deck only (M21)', () => {
+    const deck = playbackDeck(true)
+    applyAppIntent({ kind: 'track_loop_in', deck: 'a' }, decks(deck), noHandlers)
+    applyAppIntent({ kind: 'track_loop_out', deck: 'a' }, decks(deck), noHandlers)
+    applyAppIntent({ kind: 'track_loop_exit', deck: 'a' }, decks(deck), noHandlers)
+    expect(deck.loopIn).toHaveBeenCalled()
+    expect(deck.loopOut).toHaveBeenCalled()
+    expect(deck.loopExit).toHaveBeenCalled()
+
+    const live = fakeDeck({ playing: true })
+    applyAppIntent({ kind: 'track_loop_in', deck: 'a' }, decks(live), noHandlers)
+    expect(live.loopIn).not.toHaveBeenCalled()
   })
 
   it('a realtime deck ignores jog ticks — still no scratch concept', () => {

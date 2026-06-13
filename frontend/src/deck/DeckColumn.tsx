@@ -451,8 +451,12 @@ export function DeckColumn({
         applyPreset(intent.preset)
         return
       }
+      // Pads mean position on a playback deck (M21, ADR-0015): the
+      // hot-cue meaning lives in applyAppIntent; without this gate a
+      // pad press would also drive the parked worker's style cursor.
+      if (mode === 'playback') return
       if (!operable || targets.length === 0) return
-      if (intent.kind === 'style_target' && intent.deck === deckId) {
+      if (intent.kind === 'hot_cue_pad' && intent.deck === deckId) {
         const target = targets[intent.index]
         if (!target) return
         const next = { x: target.x, y: target.y }

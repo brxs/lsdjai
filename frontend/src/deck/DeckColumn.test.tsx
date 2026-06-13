@@ -627,7 +627,7 @@ describe('DeckColumn', () => {
     addTarget('funk')
     addTarget('techno')
 
-    act(() => bus.publish({ kind: 'style_target', deck: 'a', index: 1 }))
+    act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 1 }))
 
     expect(onSetStyle.mock.calls.at(-1)![0]).toEqual({
       prompts: [
@@ -668,7 +668,7 @@ describe('DeckColumn', () => {
     addTarget('funk')
     onSetStyle.mockClear()
 
-    act(() => bus.publish({ kind: 'style_target', deck: 'b', index: 0 }))
+    act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'b', index: 0 }))
     act(() => bus.publish({ kind: 'style_sweep', deck: 'b', value: 0.5 }))
 
     expect(onSetStyle).not.toHaveBeenCalled()
@@ -687,7 +687,7 @@ describe('DeckColumn', () => {
       bus,
     )
 
-    act(() => bus.publish({ kind: 'style_target', deck: 'a', index: 0 }))
+    act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 0 }))
 
     expect(onSetStyle).not.toHaveBeenCalled()
   })

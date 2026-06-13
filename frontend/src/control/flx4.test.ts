@@ -28,16 +28,19 @@ describe('createFlx4Translator', () => {
     it.each([
       [0x97, 'a'],
       [0x99, 'b'],
-    ] as const)('HOT CUE pads on %s target deck %s styles', (status, deck) => {
-      const translate = createFlx4Translator()
-      for (let pad = 0; pad < 8; pad++) {
-        expect(translate([status, pad, PRESS])).toEqual({
-          kind: 'style_target',
-          deck,
-          index: pad,
-        })
-      }
-    })
+    ] as const)(
+      'HOT CUE pads on %s emit the pad gesture for deck %s — consumers decide its meaning per mode (M21)',
+      (status, deck) => {
+        const translate = createFlx4Translator()
+        for (let pad = 0; pad < 8; pad++) {
+          expect(translate([status, pad, PRESS])).toEqual({
+            kind: 'hot_cue_pad',
+            deck,
+            index: pad,
+          })
+        }
+      },
+    )
 
     it('ignores pad notes outside the mapped banks', () => {
       const translate = createFlx4Translator()
@@ -61,11 +64,49 @@ describe('createFlx4Translator', () => {
       expect(translate([status, 0x10, RELEASE])).toBeNull()
     })
 
-    it('ignores the shift pad layer', () => {
+    it.each([
+      [0x98, 'a'],
+      [0x9a, 'b'],
+    ] as const)(
+      'SHIFT + HOT CUE pads on the shift layer %s clear deck %s cues (M21)',
+      (status, deck) => {
+        const translate = createFlx4Translator()
+        expect(translate([status, 0x02, PRESS])).toEqual({
+          kind: 'hot_cue_clear',
+          deck,
+          index: 2,
+        })
+      },
+    )
+
+    it('leaves other shift-layer banks unmapped', () => {
       const translate = createFlx4Translator()
-      expect(translate([0x98, 0x00, PRESS])).toBeNull()
-      expect(translate([0x9a, 0x00, PRESS])).toBeNull()
+      expect(translate([0x98, 0x10, PRESS])).toBeNull() // PAD FX shifted
+      expect(translate([0x9a, 0x60, PRESS])).toBeNull() // BEAT LOOP shifted
     })
+
+    it.each([
+      [0x90, 'a'],
+      [0x91, 'b'],
+    ] as const)(
+      'LOOP section on %s drives deck %s track loops (M21, Mixxx chart bytes)',
+      (status, deck) => {
+        const translate = createFlx4Translator()
+        expect(translate([status, 0x10, PRESS])).toEqual({
+          kind: 'track_loop_in',
+          deck,
+        })
+        expect(translate([status, 0x11, PRESS])).toEqual({
+          kind: 'track_loop_out',
+          deck,
+        })
+        expect(translate([status, 0x4d, PRESS])).toEqual({
+          kind: 'track_loop_exit',
+          deck,
+        })
+        expect(translate([status, 0x10, RELEASE])).toBeNull()
+      },
+    )
 
     it.each([
       [0x97, 'a'],

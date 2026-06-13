@@ -25,7 +25,8 @@ sends it on every device bind so a fresh connection starts in sync.
 | PLAY/PAUSE deck 1 / 2 | `0x90`/`0x91` note `0x0B` | toggle play/stop |
 | Channel fader 1 / 2 | `0xB0`/`0xB1` CC `0x13` (LSB `0x33`) | deck volume |
 | Crossfader | `0xB6` CC `0x1F` (LSB `0x3F`) | master crossfade |
-| Pads 1–8, HOT CUE mode, deck 1 / 2 | `0x97`/`0x99` notes `0x00`–`0x07` | snap style-pad cursor to target N |
+| Pads 1–8, HOT CUE mode, deck 1 / 2 | `0x97`/`0x99` notes `0x00`–`0x07` | the pad gesture (`hot_cue_pad`) — meaning decided per deck mode (M21, ADR-0015): realtime snaps the style-pad cursor to target N; playback sets/jumps hot cue N |
+| SHIFT + HOT CUE pad, deck 1 / 2 | `0x98`/`0x9A` notes `0x00`–`0x07` | clear hot cue N on a playback deck (the shift pad layer, the M13-measured firmware habit); realtime decks ignore it |
 | EQ HI deck 1 / 2 | `0xB0`/`0xB1` CC `0x07` (LSB `0x27`) | deck EQ high band (M6) |
 | EQ MID deck 1 / 2 | `0xB0`/`0xB1` CC `0x0B` (LSB `0x2B`) | deck EQ mid band (M6) |
 | EQ LOW deck 1 / 2 | `0xB0`/`0xB1` CC `0x0F` (LSB `0x2F`) | deck EQ low band (M6) |
@@ -73,6 +74,7 @@ remains the verification tool.
 | Jog wheel (turn) deck 1 / 2 | `0xB0`/`0xB1` CC `0x21` (side) / `0x22` (platter, vinyl on) / `0x23` (platter, vinyl off), relative around `0x40` (`0x41` = +1 CW) | the platter's dual role on a playback deck: paused = fine relative seek, playing = phase nudge; a realtime deck ignores the ticks — no scratch concept on the stream (ADR-0004) |
 | SHIFT + jog (turn) deck 1 / 2 | `0xB0`/`0xB1` CC `0x29` (`jogSearch` in the Mixxx FLX4 chart, **confirmed on the device** — third run: "Shift+jog works while playing"), relative around `0x40` | fast scrub even mid-play (the CDJ search convention). The firmware moves the shifted jog to its **own CC** — the software soft-shift on `0x21`/`0x22` shipped first and read as "scrubbing does nothing" on the device |
 | Tempo slider deck 1 / 2 | `0xB0`/`0xB1` CC `0x00` (LSB `0x20`) | varispeed on a playback deck (`track_rate`, M20, ADR-0014 — playback rate is not generation tempo, so ADR-0004 stands); realtime decks ignore it. Orientation **measured on the device**: low values = slow end (the chart assumption shipped inverted and was caught on hardware) |
+| LOOP IN / LOOP OUT / RELOOP-EXIT deck 1 / 2 | `0x90`/`0x91` notes `0x10` / `0x11` / `0x4D` | track loop on a playback deck (M21, ADR-0015): IN arms a quantised start, OUT closes the region, EXIT releases it; realtime decks ignore them. Bytes per the Mixxx FLX4 chart — confirm with the monitor |
 
 Reinterpreted, no new bytes: on a deck in playback mode the existing
 transport messages drive the track instead of the worker — PLAY/PAUSE

@@ -120,6 +120,34 @@ export function applyAppIntent(
       deck.setTrackRate(tempoSliderToRate(intent.value))
       return
     }
+    case 'hot_cue_pad': {
+      // Pads mean position on a playback deck (M21, ADR-0015); the
+      // realtime style-snap meaning lives where that state does
+      // (DeckColumn), gated on mode there.
+      const deck = decks[intent.deck]
+      if (deck.mode === 'playback') deck.hotCuePad(intent.index)
+      return
+    }
+    case 'hot_cue_clear': {
+      const deck = decks[intent.deck]
+      if (deck.mode === 'playback') deck.clearHotCue(intent.index)
+      return
+    }
+    case 'track_loop_in': {
+      const deck = decks[intent.deck]
+      if (deck.mode === 'playback') deck.loopIn()
+      return
+    }
+    case 'track_loop_out': {
+      const deck = decks[intent.deck]
+      if (deck.mode === 'playback') deck.loopOut()
+      return
+    }
+    case 'track_loop_exit': {
+      const deck = decks[intent.deck]
+      if (deck.mode === 'playback') deck.loopExit()
+      return
+    }
     case 'crossfade':
       handlers.onCrossfade(intent.value)
       return

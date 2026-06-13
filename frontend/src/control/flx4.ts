@@ -34,6 +34,11 @@ const SHIFT_PAD_DECK: Partial<Record<number, DeckId>> = { 0x98: 'a', 0x9a: 'b' }
 const BEAT_FX_STATUSES = [0x94, 0x95]
 const PLAY_NOTE = 0x0b
 const RECORD_NOTE = 0x47
+/** The LOOP section (M21): IN / OUT / RELOOP-EXIT per the Mixxx FLX4
+ * chart — monitor-verified like every bank. */
+const LOOP_IN_NOTE = 0x10
+const LOOP_OUT_NOTE = 0x11
+const LOOP_EXIT_NOTE = 0x4d
 export const CHANNEL_CUE_NOTE = 0x54
 export const TRANSPORT_CUE_NOTE = 0x0c
 /** SHIFT is a software modifier (ADR-0008): the firmware reports press
@@ -148,9 +153,18 @@ function buttonIntent(
   if (playDeck && note === TRANSPORT_CUE_NOTE) {
     return { kind: 'deck_prep', deck: playDeck }
   }
+  if (playDeck && note === LOOP_IN_NOTE) {
+    return { kind: 'track_loop_in', deck: playDeck }
+  }
+  if (playDeck && note === LOOP_OUT_NOTE) {
+    return { kind: 'track_loop_out', deck: playDeck }
+  }
+  if (playDeck && note === LOOP_EXIT_NOTE) {
+    return { kind: 'track_loop_exit', deck: playDeck }
+  }
   const padDeck = PAD_DECK[status]
   if (padDeck && note < PAD_COUNT) {
-    return { kind: 'style_target', deck: padDeck, index: note }
+    return { kind: 'hot_cue_pad', deck: padDeck, index: note }
   }
   if (
     padDeck &&
@@ -171,9 +185,13 @@ function buttonIntent(
   }
   // SHIFT + SAMPLER pad arrives on the shift pad layer, not as a
   // shifted note on the plain layer (the soft-shift branch above stays
-  // for firmware that does keep the pads put). Other shift-layer banks
-  // remain deliberately unmapped.
+  // for firmware that does keep the pads put). SHIFT + HOT CUE pad
+  // (M21) rides the same layer to clear a cue. Other shift-layer
+  // banks remain deliberately unmapped.
   const shiftPadDeck = SHIFT_PAD_DECK[status]
+  if (shiftPadDeck && note < PAD_COUNT) {
+    return { kind: 'hot_cue_clear', deck: shiftPadDeck, index: note }
+  }
   if (
     shiftPadDeck &&
     note >= LOOP_NOTE_BASE &&

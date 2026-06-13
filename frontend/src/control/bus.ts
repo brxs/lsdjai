@@ -11,7 +11,14 @@ export type ControlIntent =
   | { kind: 'volume'; deck: DeckId; value: number }
   | { kind: 'eq'; deck: DeckId; band: EqBand; value: number }
   | { kind: 'crossfade'; value: number }
-  | { kind: 'style_target'; deck: DeckId; index: number }
+  // The HOT CUE bank, named for the physical gesture (M21): the pure
+  // translator cannot know a deck's mode, so consumers decide what a
+  // pad means — realtime decks snap the style cursor (DeckColumn),
+  // playback decks set/jump hot cues (applyAppIntent, ADR-0015).
+  | { kind: 'hot_cue_pad'; deck: DeckId; index: number }
+  // SHIFT + HOT CUE pad (the shift pad layer): clears the cue on a
+  // playback deck; realtime decks have no per-pad clear and ignore it.
+  | { kind: 'hot_cue_clear'; deck: DeckId; index: number }
   | { kind: 'style_sweep'; deck: DeckId; value: number }
   | { kind: 'record_toggle' }
   | { kind: 'cue_toggle'; deck: DeckId }
@@ -38,6 +45,11 @@ export type ControlIntent =
   // Tempo sliders (M20, ADR-0014): varispeed on a playback deck,
   // ignored on a realtime deck — ADR-0004 still bars generation tempo.
   | { kind: 'track_rate'; deck: DeckId; value: number }
+  // The LOOP section (M21, ADR-0015): in/out/exit on a playback deck;
+  // the track_ prefix keeps them clear of ADR-0009's freeze-loop pads.
+  | { kind: 'track_loop_in'; deck: DeckId }
+  | { kind: 'track_loop_out'; deck: DeckId }
+  | { kind: 'track_loop_exit'; deck: DeckId }
   | { kind: 'preset_load'; deck: DeckId; preset: StylePreset }
 
 export type ControlBus = {
