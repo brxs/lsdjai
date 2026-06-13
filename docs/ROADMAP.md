@@ -197,7 +197,24 @@ Later idea. Verified by eye alongside the M20 device runs.
 
 ## M21 — Hot cues and track loops
 
-**Status: ⬜ planned.**
+**Status: 🔶 built (2026-06-13), pending hardware verification.** All
+three scope items shipped on
+[ADR-0015](adr/0015-hot-cues-in-deck-state-loops-on-the-buffer-source.md)
+(architecture-reviewed before building): hot cues as session-only deck
+state with jump-as-seek; the loop on the buffer source's native
+`loopStart`/`loopEnd` with the transport folding through the region in
+one pure function; any seek exits the loop (one rule — the two
+playhead-outside-the-region moments get deterministic restarts instead
+of the wrap-on-reach spec edge); quantise per the consumer rule (whole
+beats with a grid, free-but-minimum-length without). The pad intent is
+renamed for the physical gesture (`hot_cue_pad`) since its meaning now
+diverges per deck mode — which also retired a latent bug (playback
+pads still drove the parked worker's style cursor). Measured
+(`verify_m21.mjs`, real generated audio): cue jump landed on the cue
+to the second while playing; a 9-beat IN→OUT loop folded the playhead
+3× with seam and position agreeing; EXIT released past the boundary.
+The device half awaits [`m21-hardware-checklist.md`](m21-hardware-checklist.md)
+(pad LEDs, the audible seam, the chart-interpolated LOOP bytes).
 
 **Goal:** on a playback deck, pads mean *position*. The HOT CUE bank —
 style-target snaps on a realtime deck — becomes what its label says, and
