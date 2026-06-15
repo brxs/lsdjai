@@ -103,7 +103,13 @@ captured 48 kHz/stereo chunks, or a live sidecar from Spike B) → mix → devic
 - **Fail path:** if `fundsp` can't reach parity on an effect, that effect drops
   to hand-rolled DSP (ADR-0017 alternative) — not a phase failure.
 
-### Spike B — Sidecar packaging (`spike-packaging.md`)
+### Spike B — Sidecar packaging ([`spike-packaging.md`](spike-packaging.md))
+
+**PASS (2026-06-15).** A PyInstaller ONEDIR freeze loads `mrt2_small` and
+generates a valid chunk via MLX/Metal, byte-identical to native; the `mlx.metallib`
+placement wall is solved in `build.sh`; bundle 931 MB (jax unavoidable via the
+vendored `sequence_layers`); first-launch 23 s stall removed by codesign/notarize.
+Full record in the linked doc. Original plan:
 
 Freeze the backend (`magenta-rt[mlx]` + the `sa3_mlx` checkout) with PyInstaller
 into a launchable binary that loads a model and streams a chunk.
