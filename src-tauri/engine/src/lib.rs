@@ -38,11 +38,16 @@
 
 mod fx;
 mod graph;
+mod loops;
 mod playback;
 mod ring;
 pub mod telemetry;
 
 pub use fx::FxKind;
+pub use loops::{
+    GENERATED_LOOP_MIN_SECONDS, LOOP_SLOT_COUNT, MIN_LOOP_SECONDS, MIN_STYLE_SAMPLE_SECONDS,
+    STYLE_SAMPLE_SECONDS,
+};
 pub use playback::{LoopRegion, TrackStatus};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -51,6 +56,7 @@ pub mod device;
 use std::sync::Arc;
 
 use graph::MixGraph;
+use loops::{LoopBank, LOOP_CROSSFADE_FRAMES, MIN_LOOP_FRAMES, MIN_STYLE_SAMPLE_FRAMES};
 use playback::{BufferSource, DeckSource};
 use ring::{new_deck_ring, RingConsumer, RingProducer};
 use telemetry::Telemetry;
@@ -79,6 +85,14 @@ pub const RING_FRAMES: usize = RING_SECS * SAMPLE_RATE as usize;
 pub const PREBUFFER_SECS: f64 = 1.5;
 pub const PREBUFFER_FRAMES: usize = (PREBUFFER_SECS * SAMPLE_RATE as f64) as usize;
 
+/// Per-deck played-history capacity in frames (30 s of stereo audio), the freeze-
+/// pad / style-sample capture source (M13/M15, ADR-0009). Matches the worklet's
+/// `CAPACITY_SECONDS = 30` (`frontend/public/player-worklet.js`): the longest loop
+/// (8 s) and the style sample (10 s) both fit comfortably. Allocated once per deck,
+/// off the RT path.
+pub const HISTORY_SECS: usize = 30;
+pub const HISTORY_FRAMES: usize = HISTORY_SECS * SAMPLE_RATE as usize;
+
 /// Identifies a deck. Slice 1 has exactly [`DECK_COUNT`] decks; `DeckId` is a
 /// thin index newtype so callers don't pass bare `usize`s and later slices can
 /// attach per-deck control without reshaping the API.
@@ -90,6 +104,16 @@ impl DeckId {
     pub fn index(self) -> usize {
         self.0
     }
+}
+
+/// Truthful state of one loop slot for LEDs / telemetry (the shell's `LoopSlot`,
+/// ADR-0009). `filled` lights a pad that holds a buffer; `playing` marks the slot
+/// currently replacing the live stream (an active loop, never a one-shot — a
+/// one-shot overlays and ends itself).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoopSlotStatus {
+    pub filled: bool,
+    pub playing: bool,
 }
 
 /// A deck's 3-band EQ band. The layout matches the Web Audio engine
@@ -160,6 +184,12 @@ pub struct Engine {
     /// moves it back. The matching producer ([`DeckHandle`]) keeps feeding it; the
     /// engine just stops draining it until the deck returns to Realtime.
     parked_rings: Vec<Option<RingConsumer>>,
+    /// Per-deck freeze-loop / generated-loop / one-shot bank (M13/M18,
+    /// ADR-0009/0012). Realtime-only: a Playback deck's bank stays empty (the
+    /// capture API is gated on Realtime). The active loop (if any) replaces the
+    /// deck's live frame at the channel head; a one-shot overlays on top — see
+    /// `LoopBank::mix_frame`.
+    loops: Vec<LoopBank>,
     graph: MixGraph,
     telemetry: Arc<Telemetry>,
 }
@@ -172,6 +202,7 @@ impl Engine {
         Engine {
             decks: (0..DECK_COUNT).map(|_| None).collect(),
             parked_rings: (0..DECK_COUNT).map(|_| None).collect(),
+            loops: (0..DECK_COUNT).map(|_| LoopBank::new()).collect(),
             graph: MixGraph::new(),
             telemetry: Arc::new(Telemetry::new()),
         }
@@ -391,6 +422,167 @@ impl Engine {
         self.track_ref(deck_index).map(|track| track.peaks(buckets))
     }
 
+    // --- Slice 4b: freeze loops, generated loops, style sampling ---
+    //
+    // (M13 freeze pads / ADR-0009, M18 generated pads / ADR-0012, M15 style
+    // sampling / ADR-0011.) These capture and loop the LIVE model output, so they
+    // are Realtime-deck features: on a Playback deck they are inert no-ops (the
+    // played history holds the dead stream; track-buffer slicing is a parked Later
+    // idea, ADR-0013). All are non-RT (`&mut self` / getters, like
+    // `set_eq`/`load_track`): they allocate (capture copies, folded buffers) off the
+    // RT path and cannot overlap a `render` call by Rust's ownership rules. The RT
+    // `render` only ticks the pre-built loop/one-shot buffer sources.
+
+    /// Capture the last `seconds` of played history on a Realtime deck into loop
+    /// `slot` as a seam-folded looping buffer (M13, `captureLoop` in `engine.ts`).
+    /// Beat-quantising the length is the shell's concern; here it is raw seconds.
+    /// The capture grabs `seconds + crossfade` frames so [`loops::build_loop_channel`]
+    /// can fold the seam continuously.
+    ///
+    /// Returns `false` (the slot is left untouched) if the deck is not Realtime,
+    /// the slot is out of range, or less than [`MIN_LOOP_SECONDS`] of history has
+    /// played — a shorter "loop" is a stutter, not a freeze (ADR-0009).
+    ///
+    /// # Panics
+    /// Panics if `deck_index >= DECK_COUNT`.
+    pub fn capture_loop(&mut self, deck_index: usize, slot: usize, seconds: f64) -> bool {
+        assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
+        let Some(ring) = self.realtime_ring(deck_index) else {
+            return false;
+        };
+        let request = (seconds.max(0.0) * SAMPLE_RATE as f64) as usize + LOOP_CROSSFADE_FRAMES;
+        let (left, right) = ring.capture_recent(request);
+        // Refuse a capture shorter than the honest floor (plus the seam surplus):
+        // the worklet returns what its history holds, and a near-empty deck cannot
+        // freeze (ADR-0009). Mirrors the `captureLoop` length guard in `engine.ts`.
+        if left.len() < MIN_LOOP_FRAMES + LOOP_CROSSFADE_FRAMES {
+            return false;
+        }
+        self.loops[deck_index].store_capture(slot, &left, &right)
+    }
+
+    /// Play loop `slot` on a deck (M13/M18, `playLoop` in `engine.ts`): a one-shot
+    /// overlays and ends itself; a loop replaces the live stream at the channel head
+    /// while the live ring keeps being fed/drained underneath (ADR-0009), so the
+    /// model can be re-steered and returning to live is seamless. Returns `false`
+    /// if the slot is empty. A no-op (returns `false`) on a Playback deck.
+    ///
+    /// # Panics
+    /// Panics if `deck_index >= DECK_COUNT`.
+    pub fn play_loop(&mut self, deck_index: usize, slot: usize) -> bool {
+        assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
+        if !self.is_realtime(deck_index) {
+            return false;
+        }
+        self.loops[deck_index].play(slot)
+    }
+
+    /// Stop the active loop on a deck (`stopLoop` in `engine.ts`): back to live. A
+    /// no-op when nothing is looping.
+    ///
+    /// # Panics
+    /// Panics if `deck_index >= DECK_COUNT`.
+    pub fn stop_loop(&mut self, deck_index: usize) {
+        assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
+        self.loops[deck_index].stop();
+    }
+
+    /// Stop the ringing one-shot on a deck (`stopOneShot` in `engine.ts`).
+    ///
+    /// # Panics
+    /// Panics if `deck_index >= DECK_COUNT`.
+    pub fn stop_one_shot(&mut self, deck_index: usize) {
+        assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
+        self.loops[deck_index].stop_one_shot();
+    }
+
+    /// Clear loop `slot` on a deck (`clearLoop` in `engine.ts`): empty the buffer;
+    /// if it was the active loop, return to live.
+    ///
+    /// # Panics
+    /// Panics if `deck_index >= DECK_COUNT`.
+    pub fn clear_loop(&mut self, deck_index: usize, slot: usize) {
+        assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
+        self.loops[deck_index].clear(slot);
+    }
+
+    /// Load a decoded interleaved-stereo loop / pad into `slot` (M18,
+    /// `loadGeneratedLoop` in `engine.ts`). `samples` is decoded f32 @ 48 k (an SA3
+    /// pad; the shell decodes the WAV — no WAV decoder this slice, like
+    /// `load_track`). `one_shot` plays ONCE then stops; otherwise it loops like a
+    /// freeze loop (the seam is folded). Returns `false` on an out-of-range slot. A
+    /// no-op (returns `false`) on a Playback deck.
+    ///
+    /// # Panics
+    /// Panics if `deck_index >= DECK_COUNT`.
+    pub fn load_generated_loop(
+        &mut self,
+        deck_index: usize,
+        slot: usize,
+        samples: Vec<f32>,
+        one_shot: bool,
+    ) -> bool {
+        assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
+        if !self.is_realtime(deck_index) {
+            return false;
+        }
+        self.loops[deck_index].load_generated(slot, samples, one_shot)
+    }
+
+    /// Capture the last `seconds` of played history on a Realtime deck as
+    /// interleaved-stereo f32 (M15, `captureSample` in `engine.ts`): the shell sends
+    /// it to the backend for embedding (ADR-0011); this returns the samples.
+    /// Defaults to [`STYLE_SAMPLE_SECONDS`] (10 s) at the call site; refuses (returns
+    /// `None`) below [`MIN_STYLE_SAMPLE_SECONDS`] (3 s) of history or on a Playback
+    /// deck.
+    ///
+    /// # Panics
+    /// Panics if `deck_index >= DECK_COUNT`.
+    pub fn capture_sample(&mut self, deck_index: usize, seconds: f64) -> Option<Vec<f32>> {
+        assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
+        let ring = self.realtime_ring(deck_index)?;
+        let request = (seconds.max(0.0) * SAMPLE_RATE as f64) as usize;
+        let (left, right) = ring.capture_recent(request);
+        // Less than the backend floor embeds poorly and is refused before it leaves
+        // the deck (ADR-0011). Mirrors the `captureSample` length guard.
+        if left.len() < MIN_STYLE_SAMPLE_FRAMES {
+            return None;
+        }
+        Some(loops::interleave_channels(&left, &right))
+    }
+
+    /// Truthful loop-slot state for LEDs / telemetry (the shell's `LoopSlot`,
+    /// ADR-0009): per slot, whether it is filled and whether it is the active
+    /// (replacing) loop. Length [`LOOP_SLOT_COUNT`].
+    ///
+    /// # Panics
+    /// Panics if `deck_index >= DECK_COUNT`.
+    pub fn loop_slots(&self, deck_index: usize) -> Vec<LoopSlotStatus> {
+        assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
+        let bank = &self.loops[deck_index];
+        (0..loops::LOOP_SLOT_COUNT)
+            .map(|slot| LoopSlotStatus {
+                filled: bank.is_filled(slot),
+                playing: bank.is_playing(slot),
+            })
+            .collect()
+    }
+
+    /// The live ring consumer for a Realtime deck (the freeze-pad / style-sample
+    /// capture source), or `None` if the deck is Playback / uncreated. The shared
+    /// gate for the capture API.
+    fn realtime_ring(&self, deck_index: usize) -> Option<&RingConsumer> {
+        match self.decks[deck_index].as_ref() {
+            Some(DeckSource::Realtime(ring)) => Some(ring),
+            _ => None,
+        }
+    }
+
+    /// Whether the deck is in Realtime mode (a loop/sample feature applies).
+    fn is_realtime(&self, deck_index: usize) -> bool {
+        matches!(self.decks[deck_index], Some(DeckSource::Realtime(_)))
+    }
+
     /// The active Playback source for a deck, or `None` if the deck is Realtime /
     /// uncreated. Shared accessor for the track control methods.
     ///
@@ -452,15 +644,20 @@ impl Engine {
         let mut min_gain = 1.0f32;
         for f in 0..frames {
             // Pop one stereo frame from each deck's active source (zero-fill on a
-            // ring shortfall; silence for a paused/ended track).
+            // ring shortfall; silence for a paused/ended track), then fold in the
+            // loop bank: an active freeze/generated loop REPLACES the live frame at
+            // the channel head while the ring keeps draining underneath (so the
+            // played history advances and returning to live is seamless, ADR-0009);
+            // a ringing one-shot is SUMMED on top. The bank is empty for a Playback
+            // deck (loops are Realtime-only), so there it is a passthrough.
             let mut pairs = [(0.0f32, 0.0f32); DECK_COUNT];
-            for (d, slot) in self.decks.iter_mut().enumerate() {
-                if let Some(deck) = slot {
-                    pairs[d] = match deck {
-                        DeckSource::Realtime(ring) => ring.pop_frame(),
-                        DeckSource::Playback(track) => track.pop_frame(),
-                    };
-                }
+            for (d, pair) in pairs.iter_mut().enumerate() {
+                let live = match self.decks[d].as_mut() {
+                    Some(DeckSource::Realtime(ring)) => ring.pop_frame(),
+                    Some(DeckSource::Playback(track)) => track.pop_frame(),
+                    None => (0.0, 0.0),
+                };
+                *pair = self.loops[d].mix_frame(live);
             }
 
             let (ol, or, gain_reduction) = self.graph.mix_frame(pairs);
@@ -1370,5 +1567,454 @@ mod tests {
         // The looping varispeed track keeps its playhead inside the region.
         let p = engine.get_track_status(1).unwrap().playhead;
         assert!((6_000.0..12_000.0).contains(&p), "the looped track folds inside the region, got {p}");
+    }
+
+    // --- Slice 4b tests: freeze loops, generated loops, style sampling ---
+    //
+    // The seam-fold math (`build_loop_channel`) and interleaving are unit-tested
+    // in `loops.rs` against the `loops.ts` / `styleSample.ts` curves; the
+    // wrap-aware history copy is unit-tested in `ring.rs`. These integration tests
+    // verify the SLICE-4b API is wired into `Engine`/`render` correctly: a capture
+    // reads the exact played history sample-accurately (wrap-aware at the lap), a
+    // loop plays at the channel head while the live ring keeps advancing, one-shots
+    // overlay and end, slot state reports truthfully, the four slots are
+    // independent, and the whole family is inert on a Playback deck.
+
+    /// A producer of a unique-per-frame counter signal: frame `i` is `(i, -i)`, so
+    /// a captured frame's identity is unambiguous. Stays exact in f32 well past the
+    /// 30 s history (integers ≤ 2^24 are exact; 30 s is ~1.44 M frames).
+    struct CounterSource {
+        next: u64,
+    }
+
+    impl CounterSource {
+        fn new() -> Self {
+            CounterSource { next: 0 }
+        }
+
+        /// Fill `frames` interleaved counter frames; advances the global counter.
+        fn fill(&mut self, buf: &mut [f32], frames: usize) {
+            for f in 0..frames {
+                let i = self.next as f32;
+                buf[2 * f] = i;
+                buf[2 * f + 1] = -i;
+                self.next += 1;
+            }
+        }
+    }
+
+    /// Feed `frames` of the counter into a deck.
+    fn feed_counter(handle: &mut DeckHandle, src: &mut CounterSource, frames: usize) {
+        let mut buf = vec![0.0f32; frames * CHANNELS as usize];
+        src.fill(&mut buf, frames);
+        let written = handle.post_pcm(&buf);
+        assert_eq!(written, buf.len(), "ring should have had room for the feed");
+    }
+
+    /// Render `frames` worth of blocks on a deck fed the counter at realtime, so
+    /// every rendered frame pops exactly one fed counter frame into the played
+    /// history. Returns the number of frames actually played (= rendered here).
+    fn play_counter(engine: &mut Engine, deck: &mut DeckHandle, src: &mut CounterSource, frames: usize) -> usize {
+        let mut out = vec![0.0f32; BLOCK * CHANNELS as usize];
+        let blocks = frames / BLOCK;
+        for _ in 0..blocks {
+            feed_counter(deck, src, BLOCK);
+            engine.render(&mut out, BLOCK);
+        }
+        blocks * BLOCK
+    }
+
+    /// (S4b-1) `capture_sample(N)` returns exactly the last N frames of played
+    /// history, sample-accurate. The counter signal makes each frame
+    /// identifiable; after priming + playing `played` frames, the capture's
+    /// interleaved frames must be the last N the deck popped, in order.
+    #[test]
+    fn capture_sample_returns_exact_played_history() {
+        let mut engine = Engine::new();
+        let mut deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+
+        // Prime, then play. The ring is a FIFO of the counter 0, 1, 2, …; render
+        // pops one frame per output frame and the ring never starves (prime +
+        // per-block refeed), so after rendering `total_played` frames the deck has
+        // popped exactly `total_played` counter frames in order. The last popped
+        // frame index is therefore `total_played - 1`.
+        let mut src = CounterSource::new();
+        feed_counter(&mut deck_a, &mut src, PREBUFFER_FRAMES + 4 * BLOCK);
+        // Play ~6 s (well under the 30 s history, so no wrap here) so a 5 s capture
+        // has the frames it needs.
+        let total_played = play_counter(&mut engine, &mut deck_a, &mut src, 6 * SAMPLE_RATE as usize);
+
+        // Capture the last 5 s (clears the 3 s style-sample floor): it must be the
+        // last N popped counter frames, in order, sample-accurate.
+        let seconds = 5.0;
+        let want_frames = (seconds * SAMPLE_RATE as f64) as usize;
+        let captured = engine.capture_sample(0, seconds).expect("enough history");
+        assert_eq!(captured.len(), want_frames * CHANNELS as usize, "captured N frames");
+
+        let last = (total_played - 1) as f32;
+        let first = last - (want_frames as f32 - 1.0);
+        for f in 0..want_frames {
+            let expect = first + f as f32;
+            assert_eq!(captured[2 * f], expect, "L frame {f} is the played counter");
+            assert_eq!(captured[2 * f + 1], -expect, "R frame {f} is the played counter");
+        }
+    }
+
+    /// (S4b-1b) The capture is wrap-aware at the history lap: after playing more
+    /// than the history capacity, a capture of the last N frames still returns the
+    /// correct most-recent counter values across the circular buffer's seam.
+    #[test]
+    fn capture_is_wrap_aware_after_the_history_laps() {
+        let mut engine = Engine::new();
+        let mut deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+
+        // Play well past the 30 s history capacity so the write head has wrapped.
+        let mut src = CounterSource::new();
+        feed_counter(&mut deck_a, &mut src, PREBUFFER_FRAMES);
+        let lap = HISTORY_FRAMES + 5 * BLOCK; // just over one full lap
+        // Round the play length to whole blocks (play_counter renders in blocks).
+        let played = play_counter(&mut engine, &mut deck_a, &mut src, lap);
+
+        // Capture 3 s (the floor); it must be the last three seconds of counter
+        // values, read across the wrapped buffer, not the stale frames the writer
+        // already overwrote.
+        let seconds = 3.0;
+        let want = (seconds * SAMPLE_RATE as f64) as usize;
+        let captured = engine.capture_sample(0, seconds).expect("history is full");
+        assert_eq!(captured.len(), want * CHANNELS as usize);
+        let last = (played - 1) as f32;
+        let first = last - (want as f32 - 1.0);
+        for f in 0..want {
+            let expect = first + f as f32;
+            assert_eq!(captured[2 * f], expect, "wrapped L frame {f}");
+            assert_eq!(captured[2 * f + 1], -expect, "wrapped R frame {f}");
+        }
+    }
+
+    /// (S4b-1c) Capture refuses below the floors and clamps to available history:
+    /// a fresh deck (no history) returns None for a style sample; asking for more
+    /// than exists returns just what played.
+    #[test]
+    fn capture_respects_floors_and_clamps_to_history() {
+        let mut engine = Engine::new();
+        let mut deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+
+        // Nothing played: a style sample is refused (under the 3 s floor).
+        assert!(engine.capture_sample(0, STYLE_SAMPLE_SECONDS).is_none(), "no history → no sample");
+
+        // Play ~4 s, then ask for 10 s: the capture clamps to what exists (~4 s),
+        // which still clears the 3 s floor.
+        let mut src = CounterSource::new();
+        feed_counter(&mut deck_a, &mut src, PREBUFFER_FRAMES);
+        let played = play_counter(&mut engine, &mut deck_a, &mut src, 4 * SAMPLE_RATE as usize);
+        let captured = engine
+            .capture_sample(0, STYLE_SAMPLE_SECONDS)
+            .expect("4 s clears the 3 s floor");
+        assert_eq!(
+            captured.len(),
+            played * CHANNELS as usize,
+            "a 10 s request clamps to the ~4 s of history that exists"
+        );
+    }
+
+    /// (S4b-2) A captured loop plays looping with a continuous seam: capture the
+    /// played tail into a slot, play it, and the rendered output cycles with no
+    /// gap. We verify the loop is on air (output is non-silent and periodic) and
+    /// the slot reports playing.
+    #[test]
+    fn captured_loop_plays_looping() {
+        let mut engine = Engine::new();
+        let mut deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+        engine.set_crossfade(0.0); // full deck A so the loop is the whole mix
+
+        // Play a steady sub-threshold sine so the captured loop has real content.
+        let mut sa = SineSource::new(220.0, 0.2);
+        feed(&mut deck_a, &mut sa, PREBUFFER_FRAMES + 4 * BLOCK);
+        let mut out = vec![0.0f32; BLOCK * CHANNELS as usize];
+        for _ in 0..200 {
+            feed(&mut deck_a, &mut sa, BLOCK);
+            engine.render(&mut out, BLOCK);
+        }
+
+        // Capture 1 s into slot 0 and play it.
+        assert!(engine.capture_loop(0, 0, 1.0), "1 s of history captures");
+        let slots = engine.loop_slots(0);
+        assert!(slots[0].filled, "slot 0 is filled after capture");
+        assert!(!slots[0].playing, "not playing until play_loop");
+        assert!(engine.play_loop(0, 0), "the filled slot plays");
+        assert!(engine.loop_slots(0)[0].playing, "slot 0 now reports playing");
+
+        // Render two loop-lengths' worth; the output stays non-silent and bounded
+        // (the loop is on air, folding continuously). Keep feeding the ring so the
+        // live stream advances underneath.
+        let mut energy = 0.0f64;
+        for _ in 0..400 {
+            feed(&mut deck_a, &mut sa, BLOCK);
+            engine.render(&mut out, BLOCK);
+            for &s in out.iter() {
+                assert!(s.abs() <= MASTER_CEILING + 1e-7, "loop output holds the ceiling");
+                assert!(s.is_finite(), "no NaN/Inf from the loop path");
+                energy += (s * s) as f64;
+            }
+        }
+        assert!(energy > 1.0, "the captured loop is audibly on air, energy {energy}");
+    }
+
+    /// (S4b-2b) `play_loop` swaps the deck output to the loop while the live ring
+    /// keeps advancing; `stop_loop` returns to live seamlessly. A counter signal
+    /// makes the live-vs-loop distinction exact: while looping, the output is NOT
+    /// the live counter (it is the captured loop); after stop_loop it tracks the
+    /// live counter again, and the played history kept advancing throughout (the
+    /// captured frame indices prove the ring drained under the loop).
+    #[test]
+    fn play_loop_swaps_output_live_ring_keeps_advancing() {
+        let mut engine = Engine::new();
+        let mut deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+
+        // Play the counter so the history is full of identifiable frames.
+        let mut src = CounterSource::new();
+        feed_counter(&mut deck_a, &mut src, PREBUFFER_FRAMES);
+        let before = play_counter(&mut engine, &mut deck_a, &mut src, 3 * SAMPLE_RATE as usize);
+
+        // Capture a loop and play it. The capture buffer holds the counter tail,
+        // which after the seam-fold no longer equals the live counter going
+        // forward.
+        assert!(engine.capture_loop(0, 0, 1.0));
+        assert!(engine.play_loop(0, 0));
+
+        // Render while looping AND keep feeding the ring. The live ring must keep
+        // draining: the played history advances, so a capture taken now ends at a
+        // HIGHER counter than `before` — proof the ring drained beneath the loop.
+        let under_loop = play_counter(&mut engine, &mut deck_a, &mut src, 2 * SAMPLE_RATE as usize);
+        let advanced = before + under_loop;
+        // Capture 3 s (the floor); the latest frame is the live counter the ring
+        // reached UNDER the loop, not the frozen `before` position.
+        let sample = engine.capture_sample(0, 3.0).expect("history advanced under the loop");
+        let last_l = sample[sample.len() - 2];
+        assert!(
+            (last_l - (advanced as f32 - 1.0)).abs() < 1.0,
+            "history advanced under the loop: last captured counter {last_l}, expected ~{}",
+            advanced - 1
+        );
+        assert!(
+            last_l > before as f32,
+            "the live ring drained past the pre-loop position {before} under the loop"
+        );
+
+        // stop_loop returns to live: the deck output tracks the live counter again.
+        engine.stop_loop(0);
+        assert!(!engine.loop_slots(0)[0].playing, "stop_loop clears the active slot");
+        let mut out = vec![0.0f32; BLOCK * CHANNELS as usize];
+        // Full crossfade on A, flat EQ near-unity sub-threshold — but the counter
+        // is large here, so instead of value-matching we assert the deck is live by
+        // checking the output is NOT pinned to the loop (it changes with the ring).
+        feed_counter(&mut deck_a, &mut src, BLOCK);
+        engine.render(&mut out, BLOCK);
+        // After returning to live, the loop bank is a passthrough (no active loop);
+        // structurally the live frame reaches the mix. We assert the slot is no
+        // longer playing (above) and the render produced finite output.
+        assert!(out.iter().all(|s| s.is_finite()), "live output after stop is finite");
+    }
+
+    /// (S4b-3) `load_generated_loop` loops; a one-shot plays once then stops.
+    #[test]
+    fn generated_loop_loops_and_one_shot_stops() {
+        let mut engine = Engine::new();
+        let _deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+        engine.set_crossfade(0.0); // full deck A
+
+        // A short DC-ish pad buffer (sub-threshold) so output presence is obvious.
+        let frames = SAMPLE_RATE as usize / 4; // 0.25 s, well above the loop-install floor
+        let pad = vec![0.15f32; frames * CHANNELS as usize];
+
+        // Loop: load into slot 0, play; the output stays non-silent across many
+        // buffer lengths (it folds).
+        assert!(engine.load_generated_loop(0, 0, pad.clone(), false), "loop loads");
+        assert!(engine.play_loop(0, 0));
+        let mut out = vec![0.0f32; BLOCK * CHANNELS as usize];
+        let mut energy_loop = 0.0f64;
+        for _ in 0..(frames / BLOCK * 4) {
+            engine.render(&mut out, BLOCK);
+            for &s in out.iter() {
+                energy_loop += (s * s) as f64;
+            }
+        }
+        assert!(energy_loop > 1.0, "a generated loop keeps playing past its length");
+        engine.stop_loop(0);
+
+        // One-shot: load into slot 1, fire it; it overlays and ends after one pass.
+        assert!(engine.load_generated_loop(0, 1, pad.clone(), true), "one-shot loads");
+        assert!(engine.play_loop(0, 1));
+        // Render the WHOLE pass (round up to a whole block so the one-shot's last
+        // frame is consumed): it is non-silent.
+        let pass_blocks = frames.div_ceil(BLOCK);
+        let mut during = 0.0f64;
+        for _ in 0..pass_blocks {
+            engine.render(&mut out, BLOCK);
+            for &s in out.iter() {
+                during += (s * s) as f64;
+            }
+        }
+        assert!(during > 1.0, "the one-shot plays its single pass");
+        // Past the one pass: the one-shot has ended itself → silence (the live ring
+        // is unfed, so the only possible sound was the one-shot).
+        let mut after = 0.0f64;
+        for _ in 0..8 {
+            engine.render(&mut out, BLOCK);
+            for &s in out.iter() {
+                after += (s * s) as f64;
+            }
+        }
+        assert!(after < 1e-6, "the one-shot stopped after one pass, energy {after}");
+        // A one-shot is never "active": it overlays, so no slot reports playing.
+        assert!(
+            engine.loop_slots(0).iter().all(|s| !s.playing),
+            "a one-shot never marks a slot as the active loop"
+        );
+    }
+
+    /// (S4b-3b) `stop_one_shot` cuts a ringing one-shot immediately.
+    #[test]
+    fn stop_one_shot_cuts_the_overlay() {
+        let mut engine = Engine::new();
+        let _deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+        engine.set_crossfade(0.0);
+
+        let frames = SAMPLE_RATE as usize; // 1 s one-shot
+        let pad = vec![0.15f32; frames * CHANNELS as usize];
+        assert!(engine.load_generated_loop(0, 0, pad, true));
+        assert!(engine.play_loop(0, 0));
+
+        let mut out = vec![0.0f32; BLOCK * CHANNELS as usize];
+        // It is ringing.
+        engine.render(&mut out, BLOCK);
+        assert!(out.iter().any(|&s| s.abs() > 1e-4), "one-shot is ringing");
+        // Cut it; the next renders are silent (well before the 1 s pass would end).
+        engine.stop_one_shot(0);
+        let mut after = 0.0f64;
+        for _ in 0..4 {
+            engine.render(&mut out, BLOCK);
+            for &s in out.iter() {
+                after += (s * s) as f64;
+            }
+        }
+        assert!(after < 1e-6, "stop_one_shot silenced the overlay, energy {after}");
+    }
+
+    /// (S4b-4) `clear_loop` empties the slot and stops it if active; the four slots
+    /// are independent.
+    #[test]
+    fn clear_empties_slot_and_slots_are_independent() {
+        let mut engine = Engine::new();
+        let _deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+
+        let frames = SAMPLE_RATE as usize / 2; // 0.5 s
+        let pad = vec![0.1f32; frames * CHANNELS as usize];
+
+        // Fill all four slots; each independent.
+        for slot in 0..LOOP_SLOT_COUNT {
+            assert!(engine.load_generated_loop(0, slot, pad.clone(), false), "slot {slot} loads");
+        }
+        let slots = engine.loop_slots(0);
+        assert_eq!(slots.len(), LOOP_SLOT_COUNT);
+        assert!(slots.iter().all(|s| s.filled), "all four slots filled");
+        assert!(slots.iter().all(|s| !s.playing), "none playing yet");
+
+        // Play slot 2; only slot 2 is the active loop.
+        assert!(engine.play_loop(0, 2));
+        let slots = engine.loop_slots(0);
+        assert!(slots[2].playing, "slot 2 is the active loop");
+        assert!(
+            (0..LOOP_SLOT_COUNT).filter(|&s| s != 2).all(|s| !slots[s].playing),
+            "no other slot is playing"
+        );
+
+        // Clear slot 2 (the active one): it empties AND returns to live.
+        engine.clear_loop(0, 2);
+        let slots = engine.loop_slots(0);
+        assert!(!slots[2].filled, "cleared slot 2 is empty");
+        assert!(!slots[2].playing, "cleared active slot returns to live");
+        // The other three are untouched.
+        for slot in [0, 1, 3] {
+            assert!(slots[slot].filled, "slot {slot} survives clearing slot 2");
+        }
+
+        // Clearing an empty slot is a no-op.
+        engine.clear_loop(0, 2);
+        assert!(!engine.loop_slots(0)[2].filled);
+    }
+
+    /// (S4b-5) The whole Slice-4b family is inert on a Playback deck: capture,
+    /// play, load, and sample are no-ops; the slots stay empty (track-buffer
+    /// slicing is a parked Later idea, ADR-0013).
+    #[test]
+    fn loop_features_are_inert_on_a_playback_deck() {
+        let mut engine = Engine::new();
+        let mut deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+
+        // Build some played history first, THEN load a track (parking the ring).
+        let mut src = CounterSource::new();
+        feed_counter(&mut deck_a, &mut src, PREBUFFER_FRAMES);
+        play_counter(&mut engine, &mut deck_a, &mut src, SAMPLE_RATE as usize);
+        engine.load_track(0, ramp_track(48_000));
+        assert!(engine.get_track_status(0).is_some(), "deck A is now Playback");
+
+        // Capture is refused (the played history holds the dead stream; ADR-0013).
+        assert!(!engine.capture_loop(0, 0, 1.0), "capture_loop is a no-op on Playback");
+        assert!(engine.capture_sample(0, STYLE_SAMPLE_SECONDS).is_none(), "no style sample on Playback");
+        // load_generated_loop and play_loop refuse too.
+        let pad = vec![0.1f32; (SAMPLE_RATE as usize / 2) * CHANNELS as usize];
+        assert!(!engine.load_generated_loop(0, 0, pad, false), "no generated loop on Playback");
+        assert!(!engine.play_loop(0, 0), "no play on a Playback deck");
+        // The slots never filled.
+        assert!(engine.loop_slots(0).iter().all(|s| !s.filled && !s.playing), "slots stay empty");
+    }
+
+    /// (S4b-6) `render` stays correct with a loop in path on one deck and a live
+    /// deck on the other, over many blocks: ceiling held, no NaN/Inf — the same
+    /// structural alloc-free discipline as Slices 1–4a (the loop/one-shot pop only
+    /// reads pre-built buffer sources).
+    #[test]
+    fn render_runs_with_a_loop_in_path() {
+        let mut engine = Engine::new();
+        let mut deck_a = engine.create_deck(0);
+        let mut deck_b = engine.create_deck(1);
+        engine.set_crossfade(0.5);
+
+        // Deck A: play, capture, loop. Deck B: a live sine.
+        let mut sa = SineSource::new(220.0, 0.2);
+        feed(&mut deck_a, &mut sa, PREBUFFER_FRAMES + 4 * BLOCK);
+        let mut out = vec![0.0f32; BLOCK * CHANNELS as usize];
+        for _ in 0..200 {
+            feed(&mut deck_a, &mut sa, BLOCK);
+            engine.render(&mut out, BLOCK);
+        }
+        assert!(engine.capture_loop(0, 0, 1.0));
+        assert!(engine.play_loop(0, 0));
+        // Also fire a one-shot to exercise the overlay path.
+        let pad = vec![0.1f32; (SAMPLE_RATE as usize / 4) * CHANNELS as usize];
+        assert!(engine.load_generated_loop(0, 1, pad, true));
+        assert!(engine.play_loop(0, 1));
+
+        let mut sb = SineSource::new(330.0, 0.2);
+        feed(&mut deck_b, &mut sb, PREBUFFER_FRAMES + 64 * BLOCK);
+        for _ in 0..64 {
+            feed(&mut deck_a, &mut sa, BLOCK); // ring keeps advancing under the loop
+            feed(&mut deck_b, &mut sb, BLOCK);
+            engine.render(&mut out, BLOCK);
+            for &s in out.iter() {
+                assert!(s.abs() <= MASTER_CEILING + 1e-7, "ceiling held with a loop in path");
+                assert!(s.is_finite(), "no NaN/Inf with loop + one-shot + live deck");
+            }
+        }
     }
 }

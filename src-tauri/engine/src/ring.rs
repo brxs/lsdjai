@@ -17,7 +17,7 @@ use std::sync::Arc;
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::telemetry::Telemetry;
-use crate::{CHANNELS, PREBUFFER_FRAMES, RING_FRAMES, SAMPLE_RATE};
+use crate::{CHANNELS, HISTORY_FRAMES, PREBUFFER_FRAMES, RING_FRAMES, SAMPLE_RATE};
 
 /// Interleaved-stereo samples per frame.
 const SAMPLES_PER_FRAME: usize = CHANNELS as usize;
@@ -45,8 +45,97 @@ pub(crate) fn new_deck_ring(
             consumer,
             primed: false,
             telemetry,
+            history: PlayedHistory::new(),
         },
     )
+}
+
+/// A pre-allocated circular buffer of recently-*played* stereo frames (the deck's
+/// freeze-pad / style-sample source, M13/M15, ADR-0009). The rtrb live-feed ring
+/// is a pure FIFO — `render()` pops a frame and the sample is gone — so a separate
+/// retained history is needed for capture. It mirrors the worklet's played-history
+/// (`loop-capture-kernel.js`): every consumed frame is written here, and a capture
+/// copies the most recent N frames ending at the write head, wrap-aware.
+///
+/// Unlike the worklet, which reuses the *one* ring (so its history bound shrinks
+/// when the producer laps the consumer), this is a dedicated buffer with a single
+/// writer — the RT drain — and no concurrent reader on the RT path, so its bound is
+/// simply how many frames have been written, capped at the capacity. The capacity
+/// ([`HISTORY_FRAMES`], ~30 s) is allocated ONCE here, off the RT path; the per-frame
+/// write is a plain index store, alloc/lock/syscall-free.
+struct PlayedHistory {
+    /// Planar left / right channels, each [`HISTORY_FRAMES`] long. Planar (not
+    /// interleaved) so a capture is two block copies per channel, like the
+    /// worklet's `captureRecent`.
+    left: Vec<f32>,
+    right: Vec<f32>,
+    /// Where the next played frame is written; wraps at the capacity. The most
+    /// recent frame sits at `write_pos - 1`.
+    write_pos: usize,
+    /// Valid retained frames behind `write_pos`, capped at the capacity. Mirrors
+    /// `noteConsumed`'s `min(history + frames, capacity)` (the dedicated buffer
+    /// has no producer to lap it, so the `capacity - available` clamp collapses to
+    /// the capacity).
+    frames: usize,
+}
+
+impl PlayedHistory {
+    /// Allocate the history buffers once, off the RT path.
+    fn new() -> Self {
+        PlayedHistory {
+            left: vec![0.0; HISTORY_FRAMES],
+            right: vec![0.0; HISTORY_FRAMES],
+            write_pos: 0,
+            frames: 0,
+        }
+    }
+
+    /// **RT-path.** Record one consumed (played) stereo frame. A plain index store
+    /// into the pre-allocated buffers + a saturating count update — no alloc, no
+    /// lock, no syscall. Mirrors the worklet's `enqueue` + `noteConsumed`.
+    #[inline]
+    fn push(&mut self, l: f32, r: f32) {
+        self.left[self.write_pos] = l;
+        self.right[self.write_pos] = r;
+        self.write_pos = (self.write_pos + 1) % HISTORY_FRAMES;
+        if self.frames < HISTORY_FRAMES {
+            self.frames += 1;
+        }
+    }
+
+    /// Reset the retained history (e.g. on a deck reset / model switch). Like the
+    /// worklet's `reset`: a capture spanning a discontinuity would splice two
+    /// unrelated streams into one "loop", so the history is dropped. Keeps the
+    /// allocation — only the count and the head move.
+    #[allow(dead_code)] // wired up by Engine::reset_deck in a later slice
+    fn clear(&mut self) {
+        self.write_pos = 0;
+        self.frames = 0;
+    }
+
+    /// Copy the most recent `requested` played frames (fewer when less history
+    /// exists), ending at the write head, wrap-aware. Two block copies per channel,
+    /// like the worklet's `captureRecent`. Non-RT (allocates the output); returns
+    /// planar `(left, right)` of the realised frame count.
+    fn capture_recent(&self, requested: usize) -> (Vec<f32>, Vec<f32>) {
+        let frames = requested.min(self.frames);
+        let mut out_left = vec![0.0f32; frames];
+        let mut out_right = vec![0.0f32; frames];
+        if frames == 0 {
+            return (out_left, out_right);
+        }
+        // Start index of the window, wrap-corrected: write_pos - frames (mod cap).
+        let start = (self.write_pos + HISTORY_FRAMES - frames) % HISTORY_FRAMES;
+        let first_span = frames.min(HISTORY_FRAMES - start);
+        out_left[..first_span].copy_from_slice(&self.left[start..start + first_span]);
+        out_right[..first_span].copy_from_slice(&self.right[start..start + first_span]);
+        if first_span < frames {
+            let rest = frames - first_span;
+            out_left[first_span..].copy_from_slice(&self.left[..rest]);
+            out_right[first_span..].copy_from_slice(&self.right[..rest]);
+        }
+        (out_left, out_right)
+    }
 }
 
 /// The non-RT producer half of a deck's ring. The sole writer. Lives behind the
@@ -100,6 +189,10 @@ pub(crate) struct RingConsumer {
     /// that, shortfalls are the expected initial fill, not underruns.
     primed: bool,
     telemetry: Arc<Telemetry>,
+    /// Recently-played stereo frames, retained for freeze-pad / style-sample
+    /// capture (M13/M15, ADR-0009). `pop_frame` writes every consumed frame here;
+    /// the live FIFO drain is untouched (the history write is additive).
+    history: PlayedHistory,
 }
 
 impl RingConsumer {
@@ -138,23 +231,43 @@ impl RingConsumer {
 
     /// Pop one interleaved stereo frame, or `(0.0, 0.0)` if the ring is short.
     /// The drain primitive `render()` calls per frame.
+    ///
+    /// A popped (actually played) frame is also written into the retained played
+    /// history (M13/M15, ADR-0009) — a plain index store into a pre-allocated
+    /// buffer, so the RT path stays alloc/lock/syscall-free. A ring shortfall
+    /// (zero-fill) is NOT recorded: the worklet only advances its played index when
+    /// it actually consumes audio, so the capture window never includes silence the
+    /// listener was never fed.
     #[inline]
     pub(crate) fn pop_frame(&mut self) -> (f32, f32) {
         if self.consumer.slots() >= SAMPLES_PER_FRAME {
             let l = self.consumer.pop().unwrap_or(0.0);
             let r = self.consumer.pop().unwrap_or(0.0);
+            self.history.push(l, r);
             (l, r)
         } else {
             (0.0, 0.0)
         }
     }
 
-    /// Reset the prebuffer gate (e.g. after a deck reload). The ring itself is
-    /// drained by the producer side; this only re-arms the gate so the next
-    /// fill is treated as a fresh prebuffer, not an underrun.
+    /// Copy the most recent `frames` played frames as planar `(left, right)`,
+    /// fewer when less has played (wrap-aware). The freeze-pad / style-sample read
+    /// (M13/M15, ADR-0009), mirroring the worklet's `captureRecent`. Non-RT
+    /// (allocates the output); only ever called through `Engine`'s `&mut self`
+    /// capture API, so it cannot overlap a `render` call.
+    pub(crate) fn capture_recent(&self, frames: usize) -> (Vec<f32>, Vec<f32>) {
+        self.history.capture_recent(frames)
+    }
+
+    /// Reset the prebuffer gate AND drop the retained played history (e.g. after a
+    /// deck reload / model switch). The ring itself is drained by the producer
+    /// side; this re-arms the gate so the next fill is treated as a fresh
+    /// prebuffer, and clears the history so a capture cannot splice two unrelated
+    /// streams into one "loop" (ADR-0009, the worklet's `reset` rule).
     #[allow(dead_code)] // wired up by Engine::reset_deck in a later slice
     pub(crate) fn rearm_prebuffer(&mut self) {
         self.primed = false;
+        self.history.clear();
     }
 }
 
@@ -162,3 +275,75 @@ impl RingConsumer {
 const _: () = assert!(PREBUFFER_SAMPLES < RING_CAPACITY_SAMPLES);
 /// Document the realised sizes so a reviewer sees the seconds, not just frames.
 const _: () = assert!(RING_FRAMES == 30 * SAMPLE_RATE as usize);
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+    use crate::HISTORY_FRAMES;
+
+    /// A tiny stand-in to drive the wrap logic without allocating 30 s buffers per
+    /// case: the real [`PlayedHistory`] uses [`HISTORY_FRAMES`], so the wrap-aware
+    /// copy is exercised against the actual capacity, just with a short fill.
+    /// Pushes the counter `i → (i, -i)` and asserts a capture reads the most recent
+    /// frames in order.
+    fn push_counter(history: &mut PlayedHistory, count: usize) {
+        for i in 0..count {
+            history.push(i as f32, -(i as f32));
+        }
+    }
+
+    /// Before the buffer laps: a capture reads the last N pushed frames in order,
+    /// and an over-ask clamps to what exists.
+    #[test]
+    fn capture_recent_reads_the_tail_in_order() {
+        let mut history = PlayedHistory::new();
+        push_counter(&mut history, 1000);
+        assert_eq!(history.frames, 1000);
+
+        let (left, right) = history.capture_recent(10);
+        assert_eq!(left.len(), 10);
+        for f in 0..10 {
+            let expect = (1000 - 10 + f) as f32;
+            assert_eq!(left[f], expect, "tail L frame {f}");
+            assert_eq!(right[f], -expect, "tail R frame {f}");
+        }
+        // Over-ask clamps to the 1000 frames that exist.
+        let (all, _) = history.capture_recent(5000);
+        assert_eq!(all.len(), 1000, "an over-ask clamps to the history");
+        assert_eq!(all[0], 0.0, "the oldest retained frame is the first push");
+    }
+
+    /// After the writer laps the buffer: the oldest frames are overwritten, and a
+    /// capture of the last N still reads the correct most-recent values across the
+    /// circular seam.
+    #[test]
+    fn capture_recent_is_wrap_aware_after_lapping() {
+        let mut history = PlayedHistory::new();
+        // Push just over one full capacity so the write head wraps and the count
+        // pins at the capacity.
+        let total = HISTORY_FRAMES + 12_345;
+        push_counter(&mut history, total);
+        assert_eq!(history.frames, HISTORY_FRAMES, "the count pins at the capacity");
+
+        // The last N frames are total-N .. total-1, read across the wrap.
+        let n = 20_000;
+        let (left, right) = history.capture_recent(n);
+        assert_eq!(left.len(), n);
+        for f in 0..n {
+            let expect = (total - n + f) as f32;
+            assert_eq!(left[f], expect, "wrapped L frame {f}");
+            assert_eq!(right[f], -expect, "wrapped R frame {f}");
+        }
+    }
+
+    /// `clear` drops the history so a capture across it returns nothing.
+    #[test]
+    fn clear_drops_the_history() {
+        let mut history = PlayedHistory::new();
+        push_counter(&mut history, 5000);
+        history.clear();
+        assert_eq!(history.frames, 0);
+        let (left, right) = history.capture_recent(100);
+        assert!(left.is_empty() && right.is_empty(), "no history after clear");
+    }
+}
