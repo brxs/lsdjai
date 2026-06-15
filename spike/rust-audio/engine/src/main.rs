@@ -81,6 +81,61 @@ fn process_master_channel(samples: &mut [f32]) {
     }
 }
 
+// --- Bit-crusher (M12) ---
+
+// Mirror frontend/public/crusher-kernel.js exactly: 10-bit quantise with a
+// sample-and-hold every `reduction` samples. levels = 2^(bits-1) = 512.
+const CRUSH_BITS: f32 = 10.0;
+const CRUSH_REDUCTION: usize = 21;
+
+/// Hand-rolled quantise-and-hold, per channel. `held` is updated only when the
+/// counter wraps to 0; the `+ 0.5).floor()` reproduces JS `Math.round`.
+fn process_crush_channel(samples: &mut [f32]) {
+    let levels = 2f32.powf(CRUSH_BITS - 1.0); // 512.0
+    let mut counter: usize = 0;
+    let mut held: f32 = 0.0;
+    for x in samples.iter_mut() {
+        if counter == 0 {
+            held = (*x * levels + 0.5).floor() / levels;
+        }
+        *x = held;
+        counter = (counter + 1) % CRUSH_REDUCTION;
+    }
+}
+
+/// fundsp's quantiser, to show it lacks the hold. `Crush(n)` is a staircase of
+/// `n` levels per unit computed as `(x * n).round() / n` (verified in the
+/// fundsp 0.23.0 source), i.e. exactly `round(x * 512) / 512` for n = 512.
+fn process_crush_fundsp_channel(samples: &mut [f32]) {
+    let mut node = shape(Crush(512.0));
+    node.set_sample_rate(SAMPLE_RATE);
+    node.reset();
+    for x in samples.iter_mut() {
+        *x = node.filter_mono(*x);
+    }
+}
+
+// --- Stereo reverb (Color FX "space") ---
+
+// reverb_stereo(room_size_m, time_s, damping) — a 2-in/2-out 32-channel FDN.
+// ~2.5 s hall: average-ish room (12 m), 2.5 s tail, moderate HF damping.
+const SPACE_ROOM_SIZE: f32 = 12.0;
+const SPACE_TIME: f32 = 2.5;
+const SPACE_DAMPING: f32 = 0.5;
+
+/// Run the whole stereo signal through ONE reverb_stereo instance, feeding each
+/// (L, R) frame and collecting (L', R'). Stereo: handled outside the mono path.
+fn process_space_stereo(left: &mut [f32], right: &mut [f32]) {
+    let mut node = reverb_stereo(SPACE_ROOM_SIZE, SPACE_TIME, SPACE_DAMPING);
+    node.set_sample_rate(SAMPLE_RATE);
+    node.reset();
+    for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+        let (lo, ro) = node.filter_stereo(*l, *r);
+        *l = lo;
+        *r = ro;
+    }
+}
+
 fn read_f32_le(path: &str) -> Vec<f32> {
     let bytes = fs::read(path).unwrap_or_else(|e| {
         eprintln!("error: cannot read {path}: {e}");
@@ -170,6 +225,19 @@ fn main() {
         "master_limiter" => {
             process_master_channel(&mut left);
             process_master_channel(&mut right);
+        }
+        "crush" => {
+            process_crush_channel(&mut left);
+            process_crush_channel(&mut right);
+        }
+        "crush_fundsp" => {
+            process_crush_fundsp_channel(&mut left);
+            process_crush_fundsp_channel(&mut right);
+        }
+        // `space` is a true stereo node (2-in/2-out reverb), so it processes L
+        // and R jointly through one instance rather than the per-channel path.
+        "space" => {
+            process_space_stereo(&mut left, &mut right);
         }
         other => {
             eprintln!("error: unknown case '{other}'");

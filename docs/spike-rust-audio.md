@@ -214,6 +214,9 @@ removed in 0.23). Oracle: Chromium via Playwright. Deterministic 4 s signal.
 | `master_limiter` ceiling | invariant | peak = 0.9296875 | **PASS** |
 | `master_limiter` transparency | invariant | 0.000 dB | **PASS** |
 | `master_limiter` loud body | report | maxErr 0.59 (−7.5 dBFS) | divergent (expected) |
+| `crush` (hand-roll) | bit-exact | **0 ULP** vs worklet | **PASS** |
+| `crush_fundsp` | report | maxErr 0.79 (no hold) | insufficient |
+| `space` (RT60) | decay | FDN 4.51 s vs IR 2.67 s | approx |
 
 Findings:
 
@@ -241,17 +244,31 @@ Findings:
    without alignment read it as 3.6e-2 "error"; aligned, the quiet seg matches to
    4e-7. Transparency is a *level* property (RMS ratio), phase-immune. "Align
    before diff" and "bit-exact only for the bypass" are now empirically grounded.
+5. **Crush — fundsp insufficient, but a trivial hand-roll is bit-exact.** fundsp's
+   `Crush(512)` is quantise-only (`round(x·512)/512`) and diverges hugely from the
+   worklet (maxErr 0.79) because it lacks the sample-and-hold that dominates the
+   effect. An ~8-line hand-rolled quantise-and-hold (shared counter, re-quantise
+   every 21 samples) matches the Web Audio worklet **bit-exactly (0 ULP)**. Crush
+   needs a hand-roll, but it's tiny and perfect.
+6. **Space — fundsp is an approximation, not a match.** `reverb_stereo(12, 2.5,
+   0.5)` (32-ch FDN) gives RT60 **4.51 s** vs the convolution IR's **2.67 s** — a
+   different algorithm with a different decay. The `time` param can be tuned down
+   to match RT60, but the FDN's modal tail still differs in character from the
+   noise-IR convolution. Exact parity needs a partitioned-convolution reverb;
+   otherwise accept a tuned FDN.
 
 **Not yet run (needs a local device + sidecar + time):** the `cpal` device output,
 the ≥10-min sustained two-deck underrun run, the transport-channel measurement
 (loopback/UDS/shm jitter under load), and the RT-safety guards (`assert_no_alloc`,
 SPSC-per-deck, FTZ/DAZ) — pass-list criteria 1 and 6.
 
-**Interim verdict (offline slice):** strong. With the lowpass Q-convention fix,
-fundsp reproduces the **EQ, the filter FX, and the bit-exact bypass to ~1e-6** and
-holds the ceiling/transparency invariants exactly. The **only** DSP it can't
-reproduce is the `DynamicsCompressor` body (needs a hand-rolled feed-forward
-compressor; the invariant-only approach covers it). This does **not** yet flip
-ADR-0017/0019 to Accepted — the real-time half (device, sustained run, transport,
-RT guards) is still open. Next: run the `cpal`/transport half on the target Mac
-against a live sidecar.
+**Interim verdict (offline slice — DSP coverage complete):** strong. fundsp
+reproduces **EQ, the filter FX (after the Q-in-dB fix), and bypass to ~1e-6**,
+holds the **ceiling/transparency invariants exactly**, and the **Crush hand-roll is
+bit-exact**. Three nodes need hand-rolls — all known, bounded DSP, none a blocker:
+the **limiter body** (a feed-forward compressor; the invariants cover the rest),
+**Crush** (the ~8-line quantise-and-hold, bit-exact), and **Space** (a tuned FDN
+approximates; exact parity wants partitioned convolution). This does **not** yet
+flip ADR-0017/0019 to Accepted — the real-time half (device, sustained run,
+transport, RT guards) is still open. Next: run the `cpal`/transport half on the
+target Mac against a live sidecar.
