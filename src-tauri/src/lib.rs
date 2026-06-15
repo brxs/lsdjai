@@ -137,6 +137,9 @@ pub fn run() {
             commands::set_volume,
             commands::set_fx,
             commands::set_fx_amount,
+            commands::clear_fx,
+            commands::set_trim,
+            commands::set_on_air,
             commands::load_track,
             commands::unload_track,
             commands::play_track,
@@ -155,6 +158,8 @@ pub fn run() {
             commands::engine_telemetry,
             commands::track_status,
             commands::loop_slots,
+            commands::track_peaks,
+            commands::engine_snapshot,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

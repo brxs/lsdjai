@@ -101,6 +101,9 @@ enum Command {
     SetVolume(usize, f32),
     SetFx(usize, FxKind),
     SetFxAmount(usize, f32),
+    ClearFx(usize),
+    SetTrim(usize, f32),
+    SetOnAir(usize, bool),
     LoadTrack(usize, Vec<f32>),
     UnloadTrack(usize),
     PlayTrack(usize),
@@ -119,6 +122,12 @@ enum Command {
     /// over the enclosed reply channel. Built on the render thread (it allocates)
     /// and shipped to the caller, which is parked on the receiver.
     CaptureSample(usize, f64, Producer<Option<Vec<f32>>>),
+    /// Compute a loaded track's min/max envelope at `buckets` resolution; the
+    /// result (`Some((min, max))` / `None` off Playback) is sent back over the
+    /// reply channel. Allocates the envelope on the render thread (off the
+    /// callback), like `CaptureSample`. The caller parks on the receiver.
+    #[allow(clippy::type_complexity)]
+    TrackPeaks(usize, usize, Producer<Option<(Vec<f32>, Vec<f32>)>>),
 }
 
 /// A point-in-time copy of the per-deck state the IPC thread reads back: track
@@ -164,6 +173,12 @@ pub struct Health {
     pub master_peak: f32,
     /// Deepest master limiter gain reduction in dB (≤ 0) since the last read.
     pub master_gain_reduction_db: f32,
+    /// Per-deck post-fader peak magnitude since the last read (read-and-reset) —
+    /// the channel meters (`getLevel`).
+    pub deck_levels: [f32; DECK_COUNT],
+    /// Total frames rendered since start — the shared audio clock the UI
+    /// extrapolates positions in (`getContextTime`). Seconds = `/ SAMPLE_RATE`.
+    pub context_frames: u64,
 }
 
 /// The render thread's output producer + the host-side handles the device and the
@@ -319,6 +334,18 @@ impl Host {
         self.send(Command::SetFxAmount(deck, amount));
     }
 
+    pub fn clear_fx(&self, deck: usize) {
+        self.send(Command::ClearFx(deck));
+    }
+
+    pub fn set_trim(&self, deck: usize, db: f32) {
+        self.send(Command::SetTrim(deck, db));
+    }
+
+    pub fn set_on_air(&self, deck: usize, on: bool) {
+        self.send(Command::SetOnAir(deck, on));
+    }
+
     /// Load a decoded track onto a deck. `samples` is built/owned by the caller
     /// off the render thread and MOVED into the command; the render thread
     /// installs it and drops the previously-loaded buffer there, off the callback.
@@ -403,6 +430,27 @@ impl Host {
         None
     }
 
+    /// A loaded track's min/max envelope at `buckets` resolution (the waveform
+    /// overview), or `None` off Playback / for a bad deck index. Round-trips
+    /// through the render thread (the envelope allocates) on the same parked-reply
+    /// pattern as [`Host::capture_sample`]; it is a rare action (one per track
+    /// load), so the bounded park is well off any hot path.
+    #[allow(clippy::type_complexity)]
+    pub fn track_peaks(&self, deck: usize, buckets: usize) -> Option<(Vec<f32>, Vec<f32>)> {
+        let (reply_tx, mut reply_rx) =
+            RingBuffer::<Option<(Vec<f32>, Vec<f32>)>>::new(CAPTURE_REPLY_DEPTH);
+        if !self.send(Command::TrackPeaks(deck, buckets, reply_tx)) {
+            return None;
+        }
+        for _ in 0..1000 {
+            match reply_rx.pop() {
+                Ok(result) => return result,
+                Err(_) => thread::sleep(Duration::from_millis(1)),
+            }
+        }
+        None
+    }
+
     // --- Read-back ---
 
     /// A health snapshot for the `engine_telemetry` IPC command. Reads the engine
@@ -416,6 +464,8 @@ impl Host {
             output_underruns: self.telemetry.output_underruns(),
             master_peak: self.telemetry.take_master_peak(),
             master_gain_reduction_db: self.telemetry.take_master_gain_reduction_db(),
+            deck_levels: std::array::from_fn(|d| self.telemetry.take_deck_peak(d)),
+            context_frames: self.telemetry.frames_rendered(),
         }
     }
 
@@ -523,6 +573,9 @@ impl RenderLoop {
             Command::SetVolume(d, g) => self.engine.set_volume(d, g),
             Command::SetFx(d, kind) => self.engine.set_fx(d, kind),
             Command::SetFxAmount(d, a) => self.engine.set_fx_amount(d, a),
+            Command::ClearFx(d) => self.engine.clear_fx(d),
+            Command::SetTrim(d, db) => self.engine.set_trim(d, db),
+            Command::SetOnAir(d, on) => self.engine.set_on_air(d, on),
             Command::LoadTrack(d, samples) => self.engine.load_track(d, samples),
             Command::UnloadTrack(d) => self.engine.unload_track(d),
             Command::PlayTrack(d) => self.engine.play_track(d),
@@ -548,6 +601,10 @@ impl RenderLoop {
                 // The caller is parked on the receiver; a full/closed reply queue
                 // just means the caller gave up — drop the result silently.
                 let _ = reply.push(captured);
+            }
+            Command::TrackPeaks(d, buckets, mut reply) => {
+                let peaks = self.engine.get_track_peaks(d, buckets);
+                let _ = reply.push(peaks);
             }
         }
     }

@@ -185,6 +185,19 @@ pub(crate) struct MixGraph {
     /// Per-deck channel-fader volume (linear, default 1.0), applied before the
     /// crossfade. Recomputed by `set_volume` (non-RT).
     volumes: [f32; DECK_COUNT],
+    /// Per-deck chain-head trim (linear, default 1.0). Applied PRE-EQ at the very
+    /// head so EQ kills stay the performer's move (M17 gain staging). Set in dB by
+    /// `set_trim` (non-RT).
+    trims: [f32; DECK_COUNT],
+    /// Per-deck on-air gate (default true). Off-air mutes the deck's contribution
+    /// to the MASTER sum only — the per-deck channel meter (and, later, the cue
+    /// tap) still see the live signal (M10 primed deck). Non-RT `set_on_air`.
+    on_air: [bool; DECK_COUNT],
+    /// Per-deck Color FX enable (default false = no effect selected). When false
+    /// `mix_frame` skips the insert entirely (a pure dry passthrough); `set_fx`
+    /// enables it, `clear_fx` disables it again — mirroring `setFx(null)` removing
+    /// the effect in the Web Audio engine.
+    fx_enabled: [bool; DECK_COUNT],
     /// Equal-power crossfade gains, one per deck. `gains[0]` weights deck A,
     /// `gains[1]` weights deck B. Recomputed by `set_crossfade` (non-RT).
     gains: [f32; DECK_COUNT],
@@ -240,6 +253,9 @@ impl MixGraph {
             eq_values,
             fx: std::array::from_fn(|_| FxInsert::new(SAMPLE_RATE as f32)),
             volumes: [1.0; DECK_COUNT],
+            trims: [1.0; DECK_COUNT],
+            on_air: [true; DECK_COUNT],
+            fx_enabled: [false; DECK_COUNT],
             gains: [0.0; DECK_COUNT],
             limiter: MasterLimiter::new(SAMPLE_RATE as f32),
         };
@@ -266,6 +282,24 @@ impl MixGraph {
     /// `self.volumes`, read by the RT `mix_frame`.
     pub(crate) fn set_volume(&mut self, deck: usize, gain: f32) {
         self.volumes[deck] = gain;
+    }
+
+    /// Set a deck's chain-head trim in dB (0 dB = unity). Stored linear; applied
+    /// pre-EQ in `mix_frame`. Non-RT.
+    pub(crate) fn set_trim(&mut self, deck: usize, db: f32) {
+        self.trims[deck] = 10f32.powf(db / 20.0);
+    }
+
+    /// Set a deck's on-air state. Off-air zeroes its master contribution but not
+    /// its metered channel level. Non-RT.
+    pub(crate) fn set_on_air(&mut self, deck: usize, on: bool) {
+        self.on_air[deck] = on;
+    }
+
+    /// Remove a deck's Color FX (no effect selected): the insert is skipped — a
+    /// pure dry passthrough — until the next `set_fx`. Non-RT.
+    pub(crate) fn clear_fx(&mut self, deck: usize) {
+        self.fx_enabled[deck] = false;
     }
 
     /// Set a deck's EQ band knob value in `[0, 1]` and **rebuild that deck's two
@@ -298,9 +332,12 @@ impl MixGraph {
     /// Switch a deck's Color FX effect, rebuilding the effect's nodes **off the RT
     /// path** (it takes `&mut self`, so it can never overlap a `mix_frame` call —
     /// the same ownership argument as `set_eq`). The new effect lands at its rest
-    /// position (bypassed); the control layer re-applies the knob amount.
+    /// position (bypassed); the control layer re-applies the knob amount. Selecting
+    /// an effect also ENABLES the insert — it is skipped entirely while no effect
+    /// is selected (`clear_fx`), matching `setFx(null)` removing the effect.
     pub(crate) fn set_fx(&mut self, deck: usize, kind: FxKind) {
         self.fx[deck].set_kind(kind);
+        self.fx_enabled[deck] = true;
     }
 
     /// Set a deck's Color FX knob amount in `[0, 1]`, reconfiguring the effect's
@@ -310,16 +347,23 @@ impl MixGraph {
         self.fx[deck].set_amount(amount);
     }
 
-    /// Process one frame: per-deck EQ both channels, the Color FX insert, per-deck
-    /// volume, equal-power crossfade, the master limiter, then the clip-guard
-    /// ceiling clamp.
-    /// `decks[d] = (left, right)` pre-EQ. Returns the mixed, limited, clamped
-    /// `(left, right)` and the master limiter's gain reduction this frame as a
-    /// linear factor in `(0, 1]` (1.0 = no reduction), for telemetry.
+    /// Process one frame: per-deck chain-head trim, per-deck EQ both channels, the
+    /// Color FX insert, per-deck volume, equal-power crossfade + on-air gate, the
+    /// master limiter, then the clip-guard ceiling clamp.
+    /// `decks[d] = (left, right)` pre-EQ. Fills `deck_levels[d]` with each deck's
+    /// post-fader magnitude (for the channel meters — taken BEFORE the crossfade
+    /// weight and the on-air gate, so a faded-out / off-air deck still meters its
+    /// live level). Returns the mixed, limited, clamped `(left, right)` and the
+    /// master limiter's gain reduction this frame as a linear factor in `(0, 1]`
+    /// (1.0 = no reduction), for telemetry.
     ///
     /// RT-safe: only `tick` on pre-built nodes (alloc-free) and arithmetic.
     #[inline]
-    pub(crate) fn mix_frame(&mut self, decks: [(f32, f32); DECK_COUNT]) -> (f32, f32, f32) {
+    pub(crate) fn mix_frame(
+        &mut self,
+        decks: [(f32, f32); DECK_COUNT],
+        deck_levels: &mut [f32; DECK_COUNT],
+    ) -> (f32, f32, f32) {
         let mut in1 = [0.0f32; 1];
         let mut out1 = [0.0f32; 1];
 
@@ -327,6 +371,11 @@ impl MixGraph {
         let mut mixed_r = 0.0f32;
 
         for (d, (l, r)) in decks.into_iter().enumerate() {
+            // Chain-head trim (M17): pre-EQ, so EQ kills stay the performer's move.
+            let trim = self.trims[d];
+            let l = l * trim;
+            let r = r * trim;
+
             let li = d * CHANNELS as usize;
             in1[0] = l;
             self.eq[li].tick(&in1, &mut out1);
@@ -335,14 +384,27 @@ impl MixGraph {
             self.eq[li + 1].tick(&in1, &mut out1);
             let r = out1[0];
 
-            // Color FX insert (ADR-0008): post-EQ, pre-fader. At the effect's rest
-            // position this is a bit-exact dry passthrough.
-            let (l, r) = self.fx[d].process(l, r);
+            // Color FX insert (ADR-0008): post-EQ, pre-fader. Skipped entirely when
+            // no effect is selected (a pure dry passthrough); otherwise bit-exact
+            // dry within the effect's dead zone.
+            let (l, r) = if self.fx_enabled[d] {
+                self.fx[d].process(l, r)
+            } else {
+                (l, r)
+            };
 
-            // Channel fader, then the equal-power crossfade weight.
-            let g = self.volumes[d] * self.gains[d];
-            mixed_l += l * g;
-            mixed_r += r * g;
+            // Channel fader. The post-fader magnitude drives the channel meter —
+            // captured here, BEFORE the crossfade weight and the on-air gate.
+            let fader_l = l * self.volumes[d];
+            let fader_r = r * self.volumes[d];
+            deck_levels[d] = fader_l.abs().max(fader_r.abs());
+
+            // Equal-power crossfade weight, gated by on-air (off-air contributes
+            // nothing to the master sum but is still metered above).
+            let on_air = if self.on_air[d] { 1.0 } else { 0.0 };
+            let g = self.gains[d] * on_air;
+            mixed_l += fader_l * g;
+            mixed_r += fader_r * g;
         }
 
         // Master limiter: feed-forward compressor (thr −6 dB, ratio 20, attack

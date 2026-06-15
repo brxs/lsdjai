@@ -297,6 +297,38 @@ impl Engine {
         self.graph.set_fx_amount(deck_index, amount);
     }
 
+    /// Remove a deck's Color FX (no effect selected) — the insert is skipped, a
+    /// pure dry passthrough, until the next [`Engine::set_fx`]. Mirrors
+    /// `setFx(null)` in the Web Audio engine. Non-RT.
+    ///
+    /// # Panics
+    /// Panics if `deck_index >= DECK_COUNT` (a caller programming error).
+    pub fn clear_fx(&mut self, deck_index: usize) {
+        assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
+        self.graph.clear_fx(deck_index);
+    }
+
+    /// Set a deck's chain-head trim in dB (0 dB = unity; M17 gain staging). Applied
+    /// pre-EQ so EQ kills stay the performer's move. Non-RT.
+    ///
+    /// # Panics
+    /// Panics if `deck_index >= DECK_COUNT` (a caller programming error).
+    pub fn set_trim(&mut self, deck_index: usize, db: f32) {
+        assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
+        self.graph.set_trim(deck_index, db);
+    }
+
+    /// Set a deck's on-air state (M10 primed deck). Off-air mutes the deck's
+    /// contribution to the master sum only — its channel meter (and, later, the cue
+    /// tap) stay live. Non-RT.
+    ///
+    /// # Panics
+    /// Panics if `deck_index >= DECK_COUNT` (a caller programming error).
+    pub fn set_on_air(&mut self, deck_index: usize, on: bool) {
+        assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
+        self.graph.set_on_air(deck_index, on);
+    }
+
     // --- Slice 4a: the playback deck (M19/M20/M21/M23, ADR-0013…0016) ---
     //
     // Loading decides the mode (ADR-0013): `load_track` switches a deck to
@@ -645,6 +677,9 @@ impl Engine {
 
         let mut master_peak = 0.0f32;
         let mut min_gain = 1.0f32;
+        // Per-deck post-fader peaks for the channel meters, folded over the block.
+        let mut deck_peaks = [0.0f32; DECK_COUNT];
+        let mut deck_levels = [0.0f32; DECK_COUNT];
         for f in 0..frames {
             // Pop one stereo frame from each deck's active source (zero-fill on a
             // ring shortfall; silence for a paused/ended track), then fold in the
@@ -663,7 +698,7 @@ impl Engine {
                 *pair = self.loops[d].mix_frame(live);
             }
 
-            let (ol, or, gain_reduction) = self.graph.mix_frame(pairs);
+            let (ol, or, gain_reduction) = self.graph.mix_frame(pairs, &mut deck_levels);
 
             let base = f * CHANNELS as usize;
             out[base] = ol;
@@ -678,9 +713,20 @@ impl Engine {
             if gain_reduction < min_gain {
                 min_gain = gain_reduction;
             }
+            // Fold each deck's post-fader level into the block's peak (per-channel).
+            for d in 0..DECK_COUNT {
+                if deck_levels[d] > deck_peaks[d] {
+                    deck_peaks[d] = deck_levels[d];
+                }
+            }
         }
         self.telemetry.record_master_peak(master_peak);
         self.telemetry.record_master_gain_reduction(min_gain);
+        for (d, &peak) in deck_peaks.iter().enumerate() {
+            self.telemetry.record_deck_peak(d, peak);
+        }
+        // Advance the shared audio clock by this block (the UI's getContextTime).
+        self.telemetry.note_frames(frames);
     }
 }
 
@@ -1019,6 +1065,27 @@ mod tests {
         (sum_sq / n as f64).sqrt() as f32
     }
 
+    /// Like [`deck_a_rms`] but returns the steady-state master L samples, for
+    /// sample-exact comparisons (e.g. dry vs. active FX vs. cleared FX).
+    fn deck_a_samples(engine: &mut Engine, deck_a: &mut DeckHandle, freq: f32, amp: f32) -> Vec<f32> {
+        let mut src = SineSource::new(freq, amp);
+        let prime = PREBUFFER_FRAMES + 12 * BLOCK;
+        feed(deck_a, &mut src, prime);
+
+        let mut out = vec![0.0f32; BLOCK * CHANNELS as usize];
+        for _ in 0..8 {
+            engine.render(&mut out, BLOCK);
+        }
+        let mut samples = Vec::with_capacity(8 * BLOCK);
+        for _ in 0..8 {
+            engine.render(&mut out, BLOCK);
+            for f in 0..BLOCK {
+                samples.push(out[2 * f]);
+            }
+        }
+        samples
+    }
+
     /// (S2-1) The EQ curve: at each band's centre, kill (0) ≈ −40 dB, flat (0.5)
     /// ≈ 0 dB, boost (1) ≈ +6 dB relative to the flat passthrough. Low/high are
     /// true shelves (measured well inside the shelf band); the mid is a bell at
@@ -1137,6 +1204,157 @@ mod tests {
         assert!(
             (ratio - g).abs() < 1e-3,
             "volume {g} should scale the contribution by {g}, got ratio {ratio}"
+        );
+    }
+
+    /// (P2-3a) Chain-head trim scales the deck contribution by `10^(dB/20)`. A
+    /// +6 dB trim ≈ ×1.995. Mirrors `volume_scales_deck_contribution`, but trim
+    /// sits PRE-EQ at the head (here flat EQ, so the net is a clean gain).
+    #[test]
+    fn trim_scales_deck_contribution_in_db() {
+        const AMP: f32 = 0.1; // ×1.995 stays well under the −6 dB limiter threshold
+        let freq = 440.0f32;
+
+        let flat = {
+            let mut engine = Engine::new();
+            let mut deck_a = engine.create_deck(0);
+            let _deck_b = engine.create_deck(1);
+            engine.set_crossfade(0.0);
+            deck_a_rms(&mut engine, &mut deck_a, freq, AMP)
+        };
+        let trimmed = {
+            let mut engine = Engine::new();
+            let mut deck_a = engine.create_deck(0);
+            let _deck_b = engine.create_deck(1);
+            engine.set_crossfade(0.0);
+            engine.set_trim(0, 6.0);
+            deck_a_rms(&mut engine, &mut deck_a, freq, AMP)
+        };
+
+        let ratio = trimmed / flat;
+        let expected = 10f32.powf(6.0 / 20.0); // ≈ 1.995
+        assert!(
+            (ratio - expected).abs() < 2e-2,
+            "+6 dB trim should scale by {expected}, got ratio {ratio}"
+        );
+    }
+
+    /// (P2-3b) Off-air mutes the deck's master contribution but the channel meter
+    /// stays live (M10 primed deck): the master RMS collapses to ~0 while the
+    /// per-deck level meter still reads the deck's post-fader signal.
+    #[test]
+    fn off_air_mutes_master_but_keeps_meter_live() {
+        const AMP: f32 = 0.2;
+        let freq = 440.0f32;
+
+        let mut engine = Engine::new();
+        let mut deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+        let tele = engine.telemetry();
+        engine.set_crossfade(0.0); // full deck A
+        engine.set_on_air(0, false);
+
+        let master_rms = deck_a_rms(&mut engine, &mut deck_a, freq, AMP);
+        let deck_level = tele.take_deck_peak(0);
+
+        assert!(
+            master_rms < 1e-4,
+            "off-air deck must not reach the master ({master_rms})"
+        );
+        assert!(
+            deck_level > 0.5 * AMP,
+            "off-air deck must still meter its live level (got {deck_level}, amp {AMP})"
+        );
+    }
+
+    /// (P2-3c) The channel meter reads the post-fader magnitude (≈ the source
+    /// peak through flat EQ at unity volume).
+    #[test]
+    fn deck_level_meter_tracks_post_fader_peak() {
+        const AMP: f32 = 0.3;
+        let freq = 440.0f32;
+
+        let mut engine = Engine::new();
+        let mut deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+        let tele = engine.telemetry();
+        engine.set_crossfade(0.0);
+
+        let _ = deck_a_rms(&mut engine, &mut deck_a, freq, AMP);
+        let level = tele.take_deck_peak(0);
+        assert!(
+            (level - AMP).abs() < 0.05,
+            "deck level should track the post-fader peak ≈ {AMP}, got {level}"
+        );
+    }
+
+    /// (P2-3d) The shared audio clock counts exactly the frames rendered.
+    #[test]
+    fn context_clock_counts_rendered_frames() {
+        let mut engine = Engine::new();
+        let _deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+        let tele = engine.telemetry();
+
+        let mut out = vec![0.0f32; BLOCK * CHANNELS as usize];
+        let blocks = 10;
+        for _ in 0..blocks {
+            engine.render(&mut out, BLOCK);
+        }
+        assert_eq!(
+            tele.frames_rendered(),
+            (blocks * BLOCK) as u64,
+            "the clock must count every rendered frame"
+        );
+    }
+
+    /// (P2-3e) No effect until one is selected: `set_fx_amount` alone leaves the
+    /// insert dry (decks start with no FX). Selecting an effect engages it;
+    /// `clear_fx` returns to the bit-identical dry path.
+    #[test]
+    fn fx_none_until_selected_then_clear_restores_dry() {
+        let freq = 8_000.0f32; // high tone so the crush clearly alters the wave
+        const AMP: f32 = 0.2;
+
+        let dry = {
+            let mut engine = Engine::new();
+            let mut deck_a = engine.create_deck(0);
+            let _deck_b = engine.create_deck(1);
+            engine.set_crossfade(0.0);
+            // Amount set, but NO effect selected → must stay dry (fx disabled).
+            engine.set_fx_amount(0, 0.8);
+            deck_a_samples(&mut engine, &mut deck_a, freq, AMP)
+        };
+        let active = {
+            let mut engine = Engine::new();
+            let mut deck_a = engine.create_deck(0);
+            let _deck_b = engine.create_deck(1);
+            engine.set_crossfade(0.0);
+            engine.set_fx(0, FxKind::Crush);
+            engine.set_fx_amount(0, 0.8);
+            deck_a_samples(&mut engine, &mut deck_a, freq, AMP)
+        };
+        let cleared = {
+            let mut engine = Engine::new();
+            let mut deck_a = engine.create_deck(0);
+            let _deck_b = engine.create_deck(1);
+            engine.set_crossfade(0.0);
+            engine.set_fx(0, FxKind::Crush);
+            engine.set_fx_amount(0, 0.8);
+            engine.clear_fx(0);
+            deck_a_samples(&mut engine, &mut deck_a, freq, AMP)
+        };
+
+        let max_diff = |a: &[f32], b: &[f32]| {
+            a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
+        };
+        assert!(
+            max_diff(&dry, &active) > 1e-4,
+            "an active crush effect must alter the signal"
+        );
+        assert!(
+            max_diff(&dry, &cleared) < 1e-6,
+            "clear_fx must restore the bit-identical dry path"
         );
     }
 

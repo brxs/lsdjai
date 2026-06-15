@@ -61,6 +61,16 @@ pub struct Telemetry {
     /// short and zero-filled (the host's drain counts these). Distinct from
     /// `underruns`, which counts the per-deck input rings.
     output_underruns: AtomicU64,
+    /// Per-deck post-fader peak magnitude since the last `take_deck_peak`,
+    /// fixed-point (× `PEAK_SCALE`); monotone-max within a window. The channel
+    /// meters (`getLevel`) read this. Metered post-EQ/FX/volume but PRE crossfade
+    /// and PRE on-air, so a crossfaded-out or off-air deck still shows its live
+    /// level (the meter-stays-live rule of M10/M17).
+    deck_peak: [AtomicU64; DECK_COUNT],
+    /// Total frames rendered since engine start — the shared audio clock the UI
+    /// extrapolates played positions in (`getContextTime`, M20/M22). Monotone; one
+    /// add per render block. Seconds = `frames_rendered / SAMPLE_RATE`.
+    frames_rendered: AtomicU64,
 }
 
 impl Telemetry {
@@ -77,6 +87,8 @@ impl Telemetry {
             master_gr_gain: AtomicU64::new(GR_FULL_SCALE),
             output_ring_frames: AtomicUsize::new(0),
             output_underruns: AtomicU64::new(0),
+            deck_peak: std::array::from_fn(|_| AtomicU64::new(0)),
+            frames_rendered: AtomicU64::new(0),
         }
     }
 
@@ -140,6 +152,21 @@ impl Telemetry {
     #[inline]
     pub fn note_output_underrun(&self) {
         self.output_underruns.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Fold a deck's post-fader magnitude into its channel-meter peak
+    /// (monotone-max). Called per render block from `render()`; wait-free.
+    #[inline]
+    pub(crate) fn record_deck_peak(&self, deck: usize, magnitude: f32) {
+        let v = (magnitude * PEAK_SCALE) as u64;
+        update_max_u64(&self.deck_peak[deck], v);
+    }
+
+    /// Advance the shared audio clock by `frames` (one render block). Wait-free.
+    #[inline]
+    pub(crate) fn note_frames(&self, frames: usize) {
+        self.frames_rendered
+            .fetch_add(frames as u64, Ordering::Relaxed);
     }
 
     // --- Reader-side getters (any thread; wait-free) ---
@@ -206,6 +233,18 @@ impl Telemetry {
     /// the typical meter read. Atomic swap, wait-free.
     pub fn take_master_gain_reduction_db(&self) -> f32 {
         gr_gain_to_db(self.master_gr_gain.swap(GR_FULL_SCALE, Ordering::Relaxed))
+    }
+
+    /// Read a deck's post-fader peak (0.0..) and reset its window to 0 — the
+    /// channel-meter read (the UI samples this each frame). Atomic swap, wait-free.
+    pub fn take_deck_peak(&self, deck: usize) -> f32 {
+        self.deck_peak[deck].swap(0, Ordering::Relaxed) as f32 / PEAK_SCALE
+    }
+
+    /// Total frames rendered since engine start — the shared audio clock. Seconds
+    /// = `frames_rendered() / SAMPLE_RATE`.
+    pub fn frames_rendered(&self) -> u64 {
+        self.frames_rendered.load(Ordering::Relaxed)
     }
 }
 

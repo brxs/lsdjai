@@ -156,6 +156,10 @@ pub struct HealthDto {
     pub output_underruns: u64,
     pub master_peak: f32,
     pub master_gain_reduction_db: f32,
+    /// Per-deck post-fader level (the channel meters, `getLevel`).
+    pub deck_levels: Vec<f32>,
+    /// Frames rendered since start — the shared audio clock (`getContextTime`).
+    pub context_frames: u64,
 }
 
 impl From<Health> for HealthDto {
@@ -167,8 +171,33 @@ impl From<Health> for HealthDto {
             output_underruns: health.output_underruns,
             master_peak: health.master_peak,
             master_gain_reduction_db: health.master_gain_reduction_db,
+            deck_levels: health.deck_levels.to_vec(),
+            context_frames: health.context_frames,
         }
     }
+}
+
+/// A loaded track's min/max envelope for the wire (the waveform overview). Empty
+/// vecs when no track is loaded on the deck.
+#[derive(Debug, Clone, Serialize)]
+pub struct TrackPeaksDto {
+    pub min: Vec<f32>,
+    pub max: Vec<f32>,
+}
+
+/// One IPC round-trip carrying everything the per-frame UI reads back: health
+/// (meters, clock, ring stats), each deck's transport, and each deck's loop
+/// slots. The webview polls THIS once per animation frame and caches it, so the
+/// many synchronous `getLevel`/`getTrackStatus`/… getters read a fresh local
+/// snapshot instead of issuing one IPC call each.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineSnapshotDto {
+    pub health: HealthDto,
+    /// Per-deck transport (`null` off Playback), indexed by deck.
+    pub tracks: Vec<Option<TrackStatusDto>>,
+    /// Per-deck loop-slot status, indexed by deck then slot.
+    pub loops: Vec<Vec<LoopSlotDto>>,
 }
 
 // --- Mixer / channel control ---
@@ -203,6 +232,30 @@ pub fn set_fx(state: tauri::State<'_, Host>, deck: usize, kind: FxKindArg) {
 pub fn set_fx_amount(state: tauri::State<'_, Host>, deck: usize, amount: f32) {
     if valid_deck(deck) {
         state.set_fx_amount(deck, amount);
+    }
+}
+
+/// Remove a deck's Color FX (no effect selected) — mirrors `setFx(null)`.
+#[tauri::command]
+pub fn clear_fx(state: tauri::State<'_, Host>, deck: usize) {
+    if valid_deck(deck) {
+        state.clear_fx(deck);
+    }
+}
+
+/// Chain-head trim in dB (M17 gain staging; 0 dB = unity).
+#[tauri::command]
+pub fn set_trim(state: tauri::State<'_, Host>, deck: usize, db: f32) {
+    if valid_deck(deck) {
+        state.set_trim(deck, db);
+    }
+}
+
+/// On-air state (M10 primed deck): off-air mutes the master feed only.
+#[tauri::command]
+pub fn set_on_air(state: tauri::State<'_, Host>, deck: usize, on: bool) {
+    if valid_deck(deck) {
+        state.set_on_air(deck, on);
     }
 }
 
@@ -361,4 +414,42 @@ pub fn loop_slots(state: tauri::State<'_, Host>, deck: usize) -> Vec<LoopSlotDto
         .iter()
         .map(|&slot| LoopSlotDto::from(slot))
         .collect()
+}
+
+/// A loaded track's min/max envelope at `buckets` resolution (the waveform
+/// overview), or `null` off Playback / for a bad deck or zero buckets. Fetched
+/// once per track load (the webview caches it), so the render-thread round-trip
+/// is well off any hot path.
+#[tauri::command]
+pub fn track_peaks(state: tauri::State<'_, Host>, deck: usize, buckets: usize) -> Option<TrackPeaksDto> {
+    if !valid_deck(deck) || buckets == 0 {
+        return None;
+    }
+    state
+        .track_peaks(deck, buckets)
+        .map(|(min, max)| TrackPeaksDto { min, max })
+}
+
+/// The consolidated per-frame read-back: health + every deck's transport + every
+/// deck's loop slots in one round-trip. The webview polls this each animation
+/// frame and serves the synchronous getters from the cached result.
+#[tauri::command]
+pub fn engine_snapshot(state: tauri::State<'_, Host>) -> EngineSnapshotDto {
+    let tracks = (0..DECK_COUNT)
+        .map(|deck| state.track_status(deck).map(TrackStatusDto::from))
+        .collect();
+    let loops = (0..DECK_COUNT)
+        .map(|deck| {
+            state
+                .loop_slots(deck)
+                .iter()
+                .map(|&slot| LoopSlotDto::from(slot))
+                .collect()
+        })
+        .collect();
+    EngineSnapshotDto {
+        health: state.health().into(),
+        tracks,
+        loops,
+    }
 }
