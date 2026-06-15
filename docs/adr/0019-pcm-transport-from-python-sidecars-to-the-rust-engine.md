@@ -1,6 +1,6 @@
 # 0019. PCM transport from the Python sidecars to the Rust audio engine
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-06-15) — transport chosen by the Spike A bench (`shm` co-located / `tcp` out-of-process)
 - **Date:** 2026-06-15
 - **Deciders:** Daniel Peter
 

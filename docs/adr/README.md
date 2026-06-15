@@ -26,12 +26,12 @@ scaffolds the file from the template.
 | ADR | Title | Status |
 | --- | ----- | ------ |
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted |
-| [0002](0002-browser-app-with-python-model-workers.md) | Browser app with Python model workers, deferring Tauri | Accepted |
-| [0003](0003-frontend-audio-mixing-via-web-audio.md) | Frontend audio mixing via Web Audio | Accepted |
+| [0002](0002-browser-app-with-python-model-workers.md) | Browser app with Python model workers, deferring Tauri | Superseded by 0018, 0019 |
+| [0003](0003-frontend-audio-mixing-via-web-audio.md) | Frontend audio mixing via Web Audio | Superseded by 0017 |
 | [0004](0004-style-is-a-weighted-prompt-blend-tempo-is-not-a-parameter.md) | Style is a weighted prompt blend; tempo is not a parameter | Accepted |
 | [0005](0005-hardware-control-via-web-midi-in-the-frontend.md) | Hardware control via Web MIDI in the frontend | Accepted |
-| [0006](0006-cue-output-via-a-second-audio-sink.md) | Cue output via a second audio sink | Accepted |
-| [0007](0007-flx4-phones-jack-via-a-backend-cue-sink.md) | FLX4 phones jack via a backend cue sink | Accepted |
+| [0006](0006-cue-output-via-a-second-audio-sink.md) | Cue output via a second audio sink | Superseded by 0017 |
+| [0007](0007-flx4-phones-jack-via-a-backend-cue-sink.md) | FLX4 phones jack via a backend cue sink | Superseded by 0017 |
 | [0008](0008-color-fx-as-one-knob-curves-at-a-pre-fader-insert.md) | Color FX as one-knob curves at a pre-fader insert | Accepted |
 | [0009](0009-freeze-pads-loop-played-audio-at-the-channel-head.md) | Freeze pads loop played audio at the channel head | Accepted |
 | [0010](0010-beat-detection-on-the-output-behind-an-honesty-gate.md) | Beat detection on the output, behind an honesty gate | Accepted |
@@ -41,6 +41,6 @@ scaffolds the file from the template.
 | [0014](0014-beat-matching-via-varispeed-tracks-against-the-measured-stream.md) | Beat-matching via varispeed tracks against the measured stream | Accepted |
 | [0015](0015-hot-cues-in-deck-state-loops-on-the-buffer-source.md) | Hot cues in deck state, loops on the buffer source | Proposed |
 | [0016](0016-beat-loops-length-scaling-over-the-loop-region.md) | Beat loops: length-scaling over the M21 loop region | Proposed |
-| [0017](0017-native-rust-audio-engine-superseding-web-audio.md) | Native Rust audio engine, superseding frontend Web Audio mixing | Proposed |
-| [0018](0018-native-macos-shell-tauri-with-python-sidecars.md) | Native macOS shell: Tauri with Python sidecars | Proposed |
-| [0019](0019-pcm-transport-from-python-sidecars-to-the-rust-engine.md) | PCM transport from the Python sidecars to the Rust audio engine | Proposed |
+| [0017](0017-native-rust-audio-engine-superseding-web-audio.md) | Native Rust audio engine, superseding frontend Web Audio mixing | Accepted |
+| [0018](0018-native-macos-shell-tauri-with-python-sidecars.md) | Native macOS shell: Tauri with Python sidecars | Accepted |
+| [0019](0019-pcm-transport-from-python-sidecars-to-the-rust-engine.md) | PCM transport from the Python sidecars to the Rust audio engine | Accepted |

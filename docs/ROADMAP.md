@@ -381,7 +381,8 @@ unit-tested; verified by `verify_m25.mjs` and a human checklist.
 
 ## Native migration: Tauri + Rust (the next phase)
 
-**Status: 📋 committed, spike-gated (2026-06-15).** Not a feature milestone —
+**Status: 🔨 Phase 0 PASSED — ADRs 0017/0018/0019 Accepted (2026-06-15); Phase 1
+next.** Not a feature milestone —
 a cross-cutting re-platform that moves SlipMate from a browser app to a native
 macOS app, decided across
 [ADR-0017](adr/0017-native-rust-audio-engine-superseding-web-audio.md) (Rust
@@ -413,8 +414,11 @@ Phases, ordered by risk:
    the M17 limiter ceiling**, and transport-channel selection (ADR-0019); a
    PyInstaller freeze of the MLX + `sa3_mlx` backend as a launchable sidecar
    (ADR-0018); and `tauri-plugin-midi` MIDI-out (LED echo) + position-query SysEx
-   on the device. **Exit: all three green → ADRs 0017/0018/0019 move Proposed →
-   Accepted.**
+   on the device. **Exit met (2026-06-15): all three spikes green → ADRs
+   0017/0018/0019 Accepted, 0003/0006/0007 superseded. Records:
+   [`spike-rust-audio.md`](spike-rust-audio.md), [`spike-packaging.md`](spike-packaging.md),
+   [`spike-c-midi.md`](spike-c-midi.md). One confirmation left: Spike A's ≥10-min
+   endurance run.**
 1. **Audio engine.** Reimplement the realtime mix graph in Rust, sliced by
    capability and each parity-checked against the Web Audio reference: transport →
    bare mix (player rings + 3-band EQ + equal-power crossfade + M17 limiter) → the

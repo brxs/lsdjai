@@ -1,6 +1,6 @@
 # 0017. Native Rust audio engine, superseding frontend Web Audio mixing
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-06-15) — spike PASS ([`spike-rust-audio.md`](../spike-rust-audio.md)); the ≥10-min endurance run remains a confirmation
 - **Date:** 2026-06-15
 - **Deciders:** Daniel Peter
 

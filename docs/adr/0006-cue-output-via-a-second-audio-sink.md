@@ -1,6 +1,6 @@
 # 0006. Cue output via a second audio sink
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0017](0017-native-rust-audio-engine-superseding-web-audio.md) (2026-06-15)
 - **Date:** 2026-06-10
 - **Deciders:** Daniel Peter
 

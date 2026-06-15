@@ -1,6 +1,6 @@
 # 0018. Native macOS shell: Tauri with Python sidecars
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-06-15) — spikes PASS ([`spike-packaging.md`](../spike-packaging.md), [`spike-c-midi.md`](../spike-c-midi.md))
 - **Date:** 2026-06-15
 - **Deciders:** Daniel Peter
 
