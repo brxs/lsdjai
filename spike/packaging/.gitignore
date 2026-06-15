@@ -1,0 +1,6 @@
+# PyInstaller build artifacts — this spike is reproducible from build.sh
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc

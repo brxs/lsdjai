@@ -1,0 +1,6 @@
+# Throwaway spike artifacts — the source (CONTRACT.md, engine/src, golden/*.mjs)
+# is committed; generated audio and build output are not.
+artifacts/
+engine/target/
+node_modules/
+*.f32

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SlipMate — MIDI Spike (DDJ-FLX4)</title>
+    <style>
+      :root {
+        --bg: #0a0a0a;
+        --panel: #141414;
+        --line: #2a2a2a;
+        --ink: #e8e8e8;
+        --muted: #888;
+        --ok: #39d353;
+        --warn: #f5a623;
+        --bad: #ff4d4d;
+        --accent: #ff3b81;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        padding: 16px;
+      }
+      h1 { font-size: 18px; margin: 0 0 4px; letter-spacing: 0.5px; }
+      .sub { color: var(--muted); margin: 0 0 16px; font-size: 12px; }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 12px 14px;
+        margin-bottom: 14px;
+      }
+      .panel h2 {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: var(--muted);
+        margin: 0 0 10px;
+      }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; }
+      .kv { display: flex; justify-content: space-between; gap: 12px; }
+      .kv .k { color: var(--muted); }
+      .kv .v { font-weight: 600; text-align: right; }
+      .v.ok { color: var(--ok); }
+      .v.warn { color: var(--warn); }
+      .v.bad { color: var(--bad); }
+      .nodevice {
+        border-color: var(--warn);
+        color: var(--warn);
+      }
+      .nodevice.hidden { display: none; }
+      button {
+        background: #1d1d1d;
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 8px 12px;
+        font: inherit;
+        cursor: pointer;
+        margin: 0 6px 6px 0;
+      }
+      button:hover:not(:disabled) { border-color: var(--accent); }
+      button:disabled { opacity: 0.4; cursor: not-allowed; }
+      select {
+        background: #1d1d1d;
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 6px 8px;
+        font: inherit;
+        max-width: 100%;
+      }
+      .row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+      label.lbl { color: var(--muted); font-size: 12px; min-width: 90px; }
+      #log {
+        height: 260px;
+        overflow: auto;
+        background: #0d0d0d;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 8px 10px;
+        font-size: 12px;
+        white-space: pre-wrap;
+      }
+      .logline { color: #cfcfcf; }
+      .logline.sysex { color: var(--accent); font-weight: 700; }
+      .logline.out { color: #6fb3ff; }
+      .logline.sys { color: var(--muted); }
+      .pill {
+        display: inline-block;
+        padding: 1px 7px;
+        border-radius: 10px;
+        font-size: 11px;
+        border: 1px solid var(--line);
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>SlipMate — MIDI Spike C</h1>
+    <p class="sub">
+      tauri-plugin-midi (WebMIDI shim over midir/CoreMIDI) ↔ Pioneer DDJ-FLX4.
+      Tests input, the position-query SysEx round-trip, and LED output.
+    </p>
+
+    <div id="nodevice" class="panel nodevice">
+      No FLX4 detected — plug in the DDJ-FLX4 over USB. The plugin polls every
+      1 s, so the device should appear here within a second of connecting.
+    </div>
+
+    <div class="panel">
+      <h2>Status</h2>
+      <div class="grid">
+        <div class="kv"><span class="k">Selected device</span><span class="v" id="st-dev">—</span></div>
+        <div class="kv"><span class="k">requestMIDIAccess</span><span class="v" id="st-access">…</span></div>
+        <div class="kv"><span class="k">Input messages</span><span class="v" id="st-incount">0</span></div>
+        <div class="kv"><span class="k">SysEx seen (0xF0)</span><span class="v" id="st-sysex">0</span></div>
+        <div class="kv"><span class="k">Position flood</span><span class="v" id="st-flood">not run</span></div>
+        <div class="kv"><span class="k">Output sent</span><span class="v" id="st-out">—</span></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Device selection</h2>
+      <div class="row">
+        <label class="lbl" for="sel-in">Input</label>
+        <select id="sel-in"><option value="">— none —</option></select>
+      </div>
+      <div class="row">
+        <label class="lbl" for="sel-out">Output</label>
+        <select id="sel-out"><option value="">— none —</option></select>
+      </div>
+      <div class="row">
+        <span class="pill" id="pill-ports">0 in / 0 out</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Actions</h2>
+      <div class="row">
+        <button id="btn-query" disabled>Send position query (SysEx)</button>
+        <button id="btn-light" disabled>Light pads (deck 1 HOT CUE)</button>
+        <button id="btn-clear" disabled>Clear pads</button>
+        <button id="btn-clearlog">Clear log</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>MIDI input log</h2>
+      <div id="log"></div>
+    </div>
+
+    <script src="./main.js"></script>
+  </body>
+</html>

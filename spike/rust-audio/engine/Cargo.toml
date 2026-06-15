@@ -1,0 +1,33 @@
+[package]
+name = "engine"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Spike A — throwaway DSP-parity + real-time/transport probes (no production code).
+# `engine` is the offline fundsp DSP-parity renderer (no audio device); see
+# ../CONTRACT.md for its file format and 6 cases. `rt_engine` and
+# `transport_bench` are the real-time half (cpal device + PCM transport choice);
+# see ../../docs/spike-rust-audio.md (the authority on the RT discipline and the
+# transport decision rule). Cargo auto-discovers the two extra bins in src/bin/.
+
+[[bin]]
+name = "engine"
+path = "src/main.rs"
+
+[dependencies]
+fundsp = "=0.23.0"
+# Real-time half. Pinned; justification per .claude/rules/security.md:
+#   cpal — the de-facto Rust cross-platform audio I/O lib (CoreAudio backend).
+#   rtrb — realtime-safe wait-free SPSC ring (the per-deck player ring).
+#   assert_no_alloc — allocator guard proving the cpal callback never allocs.
+# assert_no_alloc: default features include `disable_release`, which makes the
+# guard a no-op in release builds. We turn that off and enable `warn_release`
+# so the check stays live in the release `rt_engine` run but only WARNS (never
+# aborts) — an alloc in the audio callback must never crash the stream.
+cpal = "=0.18.1"
+rtrb = "=0.3.4"
+assert_no_alloc = { version = "=1.1.2", default-features = false, features = ["warn_release", "warn_debug"] }
+
+[profile.release]
+opt-level = 3

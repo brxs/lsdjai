@@ -1,6 +1,6 @@
 # 0002. Browser app with Python model workers, deferring Tauri
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0018](0018-native-macos-shell-tauri-with-python-sidecars.md) and [ADR-0019](0019-pcm-transport-from-python-sidecars-to-the-rust-engine.md) (2026-06-15) — the Python-model-workers core is preserved; see ADR-0018
 - **Date:** 2026-06-09
 - **Deciders:** Daniel Peter
 

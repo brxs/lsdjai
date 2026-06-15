@@ -195,6 +195,16 @@ layout switcher (centre / vertical / top bar / off). Replaced the
 decorative per-deck analyser strip. A true spectrogram renderer stays a
 Later idea. Verified by eye alongside the M20 device runs.
 
+### M24 — Look and feel: the SlipMate rebrand ✅ (2026-06-13)
+
+The identity pass, presentational like M8: a brutalist dark theme (Space
+Mono, tokens v3, a swappable hard-edged accent via the `AccentPicker`, the
+SlipMate `Logo`) and the project-wide rename from `magenta-dj`/`magenta_dj`
+to SlipMate/`slipmate` — the `magenta_rt` engine and the "Magenta" deck
+model kept their names; only the product identity changed. The README hero
+GIF and the support button landed alongside. Captured by `shot_m24.mjs`; no
+behaviour changed.
+
 ## M21 — Hot cues and track loops
 
 **Status: 🔶 built (2026-06-13), pending hardware verification.** All
@@ -300,12 +310,142 @@ drift, refusing only what can't honestly fit; the control is inert, not
 wrong, without a grid; new intents and mapping rows unit-tested; verified
 on the device against a checklist.
 
+## M25 — Musical intelligence: key, phrase, and energy
+
+**Status: 📋 planned (2026-06-15), spike-gated.** The biggest unknown is
+whether key even holds still on this material, so it leads the scope as a
+measured spike in the M4/M14 tradition ([`spike-bpm.md`](spike-bpm.md)
+closed tempo control; [`spike-beat-detection.md`](spike-beat-detection.md)
+opened the honesty gate) — no code commits ahead of the verdict.
+Architecture-reviewed before building, like M21 and M23.
+
+**Standing decision (an ADR before any code):** SlipMate *detects*
+musical structure and *advises*; it does not *steer* to it. Generation
+conditions on a blended prompt embedding alone
+([ADR-0004](adr/0004-style-is-a-weighted-prompt-blend-tempo-is-not-a-parameter.md))
+— there is no key parameter, and "in C minor" in the prompt text is as
+unreliable as a tempo hint was. So this is the pitch-domain parallel to
+"the track follows the booth"
+([ADR-0014](adr/0014-beat-matching-via-varispeed-tracks-against-the-measured-stream.md)):
+harmonic mixing is **advisory** (compatible material, a clash warning),
+never corrective auto-keylock — there is no pitch-independent time-stretch
+yet (a Later idea) and varispeed moves pitch with rate (M20).
+
+**Goal:** the booth knows what it's playing — each deck's key (a Camelot
+hint when confident), its 8/16/32-bar phrase boundaries, and a live energy
+readout for planning the arc — every number behind the M14 honesty gate, a
+dash before a wrong answer.
+
+Scope, ordered by risk:
+
+1. **Spike + key on playback decks.** `spike-key-detection.md`: chroma
+   (FFT magnitude → 12 pitch-classes, folded to the M20 grid) →
+   Krumhansl-Schmuckler key-profile correlation → `{ key, confidence }`
+   over real generated tracks. It answers two questions by measurement: is
+   key stable enough to gate a hint, and is it even meaningful on a live
+   stream or as un-pin-downable as tempo. Then detection ships on
+   **playback decks only** — offline at load, the same hook as
+   `trackBeatgrid()` — behind a key honesty gate that copies
+   `createBeatGate()` (confidence floor, stability count, hysteresis). Adds
+   the frontend's first FFT (a small pinned lib vs. inline Cooley-Tukey,
+   justified per `.claude/rules/security.md`); this may be the feature that
+   moves the offline analysis pass to a Web Worker — it is main-thread
+   today — so the spike measures the budget and an ADR decides.
+2. **Harmonic mixing.** Pure derived UI over (1), no new audio path: a
+   Camelot / relative-key compatibility readout between the decks, and
+   compatible-track highlighting in the Media Explorer. A compatibility
+   claim appears only when **both** keys are confidently detected —
+   otherwise no claim, not a guess.
+3. **Phrase / structure.** The hop-indexed band envelopes (`bands.ts`)
+   plus the M20 grid locate 8/16/32-bar boundaries (drops, breakdowns);
+   grid-required by nature (the M14 consumer rule — no grid, no phrases).
+   Draws phrase markers on the beat-view close-up and gives the parked
+   *quantised triggers* idea a home (snap to the phrase, not just the
+   beat).
+4. **Energy meter.** Per-deck energy from the three-band envelopes /
+   spectral flux — the one readout that works in both deck modes (the live
+   stream already rolls bands via `BandScroller`). Lowest risk, mostly
+   visual; a natural automation target if style automation lands later.
+5. **Realtime-deck key — conditional.** Incremental chroma behind the
+   gate, like the live `BeatTracker`, **only if** the spike says key is
+   meaningful on the stream. If it isn't, the phase is dropped honestly the
+   way M14 dropped its (no consumer, no ship) and key stays playback-only —
+   the roadmap records why.
+
+**Exit criteria:** key reads correctly on a labelled set of known-key
+decoded tracks and degrades to a dash without confidence; a Camelot hint
+shows only when both keys are confident and never contradicts the wheel;
+phrase markers land on real 8/16/32-bar boundaries; the energy meter rises
+and falls monotonically across a known build→drop; new intents and fields
+unit-tested; verified by `verify_m25.mjs` and a human checklist.
+
+## Native migration: Tauri + Rust (the next phase)
+
+**Status: 🔨 Phase 0 PASSED — ADRs 0017/0018/0019 Accepted (2026-06-15); Phase 1
+next.** Not a feature milestone —
+a cross-cutting re-platform that moves SlipMate from a browser app to a native
+macOS app, decided across
+[ADR-0017](adr/0017-native-rust-audio-engine-superseding-web-audio.md) (Rust
+audio engine, superseding ADR-0003),
+[ADR-0018](adr/0018-native-macos-shell-tauri-with-python-sidecars.md) (Tauri v2
+shell + Python inference sidecars, superseding ADR-0002's deferral), and
+[ADR-0019](adr/0019-pcm-transport-from-python-sidecars-to-the-rust-engine.md)
+(the PCM transport replacing protocol v0's browser consumer). It runs as **the
+next phase** — feature work (the rest of M25, the Later ideas) pauses until it
+lands, because it touches everything the features sit on. The step-by-step is
+[`native-migration-plan.md`](native-migration-plan.md): the ADRs hold the *why*,
+the plan holds the *how*, this is the narrative and the gate.
+
+**Why now:** WKWebView lacks Web MIDI, so a naive Tauri wrap would delete FLX4
+control — `tauri-plugin-midi` (over `midir`/CoreMIDI) keeps the `control/` layer
+intact. And once the shell is WKWebView, Web Audio is the wrong place for the
+mixer; moving it to Rust *removes* the WKWebView audio risk rather than
+mitigating it, unifies the cue routing (collapsing ADR-0006/0007), and lifts the
+capability ceiling — pitch-independent time-stretch and keylock, impossible in
+Web Audio. **First ship is gated on the Rust engine: the native app never runs
+Web Audio in the shell.**
+
+Phases, ordered by risk:
+
+0. **Feasibility spikes (gate — retire the unknowns first).** Three measured
+   spikes, in the M4/M14 tradition (no full build ahead of the verdict): `cpal` +
+   `fundsp` two-deck glitch-free output over the chosen PCM transport — underruns,
+   latency, a click-free FX swap, **FX parity + the ADR-0008 bit-exact bypass +
+   the M17 limiter ceiling**, and transport-channel selection (ADR-0019); a
+   PyInstaller freeze of the MLX + `sa3_mlx` backend as a launchable sidecar
+   (ADR-0018); and `tauri-plugin-midi` MIDI-out (LED echo) + position-query SysEx
+   on the device. **Exit met (2026-06-15): all three spikes green → ADRs
+   0017/0018/0019 Accepted, 0003/0006/0007 superseded. Records:
+   [`spike-rust-audio.md`](spike-rust-audio.md), [`spike-packaging.md`](spike-packaging.md),
+   [`spike-c-midi.md`](spike-c-midi.md). One confirmation left: Spike A's ≥10-min
+   endurance run.**
+1. **Audio engine.** Reimplement the realtime mix graph in Rust, sliced by
+   capability and each parity-checked against the Web Audio reference: transport →
+   bare mix (player rings + 3-band EQ + equal-power crossfade + M17 limiter) → the
+   six Color FX insert (with the bit-exact bypass) → freeze/loops/track buffer
+   sources + varispeed (M13/M19/M20/M21/M23). The M14/M20/M22 analysis stays in
+   TypeScript, fed off the wire (ADR-0017).
+2. **Shell + cutover.** Tauri v2 wrapping the existing React UI,
+   `tauri-plugin-midi` for control, the Python workers as PyInstaller sidecars
+   with serving/supervision in the Rust shell, native cue routing (the final
+   slice), packaging + signing/notarization — first native ship.
+3. **Unlocks (follow-on).** Keylock / pitch-independent time-stretch via
+   `ssstretch` once the binding matures — promoting M25 harmonic mixing advisory →
+   **corrective** and graduating the parked *time-stretch* idea.
+
+**Exit criteria:** the native app launches signed from a double-click, runs both
+decks glitch-free with bit-exact-bypass FX and the M17 limiter ceiling intact,
+drives the FLX4 (control + LED + SysEx + phones cue) through `tauri-plugin-midi`,
+and passes a re-homed verify story (Rust integration tests for the audio path + a
+packaged-app hardware checklist) — at which point ADR-0003/0006/0007 are
+superseded and the browser app is retired.
+
 ## Later (not committed)
 
-Ideas parked deliberately — each would get its own ADR if picked up:
+Ideas parked deliberately — each would get its own ADR if picked up.
+(Key detection + Camelot matching graduated into M25; the Tauri wrap and
+time-stretch graduated into the Native migration phase.)
 
-- **Key detection + camelot matching** — offline per-track key analysis,
-  compatibility hints in the Media Explorer.
 - **Per-track auto-gain at load** — M17's trim holds in playback mode
   today; a decoded buffer's loudness is knowable up front.
 - **Quantised triggers** — pads, FX, and mode switches snapped to the
@@ -315,12 +455,10 @@ Ideas parked deliberately — each would get its own ADR if picked up:
   deliberately session-only.
 - **Track-buffer slicing** — captures and style sampling from a playback
   deck (the ADR-0013 deferral; ring history can't serve them).
-- **Time-stretch** — tempo without pitch (a worklet); varispeed's
-  upgrade path.
-- **Tauri desktop wrap** — webview + Python sidecars; revisit trigger in
-  ADR-0002.
-- **C++ engine (`magentart::core`) backend** — single distributable
-  binary, supersedes ADR-0002 if pursued.
+- **Native model inference (`magentart::core` or `candle`/`mlx-rs`)** — a
+  literal zero-Python single binary; the deferred Route B in
+  [ADR-0018](adr/0018-native-macos-shell-tauri-with-python-sidecars.md),
+  gated on the C++ steering surface maturing.
 - **Full controller LED/display feedback** — bidirectional surface state
   beyond the shipped pad/cue echoes (needs the FLX4 output map).
 - **Style motion** — automate the style-pad cursor (LFO between targets,
@@ -337,4 +475,8 @@ Ideas parked deliberately — each would get its own ADR if picked up:
 | Web MIDI is Chromium-only | No hardware control elsewhere | Accepted (ADR-0005); on-screen UI unaffected |
 | `sa3_mlx` is a checkout + CLI, not a pinned package | Upstream drift breaks generation | Checkout pinned to a commit; one backend module owns the spawn contract; a missing or failing CLI degrades to a clear error with the decks unaffected |
 | Beat phase on generated/folder tracks may be unstable (M20) | Sync lands off-beat | Offline analysis behind the M14 honesty rule; kill criterion parks grid features while varispeed still ships |
-| Varispeed shifts pitch with rate (M20) | Extreme rates sound wrong | ±8% default range (the classic DJ envelope); time-stretch recorded as the Later upgrade |
+| Varispeed shifts pitch with rate (M20) | Extreme rates sound wrong | ±8% default range (the classic DJ envelope); time-stretch is the Native migration unlock (N3) once `ssstretch` matures |
+| Key may be as un-pin-downable as tempo on generated audio (M25) | Wrong or absent key hint | Spike-gated by measurement; M14 honesty rule parks the hint; key steering never promised (detect-and-advise, the ADR-0004 parallel) |
+| FFT-based key analysis at load exceeds the main-thread budget (M25) | Janky track load | Budget measured in the spike; the offline analysis pass moves to a Web Worker if it doesn't fit |
+| Rust audio engine can't reach parity with the tested Web Audio engine (Native migration) | Regressed mix / FX / limiter | Capability-sliced, each slice parity-checked against a live Web Audio golden reference; Spike A gates `fundsp`'s FX/bypass/limiter coverage before the build commits |
+| Packaging the MLX + `sa3_mlx` backend as a PyInstaller sidecar (Native migration) | No shippable native app | Spike B gates the phase; `sa3_mlx` vendored (its checkout-not-a-package status is the standing SA3 risk); if a freeze fails, ship the sidecar unfrozen in the bundle |

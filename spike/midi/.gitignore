@@ -1,0 +1,16 @@
+# Rust / Cargo
+target/
+**/target/
+
+# Tauri generated (schemas, gen dir)
+src-tauri/gen/
+
+# Node (only if a frontend toolchain is added later)
+node_modules/
+*.log
+
+# NOTE: dist/ is NOT ignored — it is the static frontend source
+# (index.html + main.js), not a build artifact.
+
+# OS / editor
+.DS_Store

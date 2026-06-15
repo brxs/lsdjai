@@ -1,6 +1,6 @@
 # 0003. Frontend audio mixing via Web Audio
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0017](0017-native-rust-audio-engine-superseding-web-audio.md) (2026-06-15)
 - **Date:** 2026-06-09
 - **Deciders:** Daniel Peter
 
