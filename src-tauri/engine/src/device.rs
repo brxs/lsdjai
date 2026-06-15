@@ -14,6 +14,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, StreamConfig};
 
+use crate::host::OutputConsumer;
 use crate::{Engine, CHANNELS, SAMPLE_RATE};
 
 /// Requested device buffer size (frames). Clamped to the device's supported
@@ -64,14 +65,15 @@ impl AudioStream {
     }
 }
 
-/// Open the default output device at exactly 48000/stereo/f32, build the stream
-/// that renders `engine` in its callback, start it, and return the running
-/// stream. The `engine` is MOVED into the audio callback.
+/// Open the default output device, choose an exact 48000/stereo/f32 config, and
+/// return the cpal device, the chosen [`StreamConfig`], and the [`StreamInfo`].
+/// Shared by [`run_stream`] (engine-in-callback) and [`run_host_stream`]
+/// (output-ring drain), so the device-selection policy lives in one place.
 ///
 /// On any sandbox/headless condition (no device, wrong rate) this returns
-/// [`DeviceError::Unavailable`] without hanging — the caller decides whether that
-/// is fatal.
-pub fn run_stream(mut engine: Engine) -> Result<AudioStream, DeviceError> {
+/// [`DeviceError::Unavailable`] without hanging.
+fn open_output(
+) -> Result<(cpal::Device, StreamConfig, StreamInfo), DeviceError> {
     let host = cpal::default_host();
     let device = host
         .default_output_device()
@@ -123,6 +125,105 @@ pub fn run_stream(mut engine: Engine) -> Result<AudioStream, DeviceError> {
         sample_rate: SAMPLE_RATE,
         buffer_frames: buffer_size,
     };
+
+    Ok((device, config, info))
+}
+
+/// Open the default output device at exactly 48000/stereo/f32, build the stream
+/// that drains the host's [`OutputConsumer`] in its callback, start it, and return
+/// the running stream. The callback is the ONLY real-time path: it does nothing
+/// but set FTZ/DAZ once and drain the output ring into the device buffer
+/// (zero-filling + counting an underrun on a short ring), all under
+/// `assert_no_alloc` — trivially alloc/lock/syscall free.
+///
+/// This is the host-driven device path (Phase 2, step 2): the [`Engine`] renders
+/// on the host's dedicated render thread into the output ring; the callback only
+/// pulls from it. See [`crate::host`] for the decoupled-render-thread rationale
+/// and the latency trade-off this introduces.
+///
+/// On any sandbox/headless condition this returns [`DeviceError::Unavailable`]
+/// without hanging — the host keeps running headlessly (its render thread fills
+/// the ring; with no device nothing drains it, which is fine).
+pub fn run_host_stream(mut output: OutputConsumer) -> Result<AudioStream, DeviceError> {
+    let (device, config, info) = open_output()?;
+    let device_channels = info.device_channels as usize;
+
+    let mut first_call = true;
+    // Per-callback scratch for wide (>2ch) devices: the ring holds interleaved
+    // stereo, so on a wider device we drain stereo into this scratch and spread it
+    // into the device buffer (extra channels zeroed). Sized ONCE here, off the RT
+    // path, for a generous worst-case block; the callback never resizes it.
+    let mut scratch: Vec<f32> = Vec::new();
+    if device_channels != CHANNELS as usize {
+        scratch_reserve(&mut scratch, REQUESTED_BUFFER as usize * 4);
+    }
+
+    let err_fn = |e| eprintln!("slipmate-engine: stream error: {e}");
+
+    let stream = device
+        .build_output_stream(
+            config,
+            move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
+                no_alloc(|| {
+                    if first_call {
+                        set_ftz_daz();
+                        first_call = false;
+                    }
+                    let dev_ch = device_channels;
+                    if dev_ch == CHANNELS as usize {
+                        // Stereo fast path: drain straight into the device buffer.
+                        output.drain_into(data);
+                    } else {
+                        // Wider device: drain stereo into scratch, then spread.
+                        let frames = data.len() / dev_ch;
+                        let want = frames * CHANNELS as usize;
+                        let usable = scratch.len().min(want);
+                        output.drain_into(&mut scratch[..usable]);
+                        for f in 0..frames {
+                            let base = f * dev_ch;
+                            if f * CHANNELS as usize + 1 < usable {
+                                data[base] = scratch[2 * f];
+                                data[base + 1] = scratch[2 * f + 1];
+                            } else {
+                                data[base] = 0.0;
+                                data[base + 1] = 0.0;
+                            }
+                            for c in 2..dev_ch {
+                                data[base + c] = 0.0;
+                            }
+                        }
+                    }
+                });
+            },
+            err_fn,
+            None,
+        )
+        .map_err(|e| DeviceError::Stream(format!("failed to build output stream: {e}")))?;
+
+    stream
+        .play()
+        .map_err(|e| DeviceError::Stream(format!("failed to start stream: {e}")))?;
+
+    Ok(AudioStream {
+        _stream: stream,
+        info,
+    })
+}
+
+/// Open the default output device at exactly 48000/stereo/f32, build the stream
+/// that renders `engine` in its callback, start it, and return the running
+/// stream. The `engine` is MOVED into the audio callback.
+///
+/// This is the original engine-in-callback path (Phase 1 / `device_run`). The
+/// Tauri app now drives audio through [`run_host_stream`] + [`crate::host`]
+/// instead, but this path stays for the `device_run` binary and hardware spikes.
+///
+/// On any sandbox/headless condition (no device, wrong rate) this returns
+/// [`DeviceError::Unavailable`] without hanging — the caller decides whether that
+/// is fatal.
+pub fn run_stream(mut engine: Engine) -> Result<AudioStream, DeviceError> {
+    let (device, config, info) = open_output()?;
+    let device_channels = info.device_channels;
 
     // Per-callback scratch for wide (>2ch) devices: the engine renders exactly
     // stereo, so on a wider device we render into this stereo scratch and spread

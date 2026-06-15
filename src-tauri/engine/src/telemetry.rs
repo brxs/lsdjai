@@ -52,6 +52,15 @@ pub struct Telemetry {
     /// reduction; smaller = more. Read back as dB (≤ 0) via the getters. Mirrors
     /// ADR-0017's `getMasterGainReduction` mixer readout, atomics-only.
     master_gr_gain: AtomicU64,
+    /// Current output-ring fill in frames, written each render block by the
+    /// host's render thread (the engine [`crate::host`] layer). The output ring
+    /// sits between the render thread and the cpal callback; the input rings'
+    /// `fill_now` are upstream of it. 0 when the engine runs without a host.
+    output_ring_frames: AtomicUsize,
+    /// Output-ring underruns: cpal callback blocks that found the output ring
+    /// short and zero-filled (the host's drain counts these). Distinct from
+    /// `underruns`, which counts the per-deck input rings.
+    output_underruns: AtomicU64,
 }
 
 impl Telemetry {
@@ -66,6 +75,8 @@ impl Telemetry {
             master_peak: AtomicU64::new(0),
             // Start at unity (no reduction): GR_FULL_SCALE × PEAK_SCALE.
             master_gr_gain: AtomicU64::new(GR_FULL_SCALE),
+            output_ring_frames: AtomicUsize::new(0),
+            output_underruns: AtomicU64::new(0),
         }
     }
 
@@ -114,6 +125,23 @@ impl Telemetry {
         update_min_u64(&self.master_gr_gain, v);
     }
 
+    // --- Host output-ring writers (render thread + cpal callback; wait-free) ---
+
+    /// Record the output-ring fill (frames). Called by the host's render thread
+    /// each block; a plain atomic store, safe to read from the IPC thread.
+    #[inline]
+    pub fn record_output_ring_fill(&self, frames: usize) {
+        self.output_ring_frames.store(frames, Ordering::Relaxed);
+    }
+
+    /// Count one output-ring underrun (a cpal callback block that found the ring
+    /// short). Called from the callback — a single atomic add, wait-free, so it is
+    /// safe under `assert_no_alloc`.
+    #[inline]
+    pub fn note_output_underrun(&self) {
+        self.output_underruns.fetch_add(1, Ordering::Relaxed);
+    }
+
     // --- Reader-side getters (any thread; wait-free) ---
 
     pub fn underruns(&self) -> u64 {
@@ -144,6 +172,16 @@ impl Telemetry {
 
     pub fn primed(&self, deck: usize) -> bool {
         self.primed[deck].load(Ordering::Relaxed)
+    }
+
+    /// Current output-ring fill (frames); 0 with no host driving the ring.
+    pub fn output_ring_frames(&self) -> usize {
+        self.output_ring_frames.load(Ordering::Relaxed)
+    }
+
+    /// Total output-ring underruns counted by the host's cpal drain.
+    pub fn output_underruns(&self) -> u64 {
+        self.output_underruns.load(Ordering::Relaxed)
     }
 
     /// Read the master peak magnitude (0.0..) WITHOUT clearing it.

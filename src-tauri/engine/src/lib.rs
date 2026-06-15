@@ -43,6 +43,9 @@ mod playback;
 mod ring;
 pub mod telemetry;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod host;
+
 pub use fx::FxKind;
 pub use loops::{
     GENERATED_LOOP_MIN_SECONDS, LOOP_SLOT_COUNT, MIN_LOOP_SECONDS, MIN_STYLE_SAMPLE_SECONDS,

@@ -1,60 +1,113 @@
-//! SlipMate native shell — the Tauri v2 app host (Phase 2, step 1).
+//! SlipMate native shell — the Tauri v2 app host (Phase 2).
 //!
-//! This is the foundation the later Phase-2 steps build on: it embeds the React
-//! frontend, wires the WebMIDI plugin, and starts the Rust audio engine's cpal
-//! device on launch. The full engine command surface (mirroring `DeckChannel`),
-//! the Python sidecars, the MIDI rewire, and the UI ↔ engine cutover are the
-//! later steps — this step only proves the shell + device + frontend load.
+//! This embeds the React frontend, wires the WebMIDI plugin, starts the Rust
+//! audio engine, and exposes the engine control surface to the webview over IPC.
 //!
-//! # The audio device lifecycle (the load-bearing bit)
+//! # The audio host lifecycle (the load-bearing bit)
 //!
-//! On `setup` we build an [`Engine`], create its two decks, and start the cpal
-//! output stream via [`engine_device::run_stream`]. That call MOVES the engine
-//! into the audio callback and returns an [`AudioStream`] whose `Drop` stops the
-//! stream — so the stream must be kept alive for the app's lifetime. We hold it
-//! in Tauri **managed state** ([`AudioState`]); managed state lives as long as
-//! the app, so the stream runs until shutdown.
+//! On `setup` we build a [`Host`] ([`slipmate_engine::host`]). `Host::new` builds
+//! the [`Engine`], creates its two decks, and KEEPS the engine on a dedicated
+//! **render thread** — control commands and the RT render both need `&mut Engine`,
+//! and some control ops allocate (rebuilding `fundsp` nodes, taking a decoded
+//! buffer), so they must NOT run in the cpal callback. The render thread owns the
+//! engine, drains a wait-free command channel, and renders into an output ring;
+//! the cpal callback only drains that ring (ADR-style decoupling — see the `host`
+//! module docs and its latency note).
 //!
-//! In a sandbox / headless CI there is often no exact-48000/f32 output device.
-//! `run_stream` reports that as [`DeviceError::Unavailable`] rather than
-//! panicking; we log it and continue with no stream so the window still opens.
-//! The deck producers are not spawned here — feeding the rings is a later step
-//! (the sidecar transport); this step only proves the device path runs.
+//! `Host::new` also returns the two [`DeckHandle`]s — the non-RT producer side of
+//! each deck's input ring. They are the sidecar PCM feed's writers; a later step
+//! moves them onto the sidecar transport thread. Until then they are held in
+//! managed state so they stay alive (dropping a producer would close its ring).
+//!
+//! We then start the cpal device via [`engine_device::run_host_stream`], which
+//! drains the host's output ring in its callback. In a sandbox / headless CI
+//! there is often no exact-48000/f32 device; that path returns
+//! [`DeviceError::Unavailable`] and we continue with no stream — the host's render
+//! thread keeps filling the ring (nothing drains it, which is fine), so control
+//! and read-back still work and the window still opens.
+//!
+//! The [`Host`] is held in Tauri **managed state** so every `#[tauri::command]`
+//! can drive it; managed state lives for the app's lifetime, so the render thread
+//! (and the device stream) run until shutdown.
 
 use std::sync::Mutex;
 
-use serde::Serialize;
 use slipmate_engine::device::{self as engine_device, AudioStream, DeviceError};
-use slipmate_engine::{Engine, DECK_COUNT};
+use slipmate_engine::host::Host;
+use slipmate_engine::DeckHandle;
 use tauri::Manager;
 
-/// Tauri-managed audio state: the running output stream (kept alive so its Drop
-/// does not stop audio) and whether the device actually started. `None` stream
-/// in the sandbox/headless case — the window still opens.
+mod commands;
+
+/// Tauri-managed audio state held ALONGSIDE the [`Host`]: the running output
+/// stream (kept alive so its Drop does not stop audio), the deck producer handles
+/// (kept alive for the future sidecar feed; dropping a producer closes its ring),
+/// and whether the device actually started.
 ///
-/// Wrapped in a `Mutex` only to satisfy Tauri's `Send + Sync` managed-state
-/// bound uniformly; the stream itself is never mutated after setup. (cpal's
-/// CoreAudio `Stream` is `Send + Sync`.)
+/// The `Host` itself is managed separately so the commands can take it as
+/// `tauri::State<'_, Host>` directly. This struct holds the things the commands
+/// do not need but the app must keep alive.
+///
+/// Wrapped in `Mutex`es only to satisfy Tauri's `Send + Sync` managed-state bound
+/// uniformly; neither field is mutated after setup.
 struct AudioState {
     /// Held only to keep the cpal stream alive for the app's lifetime — its
-    /// `Drop` stops audio. Never read (the `_` mirrors `AudioStream::_stream`).
+    /// `Drop` stops audio. `None` in the sandbox/headless case.
     _stream: Mutex<Option<AudioStream>>,
+    /// The deck producer handles for the sidecar PCM feed (a later step). Held so
+    /// the input rings stay open; not yet written to.
+    _deck_handles: Mutex<Vec<DeckHandle>>,
     device_started: bool,
 }
 
-/// What [`app_info`] returns to the webview: the app version and whether the
-/// audio device started. The minimal "the shell is alive" probe — the real
-/// engine command surface (decks/mixer/cue) is a later step.
-#[derive(Serialize)]
+/// Build the host (engine + render thread + decks), start the cpal device that
+/// drains the host's output ring, and return both the [`Host`] (for managed
+/// state, so the commands can drive it) and the [`AudioState`] holding the stream
+/// and the deck handles. The device-start path is graceful: a missing device
+/// leaves the host running headlessly with `device_started = false`.
+fn start_audio() -> (Host, AudioState) {
+    let (host, output, deck_handles) = Host::new();
+
+    let (stream, device_started) = match engine_device::run_host_stream(output) {
+        Ok(stream) => {
+            let info = stream.info();
+            // Non-RT setup logging only; the RT callback itself logs nothing.
+            println!(
+                "slipmate-app: audio device started — device='{}' channels={} rate={} buffer={:?}",
+                info.device_name, info.device_channels, info.sample_rate, info.buffer_frames
+            );
+            (Some(stream), true)
+        }
+        Err(DeviceError::Unavailable(msg)) => {
+            // Expected in a sandbox / headless CI: no exact-48000/f32 device. Log
+            // and continue with no stream — the host renders into the ring, the
+            // window opens, control/read-back work.
+            eprintln!("slipmate-app: audio device unavailable ({msg}) — continuing without audio");
+            (None, false)
+        }
+        Err(DeviceError::Stream(msg)) => {
+            eprintln!("slipmate-app: audio stream error ({msg}) — continuing without audio");
+            (None, false)
+        }
+    };
+
+    let state = AudioState {
+        _stream: Mutex::new(stream),
+        _deck_handles: Mutex::new(deck_handles.into_iter().collect()),
+        device_started,
+    };
+    (host, state)
+}
+
+/// Report the app version and whether the cpal device came up. Lets the frontend
+/// (and the integration harness) confirm the shell loaded and the device-start
+/// path ran. The full engine surface lives in [`commands`].
+#[derive(serde::Serialize)]
 struct AppInfo {
     version: String,
     audio_device_started: bool,
 }
 
-/// The one IPC command for this step: report the app version and whether the
-/// cpal device came up. Lets the frontend (and the integration harness) confirm
-/// the shell loaded and the device-start path ran without building out the full
-/// engine surface yet.
 #[tauri::command]
 fn app_info(state: tauri::State<'_, AudioState>) -> AppInfo {
     AppInfo {
@@ -63,62 +116,46 @@ fn app_info(state: tauri::State<'_, AudioState>) -> AppInfo {
     }
 }
 
-/// Build the engine, create its decks, and start the cpal device. Returns the
-/// managed [`AudioState`] — with the live stream on success, or no stream (and
-/// `device_started = false`) when no device is available, so the caller never
-/// has to crash the window over a missing device.
-fn start_audio() -> AudioState {
-    let mut engine = Engine::new();
-    for index in 0..DECK_COUNT {
-        engine.create_deck(index);
-    }
-
-    match engine_device::run_stream(engine) {
-        Ok(stream) => {
-            let info = stream.info();
-            // Non-RT setup logging only; the RT callback itself logs nothing.
-            println!(
-                "slipmate-app: audio device started — device='{}' channels={} rate={} buffer={:?}",
-                info.device_name, info.device_channels, info.sample_rate, info.buffer_frames
-            );
-            AudioState {
-                _stream: Mutex::new(Some(stream)),
-                device_started: true,
-            }
-        }
-        Err(DeviceError::Unavailable(msg)) => {
-            // Expected in a sandbox / headless CI: no exact-48000/f32 device.
-            // Log and continue with no stream — the window must still open.
-            eprintln!("slipmate-app: audio device unavailable ({msg}) — continuing without audio");
-            AudioState {
-                _stream: Mutex::new(None),
-                device_started: false,
-            }
-        }
-        Err(DeviceError::Stream(msg)) => {
-            eprintln!("slipmate-app: audio stream error ({msg}) — continuing without audio");
-            AudioState {
-                _stream: Mutex::new(None),
-                device_started: false,
-            }
-        }
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         // The WebMIDI shim (ADR-0005): injects `navigator.requestMIDIAccess`
-        // into the webview. The frontend rewire to it is a later Phase-2 step;
-        // wiring it here carries the plugin from the start.
+        // into the webview.
         .plugin(tauri_plugin_midi::init())
         .setup(|app| {
-            // Start the audio engine's device and hold the stream in managed
-            // state for the app's lifetime (its Drop stops audio).
-            app.manage(start_audio());
+            // Start the audio host (engine + render thread + device) and hold the
+            // Host and the AudioState in managed state for the app's lifetime.
+            let (host, audio_state) = start_audio();
+            app.manage(host);
+            app.manage(audio_state);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![app_info])
+        .invoke_handler(tauri::generate_handler![
+            app_info,
+            commands::set_crossfade,
+            commands::set_eq,
+            commands::set_volume,
+            commands::set_fx,
+            commands::set_fx_amount,
+            commands::load_track,
+            commands::unload_track,
+            commands::play_track,
+            commands::pause_track,
+            commands::seek_track,
+            commands::set_track_rate,
+            commands::set_track_loop,
+            commands::clear_track_loop,
+            commands::capture_loop,
+            commands::play_loop,
+            commands::stop_loop,
+            commands::stop_one_shot,
+            commands::clear_loop,
+            commands::load_generated_loop,
+            commands::capture_sample,
+            commands::engine_telemetry,
+            commands::track_status,
+            commands::loop_slots,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
