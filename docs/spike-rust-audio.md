@@ -209,7 +209,7 @@ removed in 0.23). Oracle: Chromium via Playwright. Deterministic 4 s signal.
 | `eq_flat` | epsilon | maxErr 5.7e-14 (−296 dBFS) | **PASS** |
 | `eq_kill_low` | epsilon | maxErr 6.3e-7 (−140 dBFS) | **PASS** |
 | `eq_boost` | epsilon | maxErr 2.4e-6 (−131 dBFS) | **PASS** |
-| `filter_lp` | epsilon | maxErr 3.3e-2 (−37 dBFS) | **MEASURE** |
+| `filter_lp` | epsilon | maxErr 8.3e-7 (−140 dBFS) after Q-fix | **PASS** |
 | `bypass` | bit-exact | 0 ULP, byte-identical | **PASS** |
 | `master_limiter` ceiling | invariant | peak = 0.9296875 | **PASS** |
 | `master_limiter` transparency | invariant | 0.000 dB | **PASS** |
@@ -220,13 +220,15 @@ Findings:
 1. **EQ shelves match to ~1e-6.** `lowshelf_hz`/`bell_hz`/`highshelf_hz` reproduce
    Chromium's shelves/peaking to −130 dBFS or better, shelf Q = 1/√2 (matching WA's
    RBJ S=1 shelves), mid as `bell_hz` (gain), not `peak_hz`. Clean PASS.
-2. **The resonant LP filter diverges ~3% (−37 dBFS) — the headline finding.**
-   `lowpass_hz(f, 1.0)` does NOT match Chromium's lowpass biquad to shelf-level
-   accuracy (≈3 orders worse), roughly uniform across segments (magnitude + a
-   frequency-dependent group-delay/phase difference; the quiet 440 Hz seg's error
-   is mostly phase). So the filter FX needs a Q-convention/coefficient match or a
-   hand-matched biquad — it is **not** the clean LOW-risk pass the coverage map
-   predicted.
+2. **The resonant LP filter — root-caused and fixed (the headline result).** At
+   `lowpass_hz(f, 1.0)` it diverged ~3% (−37 dBFS), ≈3 orders worse than the
+   shelves. A Q sweep pinned a sharp error minimum at **q = 1.122018 = 10^(1/20)**,
+   where it drops to **8.3e-7 (−140 dBFS)** — i.e. **Web Audio interprets the
+   lowpass/highpass Q in dB** while fundsp takes linear Q. Fix (one line):
+   `q_linear = 10^(Q_dB/20)`. The filter FX is a clean PASS with the conversion —
+   not a fundsp limitation. **Generalises to the whole engine:** WA
+   LP/HP/BP/notch/allpass Q is dB, peaking Q is linear (why the EQ mid matched at
+   0.7), shelves take no Q — fundsp wants linear everywhere, so convert.
 3. **The M17 limiter body can't be reproduced (HIGH-risk confirmed).** The clamp
    master satisfies both invariants — ceiling exact at 0.9296875, sub-threshold
    transparency 0.000 dB — but its loud-segment waveform diverges from the
@@ -245,9 +247,11 @@ the ≥10-min sustained two-deck underrun run, the transport-channel measurement
 (loopback/UDS/shm jitter under load), and the RT-safety guards (`assert_no_alloc`,
 SPSC-per-deck, FTZ/DAZ) — pass-list criteria 1 and 6.
 
-**Interim verdict (offline slice):** promising. fundsp covers the EQ, the
-bit-exact bypass, and the ceiling/transparency invariants cleanly; the **filter
-and the limiter need the hand-rolls** the coverage map flagged (the filter sooner
-than expected). This does **not** yet flip ADR-0017/0019 to Accepted — the
-real-time half (device, sustained run, transport, RT guards) is still open. Next:
-run the `cpal`/transport half on the target Mac against a live sidecar.
+**Interim verdict (offline slice):** strong. With the lowpass Q-convention fix,
+fundsp reproduces the **EQ, the filter FX, and the bit-exact bypass to ~1e-6** and
+holds the ceiling/transparency invariants exactly. The **only** DSP it can't
+reproduce is the `DynamicsCompressor` body (needs a hand-rolled feed-forward
+compressor; the invariant-only approach covers it). This does **not** yet flip
+ADR-0017/0019 to Accepted — the real-time half (device, sustained run, transport,
+RT guards) is still open. Next: run the `cpal`/transport half on the target Mac
+against a live sidecar.

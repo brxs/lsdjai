@@ -56,11 +56,13 @@ fn process_eq_channel(samples: &mut [f32], low: f32, mid: f32, high: f32) {
     }
 }
 
-/// Color FX `filter`, amount 0.25 → lowpass at ~1200 Hz, Q = 1.0, fully wet.
-fn process_filter_lp_channel(samples: &mut [f32]) {
+/// Color FX `filter`, amount 0.25 → lowpass at ~1200 Hz, fully wet. The Q is a
+/// CLI override (default 1.0) so the spike can sweep it to match Web Audio's
+/// lowpass, whose Q parameter is in dB (10^(Q/20)) — the ~3% parity gap.
+fn process_filter_lp_channel(samples: &mut [f32], q: f32) {
     // filterCurve(0.25): 18000 * (80/18000)^0.5 ≈ 1200 Hz
     let cutoff = (18000.0 * (80.0_f64 / 18000.0).powf(0.5)) as f32;
-    let mut node = lowpass_hz(cutoff, 1.0);
+    let mut node = lowpass_hz(cutoff, q);
     node.set_sample_rate(SAMPLE_RATE);
     node.reset();
 
@@ -107,13 +109,17 @@ fn write_f32_le(path: &str, samples: &[f32]) {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() != 4 {
-        eprintln!("usage: {} <case> <input.f32> <output.f32>", args[0]);
+    if args.len() < 4 || args.len() > 5 {
+        eprintln!("usage: {} <case> <input.f32> <output.f32> [filter_q]", args[0]);
         process::exit(2);
     }
     let case = args[1].as_str();
     let input_path = args[2].as_str();
     let output_path = args[3].as_str();
+    // Web Audio lowpass/highpass Q is in dB (10^(Q/20)); the real fxGraphs filter
+    // leaves Q at the default 1 dB → 1.122 linear. Match that unless the CLI
+    // overrides it (the parity sweep). Confirmed: q = 10^(1/20) -> −140 dBFS.
+    let filter_q: f32 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(10.0_f32.powf(1.0 / 20.0));
 
     // bypass is a byte-for-byte passthrough — no float round-trip, no DSP.
     if case == "bypass" {
@@ -158,8 +164,8 @@ fn main() {
             process_eq_channel(&mut right, 1.0, 1.0, 1.0);
         }
         "filter_lp" => {
-            process_filter_lp_channel(&mut left);
-            process_filter_lp_channel(&mut right);
+            process_filter_lp_channel(&mut left, filter_q);
+            process_filter_lp_channel(&mut right, filter_q);
         }
         "master_limiter" => {
             process_master_channel(&mut left);
