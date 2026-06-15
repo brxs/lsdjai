@@ -195,8 +195,59 @@ drops to hand-rolled DSP — record which, and why, in Results.
 
 ## Results
 
-_Pending execution. Fill with: the verdict per criterion (1–6); measured numbers
-(underruns, granted buffer, latency, CPU; per-transport jitter table; per-target
-parity error / magnitude divergence); the chosen transport with rationale; the
-pinned crate versions; and the list of effects that need hand-rolled DSP. A PASS
-flips ADR-0017 and ADR-0019 toward Accepted._
+**Run 1 — offline DSP-parity slice (2026-06-15).** This run answers only the
+riskiest question — *can fundsp reproduce Chromium's Web Audio DSP within
+tolerance?* — via a file-in/file-out renderer diffed against a real Chromium
+`OfflineAudioContext` oracle. The device run, sustained run, and transport
+measurement are **not** in this pass (no audio device / no live sidecar here).
+Harness: `spike/rust-audio/` (`golden/` Node oracle, `engine/` fundsp renderer).
+Engine: **`fundsp 0.23.0`** (`prelude32`, f32 internals — the `hacker` prelude was
+removed in 0.23). Oracle: Chromium via Playwright. Deterministic 4 s signal.
+
+| case | rule | result | verdict |
+| --- | --- | --- | --- |
+| `eq_flat` | epsilon | maxErr 5.7e-14 (−296 dBFS) | **PASS** |
+| `eq_kill_low` | epsilon | maxErr 6.3e-7 (−140 dBFS) | **PASS** |
+| `eq_boost` | epsilon | maxErr 2.4e-6 (−131 dBFS) | **PASS** |
+| `filter_lp` | epsilon | maxErr 3.3e-2 (−37 dBFS) | **MEASURE** |
+| `bypass` | bit-exact | 0 ULP, byte-identical | **PASS** |
+| `master_limiter` ceiling | invariant | peak = 0.9296875 | **PASS** |
+| `master_limiter` transparency | invariant | 0.000 dB | **PASS** |
+| `master_limiter` loud body | report | maxErr 0.59 (−7.5 dBFS) | divergent (expected) |
+
+Findings:
+
+1. **EQ shelves match to ~1e-6.** `lowshelf_hz`/`bell_hz`/`highshelf_hz` reproduce
+   Chromium's shelves/peaking to −130 dBFS or better, shelf Q = 1/√2 (matching WA's
+   RBJ S=1 shelves), mid as `bell_hz` (gain), not `peak_hz`. Clean PASS.
+2. **The resonant LP filter diverges ~3% (−37 dBFS) — the headline finding.**
+   `lowpass_hz(f, 1.0)` does NOT match Chromium's lowpass biquad to shelf-level
+   accuracy (≈3 orders worse), roughly uniform across segments (magnitude + a
+   frequency-dependent group-delay/phase difference; the quiet 440 Hz seg's error
+   is mostly phase). So the filter FX needs a Q-convention/coefficient match or a
+   hand-matched biquad — it is **not** the clean LOW-risk pass the coverage map
+   predicted.
+3. **The M17 limiter body can't be reproduced (HIGH-risk confirmed).** The clamp
+   master satisfies both invariants — ceiling exact at 0.9296875, sub-threshold
+   transparency 0.000 dB — but its loud-segment waveform diverges from the
+   `DynamicsCompressor` by maxErr 0.59 / −7.5 dBFS (the clamp hard-clips ~57.5 % of
+   the loud burst; the compressor tames it to peak 0.56 before the guard). Full
+   body parity needs a hand-rolled feed-forward compressor; the invariant-only
+   approach in this spec is the right call.
+4. **Method confirmations (the critics were right).** Bypass is bit-exact (0 ULP).
+   The `DynamicsCompressorNode` adds **288 frames / 6.00 ms latency** — diffing
+   without alignment read it as 3.6e-2 "error"; aligned, the quiet seg matches to
+   4e-7. Transparency is a *level* property (RMS ratio), phase-immune. "Align
+   before diff" and "bit-exact only for the bypass" are now empirically grounded.
+
+**Not yet run (needs a local device + sidecar + time):** the `cpal` device output,
+the ≥10-min sustained two-deck underrun run, the transport-channel measurement
+(loopback/UDS/shm jitter under load), and the RT-safety guards (`assert_no_alloc`,
+SPSC-per-deck, FTZ/DAZ) — pass-list criteria 1 and 6.
+
+**Interim verdict (offline slice):** promising. fundsp covers the EQ, the
+bit-exact bypass, and the ceiling/transparency invariants cleanly; the **filter
+and the limiter need the hand-rolls** the coverage map flagged (the filter sooner
+than expected). This does **not** yet flip ADR-0017/0019 to Accepted — the
+real-time half (device, sustained run, transport, RT guards) is still open. Next:
+run the `cpal`/transport half on the target Mac against a live sidecar.

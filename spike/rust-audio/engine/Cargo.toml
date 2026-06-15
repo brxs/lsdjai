@@ -1,0 +1,18 @@
+[package]
+name = "engine"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Spike A — throwaway offline fundsp DSP-parity renderer (no audio device).
+# See ../CONTRACT.md for the file format and the 6 cases.
+
+[[bin]]
+name = "engine"
+path = "src/main.rs"
+
+[dependencies]
+fundsp = "=0.23.0"
+
+[profile.release]
+opt-level = 3
