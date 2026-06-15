@@ -1,0 +1,22 @@
+[package]
+name = "slipmate-midi-spike"
+version = "0.0.0"
+description = "Spike C — tauri-plugin-midi vs DDJ-FLX4"
+authors = ["SlipMate"]
+edition = "2021"
+publish = false
+
+[lib]
+# Tauri v2 keeps the app logic in a lib so it can be reused on mobile.
+name = "slipmate_midi_spike_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+# Spike C subject: the WebMIDI shim over midir/CoreMIDI. v0.2.x.
+tauri-plugin-midi = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
