@@ -1,0 +1,47 @@
+[package]
+name = "slipmate-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "SlipMate native shell: the Tauri v2 app hosting the React UI and the Rust audio engine (Phase 2, ADR-0017/0018)."
+
+# Tauri v2 keeps the app logic in a lib so the same crate can be reused on
+# mobile and driven by an integration harness; `main.rs` is a thin entry point.
+[lib]
+name = "slipmate_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "slipmate-app"
+path = "src/main.rs"
+
+# The cargo WORKSPACE. The app is the root package; the audio engine is a member
+# library crate so it stays headless-testable (`cargo test -p slipmate-engine`)
+# without a window. One lockfile lives at the workspace root.
+[workspace]
+members = ["engine"]
+resolver = "2"
+
+[build-dependencies]
+# Pinned to the version proven in the Spike C MIDI app (spike/midi/src-tauri).
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri v2 shell. Versions are the ones the Spike C app resolved against
+# (tauri 2.11.2, tauri-plugin-midi 0.2.0); see spike/midi/src-tauri/Cargo.lock.
+tauri = { version = "2", features = [] }
+# The WebMIDI shim over midir/CoreMIDI (ADR-0005, Phase 2 step 2). Wired now so
+# the shell carries the plugin from the start; the frontend rewire to it is a
+# later step.
+tauri-plugin-midi = "0.2"
+# The audio engine as a workspace member (the cpal device + RT-safe mix core).
+slipmate-engine = { path = "engine" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Workspace-level release profile. Cargo only honours `[profile.*]` at the
+# workspace root, so the engine crate's opt-level=3 lives here now (moved out of
+# engine/Cargo.toml, where it was silently ignored under the workspace).
+[profile.release]
+opt-level = 3
+

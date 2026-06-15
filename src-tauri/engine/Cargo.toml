@@ -34,5 +34,6 @@ rtrb = "=0.3.4"
 # audio callback must not crash the stream.
 assert_no_alloc = { version = "=1.1.2", default-features = false, features = ["warn_release", "warn_debug"] }
 
-[profile.release]
-opt-level = 3
+# NOTE: the release profile (opt-level = 3) lives in the workspace root
+# (src-tauri/Cargo.toml). Cargo only honours `[profile.*]` at the workspace
+# root, so it would be ignored here.

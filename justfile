@@ -59,6 +59,17 @@ setup-sa3:
 build:
     cd frontend && npm run build
 
+# Native shell (Phase 2): run the Tauri app in dev. Builds the frontend first
+# (tauri.conf.json's beforeBuildCommand), embeds frontend/dist, and starts the
+# Rust audio engine's cpal device. Needs cargo-tauri (`cargo install tauri-cli@^2`).
+tauri-dev:
+    cd src-tauri && cargo tauri dev
+
+# Native shell (Phase 2): build + bundle the Tauri app (.app/.dmg) into
+# src-tauri/target/release/bundle/. Needs cargo-tauri (`cargo install tauri-cli@^2`).
+tauri-build:
+    cd src-tauri && cargo tauri build
+
 # Run the app: backend on http://127.0.0.1:8000 serving the built frontend.
 run: build
     cd backend && uv run slipmate
