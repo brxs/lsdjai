@@ -115,6 +115,78 @@ fn process_crush_fundsp_channel(samples: &mut [f32]) {
     }
 }
 
+// --- Dub echo (Color FX "dub_echo"), wet output only ---
+
+// Mirror fxGraphs.ts `dub_echo`: input → delay(D) → wet tap, with the delay
+// output also → tone(lowpass) → ×feedback → summed back into the delay input.
+// Free-running (no synced beat period), so D = DUB_ECHO_SECONDS. Knob amount 0.7
+// → dubEchoCurve: wet = feedback = 0.7*0.9 = 0.63. The loop tone is a Web Audio
+// lowpass left at the default Q (1 dB → q = 10^(1/20) ≈ 1.122).
+const DUB_ECHO_SECONDS: f32 = 0.35;
+const DUB_ECHO_TONE_HZ: f32 = 2500.0;
+const DUB_ECHO_TONE_Q: f32 = 1.1220185; // 10^(1/20), the Web Audio Q-in-dB default
+const DUB_ECHO_FEEDBACK: f32 = 0.63;
+const DUB_ECHO_WET: f32 = 0.63;
+
+/// Wet-only dub echo, per channel. The output is the delay-line tap (pre-tone,
+/// no dry leak — the dry path lives outside this graph), scaled by `wet`.
+///
+/// fundsp expression (delay pre-loop so the node output IS the delay tap, never
+/// the undelayed dry input; tone sits in the feedback path only, matching WA):
+///   (delay(0.35) >> feedback(lowpass_hz(2500.0, 1.122) * 0.63 >> delay(0.35))) * 0.63
+fn process_dub_echo_channel(samples: &mut [f32]) {
+    let mut node = (delay(DUB_ECHO_SECONDS)
+        >> feedback(
+            lowpass_hz(DUB_ECHO_TONE_HZ, DUB_ECHO_TONE_Q) * DUB_ECHO_FEEDBACK
+                >> delay(DUB_ECHO_SECONDS),
+        ))
+        * DUB_ECHO_WET;
+    node.set_sample_rate(SAMPLE_RATE);
+    node.reset();
+
+    for x in samples.iter_mut() {
+        *x = node.filter_mono(*x);
+    }
+}
+
+// --- Sweep (Color FX "sweep"), amplitude duck by a sine LFO ---
+
+// Mirror fxGraphs.ts `sweep` at knob amount 0.7: sweepCurve → rateHz = 5.75,
+// depth = 0.84. The duck gain breathes as base + swing*sin, base = 1 - depth/2 =
+// 0.58, swing = depth/2 = 0.42. The Web Audio OscillatorNode starts at phase 0,
+// so the LFO is computed directly per sample to nail that phase.
+const SWEEP_RATE_HZ: f64 = 5.75;
+const SWEEP_BASE: f32 = 0.58;
+const SWEEP_SWING: f32 = 0.42;
+
+/// Per channel: x[n] * (base + swing * sin(2π * rate * n / fs)), phase 0.
+fn process_sweep_channel(samples: &mut [f32]) {
+    for (n, x) in samples.iter_mut().enumerate() {
+        let phase = 2.0 * std::f64::consts::PI * SWEEP_RATE_HZ * (n as f64) / SAMPLE_RATE;
+        let lfo = SWEEP_BASE + SWEEP_SWING * (phase.sin() as f32);
+        *x *= lfo;
+    }
+}
+
+// --- Noise bandpass (Color FX "noise", deterministic half) ---
+
+// The `noise` FX adds a filtered white-noise riser; its random source can't be
+// reproduced bit-for-bit. The deterministic, testable half is the bandpass
+// filter itself, so this case runs that bandpass on the INPUT signal. centre =
+// noiseCurve(0.7).frequency = logSweep(120, 9000, 0.7) = 120*(9000/120)^0.7. The
+// Web Audio bandpass Q is fixed at 0.8 (a dB value), so the linear q default is
+// 10^(0.8/20) ≈ 1.0965 — a CLI override (like filter_lp) lets the spike sweep it.
+fn process_noise_bp_channel(samples: &mut [f32], q: f32) {
+    let centre = (120.0 * (9000.0_f64 / 120.0).powf(0.7)) as f32;
+    let mut node = bandpass_hz(centre, q);
+    node.set_sample_rate(SAMPLE_RATE);
+    node.reset();
+
+    for x in samples.iter_mut() {
+        *x = node.filter_mono(*x);
+    }
+}
+
 // --- Stereo reverb (Color FX "space") ---
 
 // reverb_stereo(room_size_m, time_s, damping) — a 2-in/2-out 32-channel FDN.
@@ -221,6 +293,25 @@ fn main() {
         "filter_lp" => {
             process_filter_lp_channel(&mut left, filter_q);
             process_filter_lp_channel(&mut right, filter_q);
+        }
+        "dub_echo" => {
+            process_dub_echo_channel(&mut left);
+            process_dub_echo_channel(&mut right);
+        }
+        "sweep" => {
+            process_sweep_channel(&mut left);
+            process_sweep_channel(&mut right);
+        }
+        // The bandpass Q is the dB-convention guess for Web Audio's fixed Q=0.8
+        // (10^(0.8/20) ≈ 1.0965). The optional CLI arg overrides it for sweeps;
+        // it parses with the shared `filter_q` default only when supplied.
+        "noise_bp" => {
+            let q = args
+                .get(4)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(10.0_f32.powf(0.8 / 20.0));
+            process_noise_bp_channel(&mut left, q);
+            process_noise_bp_channel(&mut right, q);
         }
         "master_limiter" => {
             process_master_channel(&mut left);

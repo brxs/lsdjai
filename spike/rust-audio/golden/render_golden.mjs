@@ -13,7 +13,7 @@ const require = createRequire('/Users/daniel.peter/Repos/magenta-dj/frontend/pac
 const { chromium } = require('playwright')
 
 const SR = 48000
-const CASES = ['eq_flat', 'eq_kill_low', 'eq_boost', 'filter_lp', 'bypass', 'master_limiter']
+const CASES = ['eq_flat', 'eq_kill_low', 'eq_boost', 'filter_lp', 'bypass', 'master_limiter', 'dub_echo', 'sweep', 'noise_bp']
 
 const inBytes = readFileSync(join(artifacts, 'input.f32'))
 const inputB64 = inBytes.toString('base64')
@@ -71,6 +71,29 @@ async function renderInPage({ b64, caseName, SR }) {
     for (let i = 0; i < N; i++) { const x = (2 * i) / (N - 1) - 1; curve[i] = Math.max(-CEIL, Math.min(CEIL, x)) }
     const ws = ctx.createWaveShaper(); ws.curve = curve; ws.oversample = 'none'
     src.connect(comp); comp.connect(makeup); makeup.connect(ws); tail = ws
+  } else if (caseName === 'dub_echo') {
+    // amount 0.7 → wet 0.63, feedback 0.63, delay 0.35 s, tone lowpass 2500 (Q default)
+    const input = ctx.createGain()
+    const delay = ctx.createDelay(1); delay.delayTime.value = 0.35
+    const tone = ctx.createBiquadFilter(); tone.type = 'lowpass'; tone.frequency.value = 2500
+    const fb = ctx.createGain(); fb.gain.value = 0.63
+    const wet = ctx.createGain(); wet.gain.value = 0.63
+    src.connect(input); input.connect(delay); delay.connect(tone); tone.connect(fb); fb.connect(delay); delay.connect(wet)
+    tail = wet // the effect output is the wet echo only (dry stays on the channel branch)
+  } else if (caseName === 'sweep') {
+    // amount 0.7 → rate 5.75 Hz, depth 0.84 → base 0.58, swing 0.42
+    const duck = ctx.createGain(); duck.gain.value = 0.58
+    const lfo = ctx.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 5.75
+    const depth = ctx.createGain(); depth.gain.value = 0.42
+    lfo.connect(depth); depth.connect(duck.gain); lfo.start()
+    src.connect(duck); tail = duck
+  } else if (caseName === 'noise_bp') {
+    // the deterministic half of the noise FX: its bandpass (Q=0.8) at the swept
+    // centre 120·(9000/120)^0.7 ≈ 2464 Hz. The noise SOURCE is non-deterministic
+    // (random + looped) so the effect itself can't sample-parity — this isolates
+    // the filter (and the bandpass Q convention) against the input signal.
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 120 * Math.pow(9000 / 120, 0.7); bp.Q.value = 0.8
+    src.connect(bp); tail = bp
   }
   tail.connect(ctx.destination)
   src.start()

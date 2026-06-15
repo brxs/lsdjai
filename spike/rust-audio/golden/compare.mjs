@@ -89,7 +89,7 @@ function validateGolden() {
   console.log(`sub-threshold transparency:       level=${transparencyDb(ml).toFixed(3)} dB, aligned maxErr=${al.maxE.toExponential(2)} (latency ${off} fr) -> ${Math.abs(transparencyDb(ml)) < 0.1 ? 'PASS' : 'check'}`)
 }
 
-const RULES = { eq_flat: 'epsilon', eq_kill_low: 'epsilon', eq_boost: 'epsilon', filter_lp: 'epsilon', bypass: 'bitexact', master_limiter: 'invariant' }
+const RULES = { eq_flat: 'epsilon', eq_kill_low: 'epsilon', eq_boost: 'epsilon', filter_lp: 'epsilon', bypass: 'bitexact', master_limiter: 'invariant', dub_echo: 'epsilon', sweep: 'epsilon', noise_bp: 'epsilon' }
 
 function compareCase(name) {
   if (!existsSync(join(artifacts, `rust_${name}.f32`))) { console.log(`${name}: rust output missing (skip)`); return }

@@ -305,10 +305,51 @@ loaded variant) on the target Mac — an endurance check, not a code gap.
 Command: `./target/release/rt_engine --duration 600 [--load 8]`; PASS = granted 256,
 zero underruns, no alloc warnings over the full 10 min.
 
+## Run 3 — the three LOW-risk effects (2026-06-15)
+
+Closed out DSP coverage with dub_echo, sweep, and the noise FX's filter (amount
+0.7); golden via Chromium, rust via fundsp.
+
+| effect | result | verdict |
+| --- | --- | --- |
+| **sweep** | maxErr 1.9e-6 (−130 dBFS) | **clean PASS** |
+| **dub_echo** | tail-accumulating divergence (seg1 −18 → seg4 −3 dBFS) | **hand-roll** |
+| **noise** (bandpass) | best −36 dBFS at any Q; source non-deterministic | **N/A / hand-roll** |
+
+- **sweep** is a clean win — the phase-0 sine-LFO duck matches Chromium to ~1e-6.
+- **dub_echo** does NOT match: fundsp's `feedback()` combinator inserts a 1-sample
+  delay per loop iteration, so the 0.35 s echoes **drift cumulatively** — fine on
+  the first echoes (seg1 −18 dBFS) but unrelated by the tail (seg4 maxErr 1.72,
+  dominated by many-times-recirculated echoes of the loud burst). A faithful dub
+  echo needs a **hand-built D-sample feedback delay** (exact loop length, the tone
+  lowpass — which matches at q=1.122, the Q-in-dB default — in the loop, wet tapped
+  pre-tone); `feedback()` is the wrong primitive.
+- **noise**: its source is a random, looped buffer (like Space's IR), so the effect
+  can't sample-parity by construction — fundsp `white()` is a different,
+  non-looping PRNG; a filtered riser is character-equivalent, not sample-matched.
+  Its bandpass is a separate note: a q sweep bottoms out at only −36 dBFS (vs the
+  lowpass's −140), a **shallow** minimum near q≈1.0 — so unlike LP/HP, Web Audio's
+  **bandpass Q is not simply dB**, and fundsp's `bandpass_hz` uses a different
+  normalisation (constant-skirt vs WA's 0 dB-peak) no Q can close. Moot for the
+  noise FX; a flag for any exact-bandpass need elsewhere (hand-match coefficients).
+
+## DSP coverage — final tally
+
+**Clean in fundsp (~1e-6 or bit-exact):** 3-band EQ, the Color filter (Q-in-dB
+fix), **sweep**, bypass (bit-exact), and the master ceiling + sub-threshold
+transparency invariants. **Bounded hand-rolls (all standard DSP, none a fundsp
+blocker):** Crush (~8-line quantise-and-hold, **bit-exact**), the limiter body
+(feed-forward compressor; invariants cover the ceiling), **dub_echo** (hand-built
+feedback delay), and Space (tuned FDN, or partitioned convolution for exact).
+**Inherently non-deterministic:** noise and Space's random source — character-
+equivalent by design, never sample-matched.
+
 ## Overall verdict
 
 Spike A is **substantially PASS, pending one endurance run.** DSP parity holds to
-~1e-6 with three bounded hand-rolls identified (limiter body, Crush, Space); the
+~1e-6 on the clean set (EQ, filter, sweep, bypass, ceiling), with four bounded
+hand-rolls identified (Crush — bit-exact; the limiter body; dub_echo's feedback
+delay; Space's reverb) plus noise's deliberately non-deterministic riser; the
 real-time path runs glitch-free with verified RT-safety at a 256-frame buffer; the
 transport is chosen (`shm` co-located, `tcp` out-of-process). The only box left
 unticked is the **≥10-min sustained device run** — an operator step. On that green,
