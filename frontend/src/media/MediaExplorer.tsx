@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { DeckId } from '../audio/types'
-import { getApiBaseUrl, invoke, isTauri } from '../audio/nativeEngine'
+import { getApiBaseUrl, invoke } from '../audio/nativeEngine'
 import { useControlBus } from '../control/busContext'
 import { CrateBrowser } from '../crates/CrateBrowser'
 import type { StylePreset } from '../presets'
@@ -25,19 +25,10 @@ type GeneratedTrack =
       wav: ArrayBuffer
     }
 
-// A browsable file. Native: just the name — `read_audio_file` re-derives the path
-// from the chosen folder + name (the webview never supplies a path to read).
-// Browser-dev: a Chromium FileSystemFileHandle read via the File System Access API.
-type FolderFile = { name: string; handle?: FileSystemFileHandle }
+// A browsable file: just the name. `read_audio_file` re-derives the path from the
+// chosen folder + name (the webview never supplies a path to read).
+type FolderFile = { name: string }
 
-// Chromium's File System Access API; the DOM lib types stop short of
-// the directory iterator, so the shapes are pinned down here.
-type DirectoryHandle = FileSystemDirectoryHandle & {
-  values: () => AsyncIterable<FileSystemHandle>
-}
-type DirectoryPicker = { showDirectoryPicker?: () => Promise<DirectoryHandle> }
-
-const AUDIO_FILE = /\.(wav|mp3|flac|m4a|ogg|aif|aiff)$/i
 // Per-engine length menus, mirroring the backend caps: the small DiTs
 // stop at sa3.MAX_SECONDS (32 s), the medium track DiT at
 // sa3.TRACK_MAX_SECONDS (6:20), Magenta renders at
@@ -142,19 +133,11 @@ export function MediaExplorer({
   async function loadFolderFile(deck: DeckId, file: FolderFile) {
     setFolderError(null)
     try {
-      // Native: the Rust command reads the bytes, scoped to the chosen folder
-      // (returns an ArrayBuffer). Browser-dev: the File System Access handle.
-      let wav: ArrayBuffer
-      if (isTauri()) {
-        wav = await invoke<ArrayBuffer>('read_audio_file', {
-          dir: folderPath,
-          name: file.name,
-        })
-      } else if (file.handle) {
-        wav = await (await file.handle.getFile()).arrayBuffer()
-      } else {
-        throw new Error('no file handle')
-      }
+      // The Rust command reads the bytes, scoped to the chosen folder.
+      const wav = await invoke<ArrayBuffer>('read_audio_file', {
+        dir: folderPath,
+        name: file.name,
+      })
       const loaded = await onLoadTrack(deck, wav, file.name)
       if (!loaded) setFolderError(t('media.undecodable', { title: file.name }))
     } catch (error) {
@@ -243,45 +226,19 @@ export function MediaExplorer({
 
   async function chooseFolder() {
     setFolderError(null)
-    // Native shell: the OS folder picker (dialog plugin) + a Rust dir listing —
-    // WKWebView has no File System Access API.
-    if (isTauri()) {
-      try {
-        const dir = await invoke<string | null>('plugin:dialog|open', {
-          options: { directory: true, multiple: false },
-        })
-        if (!dir) return // the user dismissed the picker
-        const names = await invoke<string[]>('list_audio_files', { dir })
-        setFolderPath(dir)
-        setFolderName(dir.replace(/\/+$/, '').split('/').pop() || dir)
-        setFiles(names.map((name) => ({ name })))
-        setHighlight(0)
-      } catch (error) {
-        setFolderError(error instanceof Error ? error.message : String(error))
-      }
-      return
-    }
-    // Browser-dev path: Chromium's File System Access API.
-    const picker = (window as Window & DirectoryPicker).showDirectoryPicker
-    if (!picker) {
-      setFolderError(t('media.folder.unsupported'))
-      return
-    }
+    // The OS folder picker (dialog plugin) + a Rust dir listing — WKWebView has no
+    // File System Access API.
     try {
-      const directory = await picker()
-      const found: FolderFile[] = []
-      for await (const handle of directory.values()) {
-        if (handle.kind === 'file' && AUDIO_FILE.test(handle.name)) {
-          found.push({ name: handle.name, handle: handle as FileSystemFileHandle })
-        }
-      }
-      found.sort((left, right) => left.name.localeCompare(right.name))
-      setFolderName(directory.name)
-      setFiles(found)
+      const dir = await invoke<string | null>('plugin:dialog|open', {
+        options: { directory: true, multiple: false },
+      })
+      if (!dir) return // the user dismissed the picker
+      const names = await invoke<string[]>('list_audio_files', { dir })
+      setFolderPath(dir)
+      setFolderName(dir.replace(/\/+$/, '').split('/').pop() || dir)
+      setFiles(names.map((name) => ({ name })))
       setHighlight(0)
     } catch (error) {
-      // A dismissed picker is not an error worth shouting about.
-      if (error instanceof DOMException && error.name === 'AbortError') return
       setFolderError(error instanceof Error ? error.message : String(error))
     }
   }

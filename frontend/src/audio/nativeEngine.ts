@@ -48,21 +48,14 @@ function tauriGlobal(): TauriGlobal | null {
   return g.__TAURI__ ?? null
 }
 
-/** Are we running inside the Tauri webview (so the Rust engine is reachable)? */
-export function isTauri(): boolean {
-  return tauriGlobal() !== null
-}
-
 let apiBaseUrlPromise: Promise<string> | null = null
 
 /** Base URL for the backend `/api/*` generation endpoints (sa3/Magenta pad+track
- * render). In the native shell FastAPI no longer serves the UI, so the Rust shell
- * runs a generation-only server on a loopback port it reports via `app_info`
- * (gap 2); the webview fetches `http://127.0.0.1:<port>/api/...`. In the browser /
- * dev it's empty, so the existing relative URLs hit the FastAPI origin / Vite
- * proxy unchanged. Resolved once and cached. */
+ * render). FastAPI no longer serves the UI, so the Rust shell runs a generation
+ * server on a loopback port it reports via `app_info`; the webview fetches
+ * `http://127.0.0.1:<port>/api/...`. Resolved once and cached; falls back to ''
+ * (relative) if the port can't be resolved. */
 export function getApiBaseUrl(): Promise<string> {
-  if (!isTauri()) return Promise.resolve('')
   if (!apiBaseUrlPromise) {
     apiBaseUrlPromise = invoke<{ generationPort: number | null }>('app_info')
       .then((info) => (info.generationPort ? `http://127.0.0.1:${info.generationPort}` : ''))

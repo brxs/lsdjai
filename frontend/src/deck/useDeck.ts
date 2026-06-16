@@ -20,7 +20,7 @@ import {
 import { createLoudnessTracker, trimDbFor } from '../audio/master'
 import { STYLE_SAMPLE_SECONDS } from '../audio/styleSample'
 import { useAudioEngine } from '../audio/engineContext'
-import { getApiBaseUrl, isTauri } from '../audio/nativeEngine'
+import { getApiBaseUrl } from '../audio/nativeEngine'
 import {
   sendNativeDeckCommand,
   subscribeSidecarStatus,
@@ -45,7 +45,6 @@ import {
   type ServerEvent,
 } from './deckState'
 
-const RECONNECT_DELAY_MS = 2_000
 /** Worklet stats older than this are stale: the live clocks and the
  * zoom view blank together, never a lie (ADR-0014). */
 const STATS_FRESH_MS = 2_500
@@ -353,9 +352,9 @@ export function useDeck(deckId: DeckId): DeckControls {
     anchorMissesRef.current = 0
     liveBeatRef.current = null
     bandScroller.reset()
-    // Re-anchor the native played-frame origin to "now" so the freshly-reset
-    // tracker (anchorFrame 0) and the engine's global render count share a zero.
-    playedFramesOriginRef.current = isTauri() ? (engine.getContextTime() ?? 0) * SAMPLE_RATE : 0
+    // Re-anchor the played-frame origin to "now" so the freshly-reset tracker
+    // (anchorFrame 0) and the engine's global render count share a zero.
+    playedFramesOriginRef.current = (engine.getContextTime() ?? 0) * SAMPLE_RATE
   }, [beat, loudness, bandScroller, engine])
   const [trim, setTrimState] = useState<TrimState>(
     () => loadDeckSettings(deckId).trim ?? { mode: 'auto', db: 0 },
@@ -378,7 +377,6 @@ export function useDeck(deckId: DeckId): DeckControls {
     primedRef.current = next
   }, [])
 
-  const socketRef = useRef<WebSocket | null>(null)
   const channelRef = useRef<DeckChannel | null>(null)
   // Memoised in-flight channel build so rapid play() clicks share one
   // channel instead of stacking worklets on the bus.
@@ -414,115 +412,51 @@ export function useDeck(deckId: DeckId): DeckControls {
   }, [engine, deckId])
 
   useEffect(() => {
-    // Native shell (part 7 cutover): no `/ws/deck` — the sidecar feeds the engine
-    // directly (part 4) and reports status as `sidecar://status` events, and tees
-    // the model PCM back over a Tauri Channel so the TS beat/loudness/band analysis
-    // (ADR-0017: stays in TypeScript) gets the same input it had over the socket.
-    if (isTauri()) {
-      // The engine + sidecar IPC is available immediately — there is no socket
-      // handshake to wait for, so the deck is "open" (operable) at once. Without
-      // this the connection stays 'connecting' forever (the browser path sets it
-      // on socket.onopen). The sidecar's `ready`/`model_loading` status events then
-      // fill in the model + switch state.
-      dispatch({ type: 'socket_open' })
-      const unsubscribeStatus = subscribeSidecarStatus(deckId, (status) => {
-        if (status.event === 'model_loading' || status.event === 'worker_died') {
-          channelRef.current?.reset()
-          resetStreamMeasurements()
-        }
-        dispatch({ type: 'server_event', event: status as ServerEvent })
-      })
-      const unsubscribePcm = subscribeDeckPcm(deckId, (samples) => {
-        // A parked deck (playback mode) drops stragglers so a late chunk cannot
-        // pollute the track's clock — the same guard as the WebSocket path.
-        if (modeRef.current === 'playback') return
-        beat.tracker.push(samples)
-        loudness.push(samples)
-        bandScroller.push(samples)
-      })
-      // The model list + RAM info come from the generation server (no `/ws/deck`
-      // hello in native) so the model picker populates and the RAM warning works.
-      let cancelled = false
-      void getApiBaseUrl()
-        .then((base) => fetch(`${base}/api/models`))
-        .then((response) => (response.ok ? response.json() : null))
-        .then((info) => {
-          if (cancelled || !info) return
-          dispatch({
-            type: 'deck_info',
-            models: info.models,
-            ramInfo: {
-              totalGb: info.total_ram_gb,
-              estimateGbByModel: info.model_ram_estimate_gb,
-            },
-          })
+    // The sidecar feeds the engine directly and reports status as `sidecar://status`
+    // events, teeing the model PCM back over a Tauri Channel so the TS
+    // beat/loudness/band analysis (ADR-0017: stays in TypeScript) gets the same input.
+    // The engine + sidecar IPC is available immediately — there is no socket
+    // handshake to wait for, so the deck is "open" (operable) at once. The
+    // sidecar's `ready`/`model_loading` status events then fill in the model +
+    // switch state.
+    dispatch({ type: 'socket_open' })
+    const unsubscribeStatus = subscribeSidecarStatus(deckId, (status) => {
+      if (status.event === 'model_loading' || status.event === 'worker_died') {
+        channelRef.current?.reset()
+        resetStreamMeasurements()
+      }
+      dispatch({ type: 'server_event', event: status as ServerEvent })
+    })
+    const unsubscribePcm = subscribeDeckPcm(deckId, (samples) => {
+      // A parked deck (playback mode) drops stragglers so a late chunk cannot
+      // pollute the track's clock.
+      if (modeRef.current === 'playback') return
+      beat.tracker.push(samples)
+      loudness.push(samples)
+      bandScroller.push(samples)
+    })
+    // The model list + RAM info come from the generation server so the model
+    // picker populates and the RAM warning works.
+    let cancelled = false
+    void getApiBaseUrl()
+      .then((base) => fetch(`${base}/api/models`))
+      .then((response) => (response.ok ? response.json() : null))
+      .then((info) => {
+        if (cancelled || !info) return
+        dispatch({
+          type: 'deck_info',
+          models: info.models,
+          ramInfo: {
+            totalGb: info.total_ram_gb,
+            estimateGbByModel: info.model_ram_estimate_gb,
+          },
         })
-        .catch(() => {})
-      return () => {
-        cancelled = true
-        unsubscribeStatus()
-        unsubscribePcm()
-        channelRef.current?.dispose()
-        channelRef.current = null
-        channelPromiseRef.current = null
-      }
-    }
-
-    let disposed = false
-    let reconnectTimer: ReturnType<typeof setTimeout> | undefined
-
-    function connect() {
-      if (disposed) return
-      dispatch({ type: 'socket_connecting' })
-      const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
-      const socket = new WebSocket(`${scheme}://${location.host}/ws/deck/${deckId}`)
-      socket.binaryType = 'arraybuffer'
-      socketRef.current = socket
-
-      socket.onopen = () => dispatch({ type: 'socket_open' })
-      socket.onmessage = (event) => {
-        if (event.data instanceof ArrayBuffer) {
-          // A parked deck (playback mode) drops stragglers: a chunk the
-          // worker flushed late must not pollute the track's clock.
-          if (modeRef.current === 'playback') return
-          const samples = new Float32Array(event.data)
-          // Beat and loudness tracking read first — postPcm transfers
-          // the buffer away. (The feed runs ahead of the speakers by
-          // the buffer lead; neither measurement cares, ADR-0010.)
-          beat.tracker.push(samples)
-          loudness.push(samples)
-          bandScroller.push(samples)
-          channelRef.current?.postPcm(samples)
-        } else {
-          let parsed: ServerEvent
-          try {
-            parsed = JSON.parse(event.data) as ServerEvent
-          } catch {
-            console.warn(`deck ${deckId}: dropping malformed frame`, event.data)
-            return
-          }
-          if (parsed.event === 'model_loading' || parsed.event === 'worker_died') {
-            // The stream this buffer came from is gone with the old worker;
-            // a crashed deck goes silent rather than draining its tail under
-            // the crash banner. The beat tracker forgets it too.
-            channelRef.current?.reset()
-            resetStreamMeasurements()
-          }
-          dispatch({ type: 'server_event', event: parsed })
-        }
-      }
-      socket.onclose = () => {
-        if (disposed) return
-        dispatch({ type: 'socket_closed' })
-        reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS)
-      }
-    }
-
-    connect()
+      })
+      .catch(() => {})
     return () => {
-      disposed = true
-      clearTimeout(reconnectTimer)
-      socketRef.current?.close()
+      cancelled = true
+      unsubscribeStatus()
+      unsubscribePcm()
       channelRef.current?.dispose()
       channelRef.current = null
       channelPromiseRef.current = null
@@ -596,15 +530,8 @@ export function useDeck(deckId: DeckId): DeckControls {
 
   const send = useCallback(
     (command: DeckCommand) => {
-      // Native shell: forward control to the sidecar over IPC (part 7 cutover).
-      if (isTauri()) {
-        sendNativeDeckCommand(deckId, command)
-        return
-      }
-      const socket = socketRef.current
-      if (socket?.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify(command))
-      }
+      // Forward control to the sidecar over IPC (deck_* commands).
+      sendNativeDeckCommand(deckId, command)
     },
     [deckId],
   )
@@ -1292,9 +1219,7 @@ export function useDeck(deckId: DeckId): DeckControls {
         try {
           // The channel is created on demand: pads can fill before the
           // deck has ever played (prepping weapons before the set).
-          // Resolve the API base only in the native shell — the web/dev path
-          // keeps relative URLs (and its exact fetch timing) untouched.
-          const apiBase = isTauri() ? await getApiBaseUrl() : ''
+          const apiBase = await getApiBaseUrl()
           const [channel, response] = await Promise.all([
             ensureChannel(),
             fetch(

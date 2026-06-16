@@ -5,10 +5,8 @@
  * frames and RECEIVES PCM + status. In the native shell the model PCM goes
  * sidecar → Rust engine directly (part 4), so the UI no longer transits audio;
  * control is forwarded to the sidecar over IPC (`deck_*` commands) and status
- * arrives as `sidecar://status` events. This module is that mapping; `useDeck`
- * selects it with `isTauri()`. */
+ * arrives as `sidecar://status` events. This module is that mapping. */
 
-import { isTauri } from '../audio/nativeEngine'
 import type { DeckId } from '../audio/types'
 
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }
@@ -73,7 +71,7 @@ export function subscribeSidecarStatus(
   onStatus: (event: SidecarStatusEvent) => void,
 ): () => void {
   const event = tauri()?.event
-  if (!event || !isTauri()) return () => {}
+  if (!event) return () => {}
   const idx = DECK_INDEX[deckId]
   let unlisten: (() => void) | null = null
   let cancelled = false

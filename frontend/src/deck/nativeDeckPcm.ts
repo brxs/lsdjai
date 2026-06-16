@@ -13,7 +13,6 @@
  */
 
 import type { DeckId } from '../audio/types'
-import { isTauri } from '../audio/nativeEngine'
 
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }
 
@@ -38,7 +37,7 @@ export function subscribeDeckPcm(
   onPcm: (samples: Float32Array) => void,
 ): () => void {
   const c = core()
-  if (!c || !isTauri()) return () => {}
+  if (!c) return () => {}
   const deck = DECK_INDEX[deckId]
   const channel = new c.Channel<ArrayBuffer>()
   channel.onmessage = (buffer) => {

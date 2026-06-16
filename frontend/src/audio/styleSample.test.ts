@@ -25,40 +25,30 @@ describe('interleaveChannels', () => {
 })
 
 describe('uploadStyleSample', () => {
-  it('posts the PCM under the sample id', async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: 's' })))
-    vi.stubGlobal('fetch', fetchMock)
+  it('frames the embed and sends it to the deck sidecar over IPC', async () => {
+    const invoke = vi.fn(async () => undefined)
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
     const samples = new Float32Array([0.5, -0.5])
 
     await uploadStyleSample('b', 'sample:a:1', samples)
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(url).toBe('/api/deck/b/style-sample?id=sample%3Aa%3A1')
-    expect(init.method).toBe('POST')
-    expect(init.body).toBe(samples.buffer)
+
+    expect(invoke).toHaveBeenCalledTimes(1)
+    const [cmd, payload] = invoke.mock.calls[0] as unknown as [string, Uint8Array]
+    expect(cmd).toBe('deck_embed_sample')
+    // [u32 LE deck][u32 LE id length][id utf-8][interleaved f32 LE PCM]
+    const view = new DataView(payload.buffer)
+    expect(view.getUint32(0, true)).toBe(1) // deck b
+    const idLen = view.getUint32(4, true)
+    expect(new TextDecoder().decode(payload.slice(8, 8 + idLen))).toBe('sample:a:1')
+    expect(Array.from(new Float32Array(payload.buffer.slice(8 + idLen)))).toEqual([
+      0.5, -0.5,
+    ])
   })
 
-  it('surfaces the server detail on failure', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify({ detail: 'deck is loading a model' }), {
-            status: 409,
-          }),
-      ),
-    )
+  it('rejects when the Tauri IPC bridge is unavailable', async () => {
+    vi.unstubAllGlobals() // no __TAURI__
     await expect(
       uploadStyleSample('b', 's', new Float32Array(2)),
-    ).rejects.toThrow('deck is loading a model')
-  })
-
-  it('falls back to the status code on a non-JSON error', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response('boom', { status: 500 })),
-    )
-    await expect(
-      uploadStyleSample('b', 's', new Float32Array(2)),
-    ).rejects.toThrow('HTTP 500')
+    ).rejects.toThrow('Tauri IPC unavailable')
   })
 })

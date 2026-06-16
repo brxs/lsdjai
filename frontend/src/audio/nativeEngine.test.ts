@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { SAMPLE_RATE } from './types'
-import { createNativeEngine, isTauri } from './nativeEngine'
+import { createNativeEngine } from './nativeEngine'
 
 // A controllable __TAURI__ global: records every invoke and serves a test
 // snapshot for `engine_snapshot`. rAF is stubbed so the poller can be flushed
@@ -79,12 +79,6 @@ const SNAP = {
     [{ filled: false, playing: false }],
   ],
 }
-
-describe('isTauri', () => {
-  it('detects the injected global', () => {
-    expect(isTauri()).toBe(true)
-  })
-})
 
 describe('createNativeEngine — control contract', () => {
   it('createDeckChannel applies the initial config as invoke commands', async () => {

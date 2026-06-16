@@ -1,7 +1,10 @@
-/** useDeck behaviour with a fake WebSocket, fake timers, and a fake audio
- * engine: reconnect after a server-side close, command gating while the
- * socket is not open, play() failure surfacing, and ring-buffer hygiene on
- * model switches. The real audio graph stays on the e2e script. */
+/** useDeck behaviour over the native (Tauri) transport, with fake timers and
+ * a fake audio engine. The deck is "open" the instant it mounts — there is no
+ * socket handshake. Status arrives as `sidecar://status` events (a captured
+ * `event.listen` callback), model PCM arrives over a Tauri `Channel`, and
+ * control is forwarded as `core.invoke` deck_* commands. This harness mocks
+ * `globalThis.__TAURI__` for all three. The real audio graph stays on the e2e
+ * script. */
 
 import { act, renderHook } from '@testing-library/react'
 import type { ReactNode } from 'react'
@@ -13,47 +16,65 @@ import { clickTrack } from '../test/clickTrack'
 import type { AudioEngine, DeckChannel } from '../audio/types'
 import { useDeck } from './useDeck'
 
-class FakeWebSocket {
-  static CONNECTING = 0
-  static OPEN = 1
-  static CLOSED = 3
-  static instances: FakeWebSocket[] = []
+/** The captured native transport: the latest `sidecar://status` callback, the
+ * latest PCM `Channel` instance, and the `core.invoke` spy recording every
+ * native command. The deck (deck 'a' = index 0) is the only one under test. */
+type NativeChannel = { onmessage: ((buffer: ArrayBuffer) => void) | null }
 
-  url: string
-  binaryType = ''
-  readyState = FakeWebSocket.CONNECTING
-  sent: string[] = []
-  onopen: (() => void) | null = null
-  onmessage: ((event: { data: unknown }) => void) | null = null
-  onclose: (() => void) | null = null
+const native: {
+  invoke: ReturnType<typeof vi.fn>
+  statusCb: ((e: { payload: { deck: number; json: string } }) => void) | null
+  pcmChannel: NativeChannel | null
+} = { invoke: vi.fn(), statusCb: null, pcmChannel: null }
 
-  constructor(url: string) {
-    this.url = url
-    FakeWebSocket.instances.push(this)
+function installNativeTauri() {
+  native.statusCb = null
+  native.pcmChannel = null
+  native.invoke = vi.fn((cmd: string) =>
+    // app_info feeds getApiBaseUrl(); null port → '' (relative fetches).
+    cmd === 'app_info'
+      ? Promise.resolve({ generationPort: null })
+      : Promise.resolve(undefined),
+  )
+  class Channel {
+    onmessage: ((buffer: ArrayBuffer) => void) | null = null
+    constructor() {
+      native.pcmChannel = this
+    }
   }
+  const listen = vi.fn(
+    (event: string, cb: (e: { payload: { deck: number; json: string } }) => void) => {
+      if (event === 'sidecar://status') native.statusCb = cb
+      return Promise.resolve(() => {})
+    },
+  )
+  vi.stubGlobal('__TAURI__', {
+    core: { invoke: native.invoke, Channel },
+    event: { listen },
+  })
+  // /api/models — the deck_info fetch is irrelevant to these tests; keep it
+  // benign so the deck-open effect never throws. Per-test stubs (stubFetchOk)
+  // override this for the generated-pad suite.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({ ok: false, status: 404, json: async () => ({}) })),
+  )
+}
 
-  send(data: string) {
-    this.sent.push(data)
-  }
+/** The deck is open on mount (no handshake): serverOpen() is a no-op, kept so
+ * existing call sites read clearly. serverEvent() fires the captured status
+ * callback as that deck's status frame. The only deck under test is 'a'
+ * (index 0); `socket(0)` reads like the old fake-WebSocket accessor. */
+const socket = (deck: number) => ({
+  serverOpen: () => {},
+  serverEvent: (event: object) =>
+    native.statusCb?.({ payload: { deck, json: JSON.stringify(event) } }),
+})
 
-  close() {
-    // The app closing its own socket on unmount; no onclose echo needed.
-    this.readyState = FakeWebSocket.CLOSED
-  }
-
-  serverOpen() {
-    this.readyState = FakeWebSocket.OPEN
-    this.onopen?.()
-  }
-
-  serverClose() {
-    this.readyState = FakeWebSocket.CLOSED
-    this.onclose?.()
-  }
-
-  serverEvent(event: object) {
-    this.onmessage?.({ data: JSON.stringify(event) })
-  }
+/** Fire the captured PCM Channel's onmessage with one raw f32 frame buffer —
+ * the native replacement for the old socket PCM feed. */
+function feedPcm(buffer: ArrayBuffer) {
+  native.pcmChannel?.onmessage?.(buffer)
 }
 
 function makeFakeEngine(overrides: Partial<AudioEngine> = {}) {
@@ -99,7 +120,13 @@ function makeFakeEngine(overrides: Partial<AudioEngine> = {}) {
     dispose: vi.fn(),
   }
   const engine: AudioEngine = {
-    getContextTime: vi.fn(() => 100),
+    // 0 keeps the engine's render clock and the played-frame domain consistent:
+    // the de-branched useDeck anchors the live-beat origin at
+    // getContextTime()·SR on each stream reset, and the M20 stats below report
+    // playedFrames in the per-stream (origin-0) domain. A non-zero clock here
+    // would offset the live-beat lattice by getContextTime() seconds and the
+    // M20 beat-clock assertion would read a fractional beat (ADR-0014).
+    getContextTime: vi.fn(() => 0),
     createDeckChannel: vi.fn(async (_deck, _initial, onStats) => {
       captured.onStats = onStats
       return channel
@@ -128,8 +155,7 @@ function renderDeck(engine: AudioEngine) {
 
 beforeEach(() => {
   vi.useFakeTimers()
-  FakeWebSocket.instances = []
-  vi.stubGlobal('WebSocket', FakeWebSocket)
+  installNativeTauri()
 })
 
 afterEach(() => {
@@ -137,51 +163,31 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-const socket = (index: number) => FakeWebSocket.instances[index]
+/** The recorded native deck CONTROL commands in order — the native analogue of
+ * the old `socket.sent`. Excludes the transport-setup invokes (`app_info` for
+ * getApiBaseUrl, `subscribe_deck_pcm`/`unsubscribe_deck_pcm` for the PCM tee),
+ * which the deck-open effect fires regardless of what the user does. */
+function deckInvokes() {
+  return native.invoke.mock.calls.filter(([cmd]) => (cmd as string).startsWith('deck_'))
+}
 
 describe('useDeck connection', () => {
-  it('reconnects after the server closes the socket', () => {
+  it('is open on mount with no handshake', () => {
     const { result } = renderDeck(makeFakeEngine().engine)
-    expect(FakeWebSocket.instances).toHaveLength(1)
-
-    act(() => socket(0).serverOpen())
-    expect(result.current.state.connection).toBe('open')
-
-    act(() => socket(0).serverClose())
-    expect(result.current.state.connection).toBe('closed')
-
-    act(() => void vi.advanceTimersByTime(2_000))
-    expect(FakeWebSocket.instances).toHaveLength(2)
-
-    act(() => socket(1).serverOpen())
+    // The native transport has no socket: the deck is operable at once.
     expect(result.current.state.connection).toBe('open')
   })
 
-  it('drops commands while the socket is not open', () => {
+  it('forwards set_style as a native deck command', () => {
     const { result } = renderDeck(makeFakeEngine().engine)
 
     const style = { prompts: [{ text: 'warm disco funk', weight: 1 }] }
-    act(() => result.current.setStyle(style))
-    expect(socket(0).sent).toHaveLength(0)
-
     act(() => socket(0).serverOpen())
     act(() => result.current.setStyle(style))
-    expect(socket(0).sent).toEqual([
-      JSON.stringify({
-        type: 'set_style',
-        prompts: [{ text: 'warm disco funk', weight: 1 }],
-      }),
-    ])
-  })
-
-  it('does not reconnect after unmount', () => {
-    const { unmount } = renderDeck(makeFakeEngine().engine)
-    act(() => socket(0).serverOpen())
-
-    unmount()
-    act(() => socket(0).serverClose())
-    act(() => void vi.advanceTimersByTime(10_000))
-    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(native.invoke).toHaveBeenCalledWith('deck_set_style', {
+      deck: 0,
+      prompts: [{ text: 'warm disco funk', weight: 1 }],
+    })
   })
 
   it('surfaces a play() audio failure instead of swallowing it', async () => {
@@ -196,7 +202,8 @@ describe('useDeck connection', () => {
     await act(() => result.current.play())
     expect(result.current.state.error).toBe('worklet failed to load')
     expect(result.current.state.playing).toBe(false)
-    expect(socket(0).sent).toHaveLength(0) // no play command without audio
+    // No play command without audio.
+    expect(native.invoke).not.toHaveBeenCalledWith('deck_play', { deck: 0 })
   })
 
   it('plays through the shared engine and resets stale buffer first', async () => {
@@ -207,7 +214,7 @@ describe('useDeck connection', () => {
     await act(() => result.current.play())
     expect(engine.resume).toHaveBeenCalled()
     expect(channel.reset).toHaveBeenCalled()
-    expect(socket(0).sent).toEqual([JSON.stringify({ type: 'play' })])
+    expect(deckInvokes()).toEqual([['deck_play', { deck: 0 }]])
     expect(result.current.state.playing).toBe(true)
   })
 
@@ -236,15 +243,19 @@ describe('useDeck connection', () => {
     expect(result.current.state.workerDied).toBe(true)
   })
 
-  it('sends set_model and restart commands', () => {
+  it('maps set_model and restart to native deck_set_model', () => {
     const { result } = renderDeck(makeFakeEngine().engine)
     act(() => socket(0).serverOpen())
 
+    // The worker must report a model first, so restart carries one through.
+    act(() => socket(0).serverEvent({ event: 'ready', deck: 'a', model: 'mrt2_base' }))
     act(() => result.current.setModel('mrt2_base'))
     act(() => result.current.restartWorker())
-    expect(socket(0).sent).toEqual([
-      JSON.stringify({ type: 'set_model', model: 'mrt2_base' }),
-      JSON.stringify({ type: 'restart' }),
+    // Both control gestures collapse to deck_set_model on the native path:
+    // set_model with its target, restart re-using the current model.
+    expect(deckInvokes()).toEqual([
+      ['deck_set_model', { deck: 0, model: 'mrt2_base' }],
+      ['deck_set_model', { deck: 0, model: 'mrt2_base' }],
     ])
   })
 
@@ -280,7 +291,7 @@ describe('useDeck connection', () => {
     await act(() => result.current.prime())
     expect(channel.setOnAir).toHaveBeenLastCalledWith(false)
     expect(result.current.primed).toBe(true)
-    expect(socket(0).sent).toEqual([JSON.stringify({ type: 'play' })])
+    expect(deckInvokes()).toEqual([['deck_play', { deck: 0 }]])
 
     vi.mocked(channel.reset).mockClear()
     await act(() => result.current.play())
@@ -288,7 +299,7 @@ describe('useDeck connection', () => {
     expect(result.current.primed).toBe(false)
     // The drop must not flush the prepped audio or re-send play.
     expect(channel.reset).not.toHaveBeenCalled()
-    expect(socket(0).sent).toEqual([JSON.stringify({ type: 'play' })])
+    expect(deckInvokes()).toEqual([['deck_play', { deck: 0 }]])
   })
 
   it('stop while primed flushes and puts the channel back on air', async () => {
@@ -346,15 +357,14 @@ describe('useDeck connection', () => {
     expect(result.current.cue).toBe(false)
   })
 
-  it('surfaces malformed frames as dropped, not crashes', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  it('drops a malformed status frame without crashing', () => {
     const { result } = renderDeck(makeFakeEngine().engine)
     act(() => socket(0).serverOpen())
 
-    act(() => socket(0).onmessage?.({ data: '{not json' }))
+    // A malformed status line is dropped inside subscribeSidecarStatus, never
+    // fatal; the deck stays operable.
+    act(() => native.statusCb?.({ payload: { deck: 0, json: '{not json' } }))
     expect(result.current.state.connection).toBe('open')
-    expect(warn).toHaveBeenCalled()
-    warn.mockRestore()
   })
 })
 
@@ -364,7 +374,7 @@ describe('useDeck beat readout', () => {
     const chunk = 1920 * 2 // the 40 ms wire chunk
     act(() => {
       for (let i = 0; i < samples.length; i += chunk) {
-        socket(0).onmessage?.({ data: samples.slice(i, i + chunk).buffer })
+        feedPcm(samples.slice(i, i + chunk).buffer)
       }
     })
   }
@@ -396,7 +406,7 @@ describe('useDeck beat readout', () => {
     const chunk = 1920 * 2
     act(() => {
       for (let i = 0; i < silence.length; i += chunk) {
-        socket(0).onmessage?.({ data: silence.slice(i, i + chunk).buffer })
+        feedPcm(silence.slice(i, i + chunk).buffer)
       }
     })
     act(() => void vi.advanceTimersByTime(5_000))
@@ -458,7 +468,7 @@ describe('useDeck trim (auto-gain)', () => {
     const chunks = Math.ceil((seconds * 48_000) / 1920)
     act(() => {
       for (let i = 0; i < chunks; i++) {
-        socket(0).onmessage?.({ data: chunk.slice().buffer })
+        feedPcm(chunk.slice().buffer)
       }
     })
   }
@@ -660,7 +670,7 @@ describe('useDeck generated pads', () => {
     const chunk = 1920 * 2 // the 40 ms wire chunk
     act(() => {
       for (let i = 0; i < samples.length; i += chunk) {
-        socket(0).onmessage?.({ data: samples.slice(i, i + chunk).buffer })
+        feedPcm(samples.slice(i, i + chunk).buffer)
       }
     })
   }
@@ -682,6 +692,14 @@ describe('useDeck generated pads', () => {
       seconds: number
       kind: string
     }
+  }
+
+  /** The generation requests only — the deck-open effect's `/api/models` fetch
+   * (native: no `hello` carries the model list) shares this `fetch` mock. */
+  function generateCalls(fetchMock: ReturnType<typeof vi.fn>) {
+    return fetchMock.mock.calls.filter(([url]) =>
+      /\/api\/(generate|render)$/.test(url as string),
+    )
   }
 
   it('generates an sfx one-shot into the first empty slot', async () => {
@@ -863,14 +881,14 @@ describe('useDeck generated pads', () => {
     const { result } = await playingDeck(engine)
 
     act(() => result.current.generateToPad('   ', 'sfx', true))
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(generateCalls(fetchMock)).toHaveLength(0)
 
     for (let slot = 0; slot < 4; slot++) {
       await act(async () => result.current.toggleLoopPad(slot))
     }
     vi.mocked(channel.captureLoop).mockClear()
     act(() => result.current.generateToPad('riser', 'sfx', true))
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(generateCalls(fetchMock)).toHaveLength(0)
   })
 
   it('stop() cuts a ringing one-shot', async () => {
@@ -914,8 +932,8 @@ describe('useDeck playback mode (M19)', () => {
   it('loadTrack parks the stream and enters playback with the offline verdict', async () => {
     const { result, channel } = await loadedDeck()
     expect(channel.loadTrack).toHaveBeenCalled()
-    // The worker parks warm: a stop went over the wire (ADR-0013).
-    expect(socket(0).sent).toContain(JSON.stringify({ type: 'stop' }))
+    // The worker parks warm: a stop went over IPC (ADR-0013).
+    expect(native.invoke).toHaveBeenCalledWith('deck_stop', { deck: 0 })
     expect(result.current.mode).toBe('playback')
     expect(result.current.track).toMatchObject({
       title: 'Test Pressing',
@@ -930,12 +948,12 @@ describe('useDeck playback mode (M19)', () => {
 
   it('PLAY and STOP drive the track, not the worker', async () => {
     const { result, channel } = await loadedDeck()
-    const sentBefore = socket(0).sent.length
+    const sentBefore = deckInvokes().length
     await act(async () => result.current.play())
     expect(channel.playTrack).toHaveBeenCalled()
     act(() => result.current.stop())
     expect(channel.pauseTrack).toHaveBeenCalled()
-    expect(socket(0).sent).toHaveLength(sentBefore)
+    expect(deckInvokes()).toHaveLength(sentBefore)
   })
 
   it('CUE returns the track to the top, parked', async () => {
@@ -964,7 +982,7 @@ describe('useDeck playback mode (M19)', () => {
 
   it('drops a straggler PCM chunk while parked', async () => {
     const { channel } = await loadedDeck()
-    act(() => socket(0).onmessage?.({ data: new ArrayBuffer(16) }))
+    act(() => feedPcm(new ArrayBuffer(16)))
     expect(channel.postPcm).not.toHaveBeenCalled()
   })
 
@@ -988,13 +1006,13 @@ describe('useDeck playback mode (M19)', () => {
 
   it('leavePlayback unloads the track and returns to realtime, parked staying parked', async () => {
     const { result, channel } = await loadedDeck()
-    const sentBefore = socket(0).sent.length
+    const sentBefore = deckInvokes().length
     act(() => result.current.leavePlayback())
     expect(channel.unloadTrack).toHaveBeenCalled()
     expect(result.current.mode).toBe('realtime')
     expect(result.current.track).toBeNull()
     // The track was parked, so the deck comes back stopped.
-    expect(socket(0).sent).toHaveLength(sentBefore)
+    expect(deckInvokes()).toHaveLength(sentBefore)
   })
 
   it('a primed deck loads a track parked — prep audio never hits the master', async () => {
@@ -1054,13 +1072,11 @@ describe('useDeck playback mode (M19)', () => {
       loop: null,
       contextTime: 100,
     })
-    const sentBefore = socket(0).sent.length
+    const sentBefore = deckInvokes().length
     await act(async () => result.current.leavePlayback())
     expect(channel.unloadTrack).toHaveBeenCalled()
     expect(result.current.mode).toBe('realtime')
-    expect(socket(0).sent.slice(sentBefore)).toContain(
-      JSON.stringify({ type: 'play' }),
-    )
+    expect(deckInvokes().slice(sentBefore)).toContainEqual(['deck_play', { deck: 0 }])
     expect(result.current.state.playing).toBe(true)
   })
 })
@@ -1090,7 +1106,7 @@ describe('useDeck beat clocks (M20)', () => {
     const frameStride = 48_000 * 2
     for (let second = 0; second < 14; second++) {
       const chunk = samples.slice(second * frameStride, (second + 1) * frameStride)
-      act(() => socket(0).onmessage?.({ data: chunk.buffer }))
+      act(() => feedPcm(chunk.buffer))
       act(() => void vi.advanceTimersByTime(1_000))
     }
     expect(result.current.bpm).not.toBeNull()
@@ -1131,7 +1147,7 @@ describe('useDeck beat clocks (M20)', () => {
     const frameStride = 48_000 * 2
     for (let second = 0; second < 14; second++) {
       const chunk = samples.slice(second * frameStride, (second + 1) * frameStride)
-      act(() => socket(0).onmessage?.({ data: chunk.buffer }))
+      act(() => feedPcm(chunk.buffer))
       act(() => void vi.advanceTimersByTime(1_000))
     }
     act(() =>
@@ -1151,7 +1167,7 @@ describe('useDeck beat clocks (M20)', () => {
     const shifted = clickChannels(128, 3).samples
     const halfPeriod = Math.round(((60 / 128) * 48_000) / 2) * 2
     const slice = shifted.slice(halfPeriod, halfPeriod + frameStride)
-    act(() => socket(0).onmessage?.({ data: slice.buffer }))
+    act(() => feedPcm(slice.buffer))
     act(() => void vi.advanceTimersByTime(1_000))
     act(() =>
       captured.onStats?.({

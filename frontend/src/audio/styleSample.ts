@@ -5,8 +5,6 @@
  * referencing the id runs after the embed, so the pad target can be
  * added the moment the POST resolves. */
 
-import { getApiBaseUrl, isTauri } from './nativeEngine'
-
 const DECK_INDEX: Record<string, number> = { a: 0, b: 1 }
 
 /** The `withGlobalTauri` core invoke, for the binary embed payload. */
@@ -45,35 +43,16 @@ export async function uploadStyleSample(
   sampleId: string,
   samples: Float32Array<ArrayBuffer>,
 ): Promise<void> {
-  // Native shell: the generation server has no deck workers, so route the embed
-  // to the target deck's sidecar over IPC. Frame [u32 LE deck][u32 LE id length]
-  // [id utf-8][interleaved f32 LE PCM] as a single binary payload.
-  if (isTauri()) {
-    const idBytes = new TextEncoder().encode(sampleId)
-    const pcm = new Uint8Array(samples.buffer)
-    const payload = new Uint8Array(8 + idBytes.length + pcm.byteLength)
-    const view = new DataView(payload.buffer)
-    view.setUint32(0, DECK_INDEX[deckId] ?? 0, true)
-    view.setUint32(4, idBytes.length, true)
-    payload.set(idBytes, 8)
-    payload.set(pcm, 8 + idBytes.length)
-    await tauriInvoke('deck_embed_sample', payload)
-    return
-  }
-
-  const apiBase = await getApiBaseUrl()
-  const response = await fetch(
-    `${apiBase}/api/deck/${deckId}/style-sample?id=${encodeURIComponent(sampleId)}`,
-    { method: 'POST', body: samples.buffer },
-  )
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`
-    try {
-      const body = (await response.json()) as { detail?: string }
-      if (body.detail) detail = body.detail
-    } catch {
-      // Non-JSON error body; the status code is the message.
-    }
-    throw new Error(detail)
-  }
+  // The generation server has no deck workers, so route the embed to the target
+  // deck's sidecar over IPC. Frame [u32 LE deck][u32 LE id length][id utf-8]
+  // [interleaved f32 LE PCM] as a single binary payload.
+  const idBytes = new TextEncoder().encode(sampleId)
+  const pcm = new Uint8Array(samples.buffer)
+  const payload = new Uint8Array(8 + idBytes.length + pcm.byteLength)
+  const view = new DataView(payload.buffer)
+  view.setUint32(0, DECK_INDEX[deckId] ?? 0, true)
+  view.setUint32(4, idBytes.length, true)
+  payload.set(idBytes, 8)
+  payload.set(pcm, 8 + idBytes.length)
+  await tauriInvoke('deck_embed_sample', payload)
 }

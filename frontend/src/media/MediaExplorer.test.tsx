@@ -233,53 +233,6 @@ describe('MediaExplorer', () => {
     ).toBeInTheDocument()
   })
 
-  it('says so when folder browsing is unsupported', () => {
-    renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Folder' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Choose folder' }))
-    expect(
-      screen.getByText(
-        "Folder browsing needs Chromium's File System Access API",
-      ),
-    ).toBeInTheDocument()
-  })
-
-  it('lists a chosen folder’s audio files and loads one', async () => {
-    const wav = new ArrayBuffer(8)
-    const fileHandle = (name: string) => ({
-      kind: 'file',
-      name,
-      getFile: async () => ({ arrayBuffer: async () => wav }),
-    })
-    vi.stubGlobal(
-      'showDirectoryPicker',
-      vi.fn(async () => ({
-        name: 'DJ Sets',
-        values: () =>
-          (async function* () {
-            yield fileHandle('b-side.wav')
-            yield { kind: 'file', name: 'notes.txt' }
-            yield fileHandle('a-side.mp3')
-          })(),
-      })),
-    )
-    const onLoadTrack = vi.fn(async () => true)
-    renderExplorer({ onLoadTrack })
-    fireEvent.click(screen.getByRole('tab', { name: 'Folder' }))
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Choose folder' }))
-    })
-    expect(screen.getByText('DJ Sets')).toBeInTheDocument()
-    expect(screen.queryByText('notes.txt')).toBeNull()
-    // Sorted: the mp3 lands first despite arriving second.
-    await act(async () => {
-      fireEvent.click(
-        screen.getByRole('button', { name: 'Load a-side.mp3 to deck A' }),
-      )
-    })
-    expect(onLoadTrack).toHaveBeenCalledWith('a', wav, 'a-side.mp3')
-  })
-
   it('uses the native picker + Rust commands under Tauri', async () => {
     const wav = new ArrayBuffer(8)
     // Record (cmd, args) so the read's scoped {dir, name} can be asserted.
