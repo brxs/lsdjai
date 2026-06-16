@@ -67,8 +67,7 @@ build:
 # 'Connecting'. Needs cargo-tauri (`cargo install tauri-cli@^2`) and the backend
 # deps + model weights (`just setup`). The default `uv run` sidecar/generation
 # commands use the backend project dir; override with SLIPMATE_SIDECAR_CMD /
-# SLIPMATE_GENERATION_CMD (e.g. the packaged binaries). For UI-only iteration
-# without inference, use `just dev-frontend` (the browser/Web Audio path).
+# SLIPMATE_GENERATION_CMD (e.g. the packaged binaries).
 tauri-dev: build
     cd src-tauri && SLIPMATE_SIDECARS=1 cargo tauri dev
 
@@ -85,18 +84,6 @@ freeze-sidecar:
 # (`cargo install tauri-cli@^2`); bundle the sidecar first with `freeze-sidecar`.
 tauri-build: build
     cd src-tauri && cargo tauri build
-
-# Run the app: backend on http://127.0.0.1:8000 serving the built frontend.
-run: build
-    cd backend && uv run slipmate
-
-# Backend only, for frontend development (pair with `just dev-frontend`).
-dev-backend:
-    cd backend && uv run slipmate
-
-# Vite dev server with /ws proxied to the backend (run `just dev-backend` too).
-dev-frontend:
-    cd frontend && npm run dev
 
 # All tests: backend pytest + frontend vitest + the Rust engine/shell.
 test:
@@ -121,10 +108,6 @@ format:
 # Everything a PR must pass: lint + tests.
 check: lint test
 
-# Stream e2e against a running server (`just run` in another terminal).
-verify-stream duration="60":
-    cd backend && uv run python scripts/verify_m1.py {{duration}}
-
 # Worklet module graph loads in real Chromium (self-contained; jsdom
 # executes none of the worklet code).
 verify-worklets: build
@@ -132,7 +115,6 @@ verify-worklets: build
 
 # UI e2e in headless Chromium against a running server.
 verify-ui:
-    cd backend && uv run python scripts/repro_reconnect_echo.py
     cd frontend && node scripts/verify_m2.mjs
     cd frontend && node scripts/verify_m3.mjs
     cd frontend && node scripts/verify_m4.mjs

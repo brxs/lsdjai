@@ -3,8 +3,8 @@
 //! The native shell hosts the realtime decks (the inference sidecars, [`crate::sidecar`])
 //! and serves the frontend from the Tauri asset host, so FastAPI no longer serves
 //! the UI. But the Stable Audio 3 / Magenta pad+track GENERATION still lives behind
-//! HTTP (`/api/render`, `/api/generate`). This module spawns the existing FastAPI
-//! controller in `--generation-only` mode on a loopback port — no deck workers, no
+//! HTTP (`/api/render`, `/api/generate`). This module spawns the FastAPI generation
+//! server on a loopback port — the controller is generation-only: no deck workers, no
 //! static mount — and the webview fetches it via `getApiBaseUrl()`.
 //!
 //! Mirrors the sidecar's spawn/supervise/Drop-kill pattern. Gated behind the same
@@ -111,10 +111,10 @@ impl Drop for GenerationServer {
     }
 }
 
-/// Build the command that launches the generation-only FastAPI server. Overridable
+/// Build the command that launches the FastAPI generation server. Overridable
 /// via `SLIPMATE_GENERATION_CMD` (default `uv run python -m slipmate.controller`)
 /// so dev vs. the packaged binary differ without a recompile, like
-/// `SLIPMATE_SIDECAR_CMD`; `--generation-only` and `--port` are always appended.
+/// `SLIPMATE_SIDECAR_CMD`; `--port` is always appended.
 pub fn generation_command(port: u16) -> io::Result<Command> {
     let overridden = std::env::var("SLIPMATE_GENERATION_CMD");
     let spec = overridden
@@ -126,7 +126,7 @@ pub fn generation_command(port: u16) -> io::Result<Command> {
     })?;
     let mut cmd = Command::new(program);
     cmd.args(parts);
-    cmd.args(["--generation-only", "--port", &port.to_string()]);
+    cmd.args(["--port", &port.to_string()]);
     if overridden.is_err() {
         // The default `uv run` needs the backend project dir as its CWD; a packaged
         // build sets SLIPMATE_GENERATION_CMD (the frozen binary) and controls CWD.
@@ -146,7 +146,7 @@ mod tests {
         let cmd = generation_command(5123).unwrap();
         let argv: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         assert_eq!(cmd.get_program().to_string_lossy(), "echo");
-        assert_eq!(argv, ["hi", "--generation-only", "--port", "5123"]);
+        assert_eq!(argv, ["hi", "--port", "5123"]);
         std::env::remove_var("SLIPMATE_GENERATION_CMD");
     }
 
