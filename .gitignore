@@ -3,3 +3,8 @@ node_modules/
 
 # Raw demo footage (large; only the composed clip in docs/img/ is committed)
 demo-raw/
+
+# PyInstaller scratch from `just freeze-sidecar` (run from the repo root); the
+# bundle output is src-tauri/sidecar-dist (ignored there).
+/build/
+/slipmate_infer.spec

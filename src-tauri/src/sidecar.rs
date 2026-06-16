@@ -41,6 +41,49 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use slipmate_engine::DeckHandle;
+use tauri::ipc::{Channel, InvokeResponseBody};
+
+/// Per-deck analysis taps: a webview [`Channel`] each deck's realtime PCM is teed
+/// to (gap 1). The TS beat/loudness/band analysis (ADR-0017: stays in TypeScript)
+/// no longer receives model PCM over a WebSocket in the native shell, so the
+/// sidecar reader hands the same raw frames back to the webview here. Cloneable
+/// (an `Arc`) so the reader-thread tap closures and the IPC subscribe commands
+/// share the per-deck slots; held in Tauri managed state.
+#[derive(Clone)]
+pub struct PcmTaps {
+    decks: Arc<Vec<Mutex<Option<Channel<InvokeResponseBody>>>>>,
+}
+
+impl PcmTaps {
+    pub fn new(deck_count: usize) -> Self {
+        PcmTaps {
+            decks: Arc::new((0..deck_count).map(|_| Mutex::new(None)).collect()),
+        }
+    }
+
+    /// Set (or clear, with `None`) the subscriber channel for a deck. A second
+    /// subscribe replaces the first (one subscriber per deck — the one `useDeck`).
+    pub fn set(&self, deck: usize, channel: Option<Channel<InvokeResponseBody>>) {
+        if let Some(slot) = self.decks.get(deck) {
+            *slot.lock().unwrap_or_else(|p| p.into_inner()) = channel;
+        }
+    }
+
+    /// Tee raw interleaved-stereo f32 LE PCM bytes to a deck's subscriber (a no-op
+    /// if none). Called from the NON-RT sidecar reader thread (never the cpal
+    /// callback). Drops the subscriber on a send error so a dead webview channel
+    /// never wedges the reader.
+    pub fn send(&self, deck: usize, bytes: &[u8]) {
+        if let Some(slot) = self.decks.get(deck) {
+            let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(channel) = guard.as_ref() {
+                if channel.send(InvokeResponseBody::Raw(bytes.to_vec())).is_err() {
+                    *guard = None;
+                }
+            }
+        }
+    }
+}
 
 /// Sidecar → engine: interleaved-stereo f32 LE PCM (the `('audio', …)` output).
 pub const FRAME_PCM: u8 = 1;
@@ -102,25 +145,31 @@ fn pcm_from_le_bytes(bytes: &[u8]) -> Vec<f32> {
 }
 
 /// The read loop: drain frames from the sidecar until EOF/error. PCM frames are
-/// posted to the deck's ring (the non-RT producer side); status frames go to
-/// `on_status` (the Tauri-event sink in production, a recorder in tests).
+/// posted to the deck's ring (the non-RT producer side) and then TEED to `on_pcm`
+/// (gap 1: the analysis feed to the webview); status frames go to `on_status` (the
+/// Tauri-event sink in production, a recorder in tests).
 ///
 /// Returns the [`DeckHandle`] when the stream closes — the supervisor reclaims it
 /// (the engine's ring is permanent across a sidecar exit; the handle outlives any
-/// one connection), and `on_status` is borrowed so the supervisor can still
-/// report the exit afterwards.
+/// one connection). `on_status` and `on_pcm` are borrowed so the supervisor can
+/// still report the exit afterwards / reconstruct the tap on a restart.
 pub fn run_reader(
     mut stream: impl Read,
     mut deck_handle: DeckHandle,
     on_status: &mut impl FnMut(String),
+    on_pcm: &mut impl FnMut(&[u8]),
 ) -> DeckHandle {
     loop {
         match read_frame(&mut stream) {
             Ok(Some((FRAME_PCM, payload))) => {
                 let samples = pcm_from_le_bytes(&payload);
-                // post_pcm is non-blocking: an overrun drops the surplus (the ring
-                // is the prebuffer). The worker paces ~3 s ahead, so this is rare.
+                // post_pcm (the RT ring producer) FIRST and bit-unchanged — it is
+                // non-blocking (an overrun drops the surplus; the worker paces ~3 s
+                // ahead, so this is rare). Then tee the SAME raw bytes to the
+                // analysis subscriber, strictly AFTER and on this non-RT reader
+                // thread, so the ring handoff and the RT path are untouched.
                 deck_handle.post_pcm(&samples);
+                on_pcm(&payload);
             }
             Ok(Some((FRAME_STATUS, payload))) => {
                 if let Ok(text) = String::from_utf8(payload) {
@@ -159,6 +208,12 @@ struct ReaderParts {
 /// stops the reader, closes the socket, and kills the child.
 pub struct Sidecar {
     deck_id: String,
+    /// This deck's index, and the analysis-tap registry — kept so `restart` can
+    /// reconstruct the PCM tee closure for the respawned reader (the tap is
+    /// reconstructed per spawn from the stable `taps` + `deck_idx`, so it is NOT
+    /// reclaimed via `ReaderExit`).
+    deck_idx: usize,
+    taps: PcmTaps,
     /// The control-writer half of the socket; `None` until the sidecar connects,
     /// and after a teardown. Behind a `Mutex` so IPC callers serialise writes.
     control: Arc<Mutex<Option<TcpStream>>>,
@@ -180,6 +235,13 @@ fn bind_and_launch(deck_id: &str, model: &str) -> io::Result<(TcpListener, Child
     Ok((listener, child))
 }
 
+/// The PCM tee closure handed to a reader thread: forward each deck PCM frame to
+/// its analysis subscriber (gap 1). Reconstructed per (re)spawn from the stable
+/// `taps` + `deck_idx`, so it never needs reclaiming across a model switch.
+fn pcm_tee(taps: PcmTaps, deck_idx: usize) -> impl FnMut(&[u8]) + Send + 'static {
+    move |bytes: &[u8]| taps.send(deck_idx, bytes)
+}
+
 /// Start the accept+read thread for an already-launched `child`, moving the deck
 /// `handle` and `on_status` sink into it. The thread accepts the sidecar's
 /// connection, stashes the control writer, runs [`run_reader`], and returns the
@@ -198,6 +260,7 @@ fn start_reader(
     child: Child,
     handle: DeckHandle,
     mut on_status: Box<dyn FnMut(String) + Send>,
+    mut on_pcm: impl FnMut(&[u8]) + Send + 'static,
 ) -> ReaderParts {
     let control: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
     let stop = Arc::new(AtomicBool::new(false));
@@ -229,7 +292,7 @@ fn start_reader(
                     return ReaderExit { handle, on_status };
                 }
             }
-            let handle = run_reader(stream, handle, &mut on_status);
+            let handle = run_reader(stream, handle, &mut on_status, &mut on_pcm);
             // Reader returned → the sidecar exited / disconnected. Report it unless
             // we asked it to stop (a clean shutdown / model switch).
             *control_for_reader.lock().unwrap_or_else(|p| p.into_inner()) = None;
@@ -259,14 +322,25 @@ impl Sidecar {
     /// silent on that deck), exactly like the graceful no-audio-device path.
     pub fn spawn(
         deck_id: &str,
+        deck_idx: usize,
         model: &str,
         deck_handle: DeckHandle,
         on_status: impl FnMut(String) + Send + 'static,
+        taps: PcmTaps,
     ) -> io::Result<Sidecar> {
         let (listener, child) = bind_and_launch(deck_id, model)?;
-        let parts = start_reader(listener, deck_id, child, deck_handle, Box::new(on_status));
+        let parts = start_reader(
+            listener,
+            deck_id,
+            child,
+            deck_handle,
+            Box::new(on_status),
+            pcm_tee(taps.clone(), deck_idx),
+        );
         Ok(Sidecar {
             deck_id: deck_id.to_string(),
+            deck_idx,
+            taps,
             control: parts.control,
             child: parts.child,
             stop: parts.stop,
@@ -318,7 +392,14 @@ impl Sidecar {
             self.deck_id
         ));
 
-        let parts = start_reader(listener, &self.deck_id, child, exit.handle, on_status);
+        let parts = start_reader(
+            listener,
+            &self.deck_id,
+            child,
+            exit.handle,
+            on_status,
+            pcm_tee(self.taps.clone(), self.deck_idx),
+        );
         self.control = parts.control;
         self.child = parts.child;
         self.stop = parts.stop;
@@ -506,10 +587,14 @@ mod tests {
         write_frame(&mut wire, FRAME_STATUS, b"{\"event\":\"chunk\"}").unwrap();
 
         let mut statuses = Vec::<String>::new();
+        let mut teed = Vec::<Vec<u8>>::new();
         let handle = {
             let mut sink = |s: String| statuses.push(s);
-            run_reader(std::io::Cursor::new(wire), handle, &mut sink)
+            let mut tee = |b: &[u8]| teed.push(b.to_vec());
+            run_reader(std::io::Cursor::new(wire), handle, &mut sink, &mut tee)
         };
+        // The PCM frame was teed to the analysis sink byte-for-byte (gap 1).
+        assert_eq!(teed, vec![pcm.clone()]);
 
         assert_eq!(
             free_before - handle.free_samples(),
@@ -536,7 +621,8 @@ mod tests {
 
         let mut statuses = Vec::<String>::new();
         let mut sink = |s: String| statuses.push(s);
-        let _handle = run_reader(server, handle, &mut sink);
+        let mut tee = |_: &[u8]| {};
+        let _handle = run_reader(server, handle, &mut sink, &mut tee);
         assert_eq!(statuses, vec!["{\"event\":\"ready\"}".to_string()]);
     }
 
@@ -575,7 +661,9 @@ while s.recv(4096):
             move |s: String| statuses.lock().unwrap().push(s)
         };
 
-        let mut sidecar = Sidecar::spawn("a", "model_a", handle, sink).expect("spawn fake sidecar");
+        let taps = PcmTaps::new(2);
+        let mut sidecar =
+            Sidecar::spawn("a", 0, "model_a", handle, sink, taps).expect("spawn fake sidecar");
 
         // Wait for a `ready` status carrying `model` — distinct from the
         // `model_loading` status restart also emits (which is not a `ready`).

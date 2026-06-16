@@ -119,6 +119,7 @@ fn start_audio() -> (Host, AudioState, [DeckHandle; slipmate_engine::DECK_COUNT]
 fn start_sidecars(
     app: &tauri::AppHandle,
     handles: [DeckHandle; slipmate_engine::DECK_COUNT],
+    taps: &sidecar::PcmTaps,
 ) -> (sidecar::Sidecars, Vec<DeckHandle>) {
     const DECK_IDS: [&str; slipmate_engine::DECK_COUNT] = ["a", "b"];
     let enabled = std::env::var("SLIPMATE_SIDECARS").is_ok();
@@ -134,10 +135,17 @@ fn start_sidecars(
     for (idx, handle) in handles.into_iter().enumerate() {
         let app = app.clone();
         let deck_id = DECK_IDS[idx];
-        match sidecar::Sidecar::spawn(deck_id, DEFAULT_MODEL, handle, move |json| {
-            use tauri::Emitter;
-            let _ = app.emit("sidecar://status", SidecarStatus { deck: idx, json });
-        }) {
+        match sidecar::Sidecar::spawn(
+            deck_id,
+            idx,
+            DEFAULT_MODEL,
+            handle,
+            move |json| {
+                use tauri::Emitter;
+                let _ = app.emit("sidecar://status", SidecarStatus { deck: idx, json });
+            },
+            taps.clone(),
+        ) {
             Ok(sidecar) => decks.push(Some(sidecar)),
             Err(e) => {
                 // A failed spawn drops that deck's handle (ring closes); the deck
@@ -180,10 +188,15 @@ pub fn run() {
             // the per-deck inference sidecars fed by the deck handles. Everything
             // is held in managed state for the app's lifetime.
             let (host, audio_state, deck_handles) = start_audio();
-            let (sidecars, idle_handles) = start_sidecars(&app.handle().clone(), deck_handles);
+            // The per-deck analysis PCM taps (gap 1): the sidecars tee model PCM
+            // into these, the webview subscribes via subscribe_deck_pcm.
+            let taps = sidecar::PcmTaps::new(slipmate_engine::DECK_COUNT);
+            let (sidecars, idle_handles) =
+                start_sidecars(&app.handle().clone(), deck_handles, &taps);
             app.manage(host);
             app.manage(audio_state);
             app.manage(sidecars);
+            app.manage(taps);
             app.manage(IdleHandles(Mutex::new(idle_handles)));
             Ok(())
         })
@@ -224,6 +237,8 @@ pub fn run() {
             commands::deck_set_prompt,
             commands::deck_set_style,
             commands::deck_set_model,
+            commands::subscribe_deck_pcm,
+            commands::unsubscribe_deck_pcm,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

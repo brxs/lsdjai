@@ -89,9 +89,18 @@ status arrives as `sidecar://status` events (`useDeck` selects this with
 - [ ] The browser dev path (`just dev-frontend`) still works as the parity oracle
       (control + status over the WebSocket, Web Audio mixing).
 - [ ] Remaining native integration (follow-ups, need the live stack):
-  - [ ] Beat/loudness analysis fed from a sidecar/engine feature tap (the model
-        PCM no longer transits the UI, so analysis is currently inactive in the
-        native shell). — addressed by the analysis PCM tap (gap 1).
+  - [x] Beat/loudness analysis fed from a sidecar/engine feature tap (the model
+        PCM no longer transits the UI). — done: the sidecar reader tees model PCM
+        over a per-deck Tauri Channel (`subscribe_deck_pcm`); `useDeck` pushes it
+        to beat/loudness/band. On the live stack, verify:
+    - [ ] The deck BPM (M14) detects from a live generative deck, same as web.
+    - [ ] The live beat-phase meter + the zoom beat lattice (M20) track correctly
+          and stay BLANK (not wrong) when stale — the native per-stream
+          played-frame origin fix is timing math only checkable with live audio.
+    - [ ] The `Channel` raw-bytes path delivers an `ArrayBuffer` on WKWebView
+          (the less-battle-tested raw-RESPONSE direction); if it degrades, fall
+          back to a base64/`Vec<u8>` framed encoding. Confirm the CSP allows it.
+    - [ ] Auto-gain (M17) tracks loudness on the native deck.
   - [x] In-process model switch / sidecar restart (the model is fixed at spawn).
         — done: `deck_set_model` restarts the sidecar reusing the deck ring. On
         the live stack, verify: switching a deck's model reloads + plays the new

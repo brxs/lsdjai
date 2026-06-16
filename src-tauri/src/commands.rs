@@ -27,7 +27,9 @@ use slipmate_engine::{
     EqBand, FxKind, LoopRegion, LoopSlotStatus, TrackStatus, DECK_COUNT, LOOP_SLOT_COUNT,
 };
 
-use crate::sidecar::Sidecars;
+use tauri::ipc::{Channel, InvokeResponseBody};
+
+use crate::sidecar::{PcmTaps, Sidecars};
 
 /// Reject a deck index outside `[0, DECK_COUNT)`. A bad index from the webview is
 /// a no-op (the command returns without touching the engine), never a panic.
@@ -537,6 +539,31 @@ pub fn deck_set_style(state: tauri::State<'_, Sidecars>, deck: usize, prompts: V
         })
         .collect();
     state.send(deck, &json!({ "type": "set_style", "prompts": entries }).to_string());
+}
+
+// --- Analysis PCM tap (gap 1: re-feed the TS beat/loudness/band analysis) ---
+
+/// Subscribe a deck's realtime model PCM to a webview [`Channel`]. The sidecar
+/// reader tees each frame as raw interleaved-stereo f32 LE bytes; the webview
+/// reinterprets them as the `Float32Array` its analysis consumes (ADR-0017:
+/// analysis stays in TypeScript). One subscriber per deck — a re-subscribe
+/// replaces the prior channel.
+#[tauri::command]
+pub fn subscribe_deck_pcm(
+    taps: tauri::State<'_, PcmTaps>,
+    deck: usize,
+    channel: Channel<InvokeResponseBody>,
+) {
+    if valid_deck(deck) {
+        taps.set(deck, Some(channel));
+    }
+}
+
+#[tauri::command]
+pub fn unsubscribe_deck_pcm(taps: tauri::State<'_, PcmTaps>, deck: usize) {
+    if valid_deck(deck) {
+        taps.set(deck, None);
+    }
 }
 
 /// The consolidated per-frame read-back: health + every deck's transport + every

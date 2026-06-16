@@ -26,6 +26,7 @@ import {
   subscribeSidecarStatus,
   type DeckCommand,
 } from './nativeDeck'
+import { subscribeDeckPcm } from './nativeDeckPcm'
 import {
   beatLoopRegion,
   clampRate,
@@ -320,6 +321,14 @@ export function useDeck(deckId: DeckId): DeckControls {
   const anchorCandidateRef = useRef<{ anchorFrame: number } | null>(null)
   const anchorMissesRef = useRef(0)
   const liveBeatRef = useRef<{ anchorFrame: number; bpm: number } | null>(null)
+  // The played-frame origin for the live beat clock. On the Web path the worklet's
+  // playedFrames reset WITH the stream, sharing the pushed-frame origin with the
+  // tracker's anchorFrame (origin 0). The native engine reports a GLOBAL,
+  // never-reset render count, so the beat-clock math (anchorFrame − playedFrames)
+  // would mix two domains and lie (ADR-0014). We capture the native render count
+  // at each stream reset and subtract it, making playedFrames per-stream again;
+  // 0 on the Web path leaves it untouched.
+  const playedFramesOriginRef = useRef(0)
   // Tracker + gate per deck (M14), and the loudness tracker behind
   // auto-gain (M17) — all reset on stream discontinuities so an
   // estimate never spans two unrelated streams (the reset rule the
@@ -344,7 +353,10 @@ export function useDeck(deckId: DeckId): DeckControls {
     anchorMissesRef.current = 0
     liveBeatRef.current = null
     bandScroller.reset()
-  }, [beat, loudness, bandScroller])
+    // Re-anchor the native played-frame origin to "now" so the freshly-reset
+    // tracker (anchorFrame 0) and the engine's global render count share a zero.
+    playedFramesOriginRef.current = isTauri() ? (engine.getContextTime() ?? 0) * SAMPLE_RATE : 0
+  }, [beat, loudness, bandScroller, engine])
   const [trim, setTrimState] = useState<TrimState>(
     () => loadDeckSettings(deckId).trim ?? { mode: 'auto', db: 0 },
   )
@@ -403,20 +415,28 @@ export function useDeck(deckId: DeckId): DeckControls {
 
   useEffect(() => {
     // Native shell (part 7 cutover): no `/ws/deck` — the sidecar feeds the engine
-    // directly (part 4) and reports status as `sidecar://status` events. Beat /
-    // loudness analysis from the live model PCM is a follow-up (the PCM no longer
-    // transits the UI; ADR-0017's analysis-input rewire needs a sidecar/engine
-    // feature tap).
+    // directly (part 4) and reports status as `sidecar://status` events, and tees
+    // the model PCM back over a Tauri Channel so the TS beat/loudness/band analysis
+    // (ADR-0017: stays in TypeScript) gets the same input it had over the socket.
     if (isTauri()) {
-      const unsubscribe = subscribeSidecarStatus(deckId, (status) => {
+      const unsubscribeStatus = subscribeSidecarStatus(deckId, (status) => {
         if (status.event === 'model_loading' || status.event === 'worker_died') {
           channelRef.current?.reset()
           resetStreamMeasurements()
         }
         dispatch({ type: 'server_event', event: status as ServerEvent })
       })
+      const unsubscribePcm = subscribeDeckPcm(deckId, (samples) => {
+        // A parked deck (playback mode) drops stragglers so a late chunk cannot
+        // pollute the track's clock — the same guard as the WebSocket path.
+        if (modeRef.current === 'playback') return
+        beat.tracker.push(samples)
+        loudness.push(samples)
+        bandScroller.push(samples)
+      })
       return () => {
-        unsubscribe()
+        unsubscribeStatus()
+        unsubscribePcm()
         channelRef.current?.dispose()
         channelRef.current = null
         channelPromiseRef.current = null
@@ -986,9 +1006,12 @@ export function useDeck(deckId: DeckId): DeckControls {
     const contextNow = engine.getContextTime()
     if (contextNow === null) return null
     // The played index in the pushed-frame domain — the scroller's
-    // and the beat anchor's clock (M20).
+    // and the beat anchor's clock (M20). On native, subtract the per-stream
+    // origin so this shares the tracker's reset-to-0 frame domain.
     const playedFrames =
-      stats.playedFrames + (contextNow - stats.contextTime) * SAMPLE_RATE
+      stats.playedFrames -
+      playedFramesOriginRef.current +
+      (contextNow - stats.contextTime) * SAMPLE_RATE
     const clock = liveBeatRef.current
     return {
       bands: bandScroller.source(),
@@ -1015,8 +1038,13 @@ export function useDeck(deckId: DeckId): DeckControls {
     if (performance.now() - stats.receivedAt > STATS_FRESH_MS) return null
     return {
       periodSeconds: 60 / clock.bpm,
+      // Subtract the native per-stream origin so anchorFrame (pushed, resets) and
+      // playedFrames (native: global render count) share a frame domain; their
+      // difference is the buffer lead, as on the Web path (origin 0).
       beatAtContext:
-        stats.contextTime + (clock.anchorFrame - stats.playedFrames) / SAMPLE_RATE,
+        stats.contextTime +
+        (clock.anchorFrame - (stats.playedFrames - playedFramesOriginRef.current)) /
+          SAMPLE_RATE,
     }
   }, [])
 
