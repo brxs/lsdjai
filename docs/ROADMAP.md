@@ -381,8 +381,17 @@ unit-tested; verified by `verify_m25.mjs` and a human checklist.
 
 ## Native migration: Tauri + Rust (the next phase)
 
-**Status: 🔨 Phase 0 PASSED — ADRs 0017/0018/0019 Accepted (2026-06-15); Phase 1
-next.** Not a feature milestone —
+**Status: ✅ Phases 1–2 implemented (2026-06-16) — the native app is the
+product.** Phase 0 spikes passed (ADRs 0017/0018/0019 Accepted, 0003/0006/0007
+superseded, 2026-06-15); the Rust audio engine (Phase 1) and the Tauri shell +
+cutover (Phase 2: MIDI shim, UI↔engine IPC, inference sidecars over loopback TCP,
+native cue routing, packaging config) are built and green under cargo/vitest/
+pytest. End-to-end on real hardware (audio device, FLX4, the model sidecars,
+signed/notarized build) is tracked on
+[`native-migration-hardware-checklist.md`](native-migration-hardware-checklist.md);
+the documented follow-ups (synced dub echo, jog phase-nudge, in-process model
+switch / sidecar restart, the live beat/loudness analysis tap, booth output,
+master recording) are noted there too. Not a feature milestone —
 a cross-cutting re-platform that moves SlipMate from a browser app to a native
 macOS app, decided across
 [ADR-0017](adr/0017-native-rust-audio-engine-superseding-web-audio.md) (Rust
@@ -419,13 +428,13 @@ Phases, ordered by risk:
    [`spike-rust-audio.md`](spike-rust-audio.md), [`spike-packaging.md`](spike-packaging.md),
    [`spike-c-midi.md`](spike-c-midi.md). One confirmation left: Spike A's ≥10-min
    endurance run.**
-1. **Audio engine.** Reimplement the realtime mix graph in Rust, sliced by
+1. **Audio engine. ✅ Done.** Reimplement the realtime mix graph in Rust, sliced by
    capability and each parity-checked against the Web Audio reference: transport →
    bare mix (player rings + 3-band EQ + equal-power crossfade + M17 limiter) → the
    six Color FX insert (with the bit-exact bypass) → freeze/loops/track buffer
    sources + varispeed (M13/M19/M20/M21/M23). The M14/M20/M22 analysis stays in
    TypeScript, fed off the wire (ADR-0017).
-2. **Shell + cutover.** Tauri v2 wrapping the existing React UI,
+2. **Shell + cutover. ✅ Done.** Tauri v2 wrapping the existing React UI,
    `tauri-plugin-midi` for control, the Python workers as PyInstaller sidecars
    with serving/supervision in the Rust shell, native cue routing (the final
    slice), packaging + signing/notarization — first native ship.

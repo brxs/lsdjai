@@ -75,3 +75,24 @@ with the browser path that still depends on them.)
 - [ ] First run with NO weights: the model-download screen appears, downloads to
       `$MAGENTA_HOME/magenta-rt-v2`, then reveals the decks (preserves
       `just setup`).
+
+## Part 7 — Cutover
+
+The native app is the product; ADR-0003/0006/0007 are superseded; the backend cue
+sink + `sounddevice` are removed. Deck control routes to the sidecars over IPC and
+status arrives as `sidecar://status` events (`useDeck` selects this with
+`isTauri()`).
+
+- [ ] In the native app, deck play/stop and set-style reach the sidecar (audio
+      responds) — no `/ws/deck` socket is opened.
+- [ ] Sidecar status (ready / chunk / errors) drives the deck UI state.
+- [ ] The browser dev path (`just dev-frontend`) still works as the parity oracle
+      (control + status over the WebSocket, Web Audio mixing).
+- [ ] Remaining native integration (follow-ups, need the live stack):
+  - [ ] Beat/loudness analysis fed from a sidecar/engine feature tap (the model
+        PCM no longer transits the UI, so analysis is currently inactive in the
+        native shell).
+  - [ ] In-process model switch / sidecar restart (the model is fixed at spawn).
+  - [ ] The sa3 pad/track HTTP generation path (`/api/render`, `/api/generate`)
+        rehosted for the native app.
+  - [ ] Remove the now-inert browser cue UI (phones picker / `cueStream`).

@@ -20,6 +20,12 @@ import {
 import { createLoudnessTracker, trimDbFor } from '../audio/master'
 import { STYLE_SAMPLE_SECONDS } from '../audio/styleSample'
 import { useAudioEngine } from '../audio/engineContext'
+import { isTauri } from '../audio/nativeEngine'
+import {
+  sendNativeDeckCommand,
+  subscribeSidecarStatus,
+  type DeckCommand,
+} from './nativeDeck'
 import {
   beatLoopRegion,
   clampRate,
@@ -396,6 +402,27 @@ export function useDeck(deckId: DeckId): DeckControls {
   }, [engine, deckId])
 
   useEffect(() => {
+    // Native shell (part 7 cutover): no `/ws/deck` — the sidecar feeds the engine
+    // directly (part 4) and reports status as `sidecar://status` events. Beat /
+    // loudness analysis from the live model PCM is a follow-up (the PCM no longer
+    // transits the UI; ADR-0017's analysis-input rewire needs a sidecar/engine
+    // feature tap).
+    if (isTauri()) {
+      const unsubscribe = subscribeSidecarStatus(deckId, (status) => {
+        if (status.event === 'model_loading' || status.event === 'worker_died') {
+          channelRef.current?.reset()
+          resetStreamMeasurements()
+        }
+        dispatch({ type: 'server_event', event: status as ServerEvent })
+      })
+      return () => {
+        unsubscribe()
+        channelRef.current?.dispose()
+        channelRef.current = null
+        channelPromiseRef.current = null
+      }
+    }
+
     let disposed = false
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -522,12 +549,20 @@ export function useDeck(deckId: DeckId): DeckControls {
     return () => clearInterval(timer)
   }, [beat, loudness, applyTrim])
 
-  const send = useCallback((command: object) => {
-    const socket = socketRef.current
-    if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(command))
-    }
-  }, [])
+  const send = useCallback(
+    (command: DeckCommand) => {
+      // Native shell: forward control to the sidecar over IPC (part 7 cutover).
+      if (isTauri()) {
+        sendNativeDeckCommand(deckId, command)
+        return
+      }
+      const socket = socketRef.current
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(command))
+      }
+    },
+    [deckId],
+  )
 
   const play = useCallback(async () => {
     // A playback deck's PLAY drives the track, not the worker.

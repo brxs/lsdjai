@@ -2,6 +2,13 @@
 
 **Tauri v2 shell + Rust audio engine + Python inference sidecars.**
 
+> **Status (2026-06-16): Phase 1 + Phase 2 implemented.** The Rust engine, the
+> Tauri shell, the MIDI shim, the UI↔engine IPC, the inference sidecars over
+> loopback TCP, native cue routing, and the packaging config are built and green
+> under cargo/vitest/pytest; ADR-0003/0006/0007 are superseded and the backend
+> cue sink is retired. End-to-end on real hardware + the documented follow-ups
+> live in [`native-migration-hardware-checklist.md`](native-migration-hardware-checklist.md).
+
 This is the *how*. The *why* lives in
 [ADR-0017](adr/0017-native-rust-audio-engine-superseding-web-audio.md) (Rust
 audio engine, supersedes ADR-0003),

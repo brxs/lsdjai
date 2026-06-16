@@ -72,7 +72,9 @@ class SocketOutQueue:
             if kind == "audio":
                 write_frame(self._sock, FRAME_PCM, payload)  # type: ignore[arg-type]
             elif kind == "status":
-                write_frame(self._sock, FRAME_STATUS, json.dumps(payload).encode("utf-8"))
+                write_frame(
+                    self._sock, FRAME_STATUS, json.dumps(payload).encode("utf-8")
+                )
 
 
 class SocketCmdQueue:
@@ -110,7 +112,9 @@ class SocketCmdQueue:
         return self._queue.get_nowait()
 
 
-def run_sidecar(sock: socket.socket, deck_id: str, model: str, engine_factory=DeckEngine) -> None:
+def run_sidecar(
+    sock: socket.socket, deck_id: str, model: str, engine_factory=DeckEngine
+) -> None:
     """Bridge `sock` to `run_deck_worker` for `deck_id` and run the generation loop
     until the socket closes. `engine_factory` is injectable for tests."""
     reader = sock.makefile("rb")
@@ -123,7 +127,12 @@ def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="SlipMate per-deck inference sidecar")
     parser.add_argument("--deck", required=True, help="deck id (e.g. a or b)")
     parser.add_argument("--model", required=True, help="model name (e.g. mrt2_small)")
-    parser.add_argument("--port", type=int, required=True, help="loopback TCP port the shell is listening on")
+    parser.add_argument(
+        "--port",
+        type=int,
+        required=True,
+        help="loopback TCP port the shell is listening on",
+    )
     args = parser.parse_args(argv)
 
     sock = socket.create_connection(("127.0.0.1", args.port))

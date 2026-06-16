@@ -23,8 +23,10 @@ pads and finished tracks come from Stable Audio 3. See
 - ~13 GB disk for model weights (downloaded on first setup: Magenta
   ~4.5 GB for both deck models, Stable Audio 3 ~8 GB including the
   medium track model)
-- A Chromium-based browser (the app leans on Web Audio worklets and Web MIDI;
-  it is developed and verified against Chrome)
+- macOS 11+ — SlipMate ships as a native app (Tauri + a Rust audio engine +
+  Python inference sidecars; build with `just tauri-build`). A Chromium-based
+  browser is needed only for the dev/parity path (`just dev-frontend`, the Web
+  Audio reference the Rust engine is checked against)
 - Optional: a Pioneer DDJ-FLX4 for hardware control and its headphone jack
 
 All common tasks live in the [`justfile`](justfile) — run `just` to list them.

@@ -23,7 +23,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
-from . import cue, engine, sa3
+from . import engine, sa3
 from .worker import run_deck_worker
 
 logger = logging.getLogger(__name__)
@@ -640,61 +640,10 @@ async def generate_audio(request: Request) -> Response:
     return Response(content=wav, media_type="audio/wav")
 
 
-@app.get("/api/cue/outputs")
-def cue_outputs() -> list[dict]:
-    """Output devices that can carry the cue on a separate phones pair
-    (ADR-0007); the phones picker lists them next to the browser sinks."""
-    return cue.phones_capable_outputs()
-
-
-# Like a deck, the cue sink takes exactly one client.
-cue_state = {"connected": False}
-
-
-@app.websocket("/ws/cue")
-async def cue_socket(websocket: WebSocket) -> None:
-    """Cue feed up from the browser: binary frames of interleaved stereo
-    float32 LE at 48 kHz, played to the phones pair of `?device=`.
-
-    Always accepts before refusing: a close before accept reaches the
-    browser as a bare handshake failure with the code and reason — the
-    user-facing message — stripped. The client treats the `ready` event,
-    not the socket opening, as acceptance.
-    """
-    if cue_state["connected"]:
-        await websocket.accept()
-        await websocket.close(code=4409, reason="cue already has a client")
-        return
-    cue_state["connected"] = True
-    sink = None
-    try:
-        await websocket.accept()
-        device = websocket.query_params.get("device", "")
-        try:
-            # Opening a PortAudio stream blocks briefly; keep the loop free.
-            sink = await asyncio.to_thread(cue.CueSink, device)
-        except Exception as error:
-            logger.warning("cue sink for %r failed: %s", device, error)
-            await websocket.close(code=4404, reason=str(error))
-            return
-        await websocket.send_text(json.dumps({"event": "ready"}))
-        while True:
-            try:
-                payload = await websocket.receive_bytes()
-            except KeyError:
-                # A text frame; the cue socket is audio-only.
-                await _send_error(websocket, "expected a binary PCM frame")
-                continue
-            try:
-                sink.push(payload)
-            except ValueError as error:
-                await _send_error(websocket, str(error))
-    except WebSocketDisconnect:
-        pass
-    finally:
-        if sink is not None:
-            sink.close()
-        cue_state["connected"] = False
+# The browser cue sink (ADR-0007, `/ws/cue` + `/api/cue/outputs`) was retired at
+# the native cutover (Phase 2 part 7): the native shell routes the cue to the FLX4
+# phones (channels 3/4) inside the Rust engine (Slice 5), so no backend
+# `sounddevice` sink is needed. ADR-0007 is superseded by ADR-0019.
 
 
 # Registered after the WebSocket route so /ws/deck/* is matched first.

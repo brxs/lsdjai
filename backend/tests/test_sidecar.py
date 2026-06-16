@@ -131,7 +131,13 @@ def test_sidecar_streams_pcm_and_status_over_a_socketpair():
         assert json.loads(payload)["event"] == "ready"
 
         # Drive a style + play; expect PCM frames to start flowing.
-        write_frame(shell, FRAME_CONTROL, json.dumps({"type": "set_style", "prompts": [{"text": "techno", "weight": 1.0}]}).encode())
+        write_frame(
+            shell,
+            FRAME_CONTROL,
+            json.dumps(
+                {"type": "set_style", "prompts": [{"text": "techno", "weight": 1.0}]}
+            ).encode(),
+        )
         write_frame(shell, FRAME_CONTROL, json.dumps({"type": "play"}).encode())
 
         ftype, payload = _read_frames_until(shell_reader, lambda t, p: t == FRAME_PCM)
@@ -159,7 +165,9 @@ def test_sidecar_main_argument_parsing(monkeypatch):
 
     monkeypatch.setattr(sidecar_mod.socket, "create_connection", fake_create_connection)
     # RecordingSock has no setsockopt; give it a no-op.
-    monkeypatch.setattr(RecordingSock, "setsockopt", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(
+        RecordingSock, "setsockopt", lambda *a, **k: None, raising=False
+    )
     monkeypatch.setattr(sidecar_mod, "run_sidecar", fake_run)
 
     sidecar_mod.main(["--deck", "b", "--model", "mrt2_small", "--port", "5050"])
