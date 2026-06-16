@@ -53,9 +53,10 @@ const DEFAULT_MODEL: &str = "mrt2_small";
 /// `tauri::State<'_, Host>` directly. This struct holds the things the commands
 /// do not need but the app must keep alive.
 struct AudioState {
-    /// Held only to keep the cpal stream alive for the app's lifetime — its
-    /// `Drop` stops audio. `None` in the sandbox/headless case.
-    _stream: Mutex<Option<AudioStream>>,
+    /// The running output stream — kept alive (its `Drop` stops audio) and
+    /// REPLACED by `set_output_device` to switch the output device. `None` in the
+    /// sandbox/headless case.
+    stream: Mutex<Option<AudioStream>>,
     device_started: bool,
 }
 
@@ -81,7 +82,7 @@ struct SidecarStatus {
 fn start_audio() -> (Host, AudioState, [DeckHandle; slipmate_engine::DECK_COUNT]) {
     let (host, output, cue_output, deck_handles) = Host::new();
 
-    let (stream, device_started) = match engine_device::run_host_stream(output, cue_output) {
+    let (stream, device_started) = match engine_device::run_host_stream(None, output, cue_output) {
         Ok(stream) => {
             let info = stream.info();
             // Non-RT setup logging only; the RT callback itself logs nothing.
@@ -105,7 +106,7 @@ fn start_audio() -> (Host, AudioState, [DeckHandle; slipmate_engine::DECK_COUNT]
     };
 
     let state = AudioState {
-        _stream: Mutex::new(stream),
+        stream: Mutex::new(stream),
         device_started,
     };
     (host, state, deck_handles)
@@ -186,6 +187,62 @@ fn app_info(
     }
 }
 
+/// One selectable output device for the picker (serde camelCase → `cueCapable`).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OutputDeviceDto {
+    name: String,
+    channels: u16,
+    cue_capable: bool,
+}
+
+/// Enumerate the output devices the engine can open, with their channel count and
+/// whether they can carry the headphone cue (≥4 channels → master 1/2, cue 3/4).
+#[tauri::command]
+fn list_output_devices() -> Vec<OutputDeviceDto> {
+    engine_device::list_output_devices()
+        .into_iter()
+        .map(|d| OutputDeviceDto {
+            name: d.name,
+            channels: d.channels,
+            cue_capable: d.cue_capable,
+        })
+        .collect()
+}
+
+/// Switch the output device by name (an EMPTY name means the system default — the
+/// picker's "System default" option). Opens the NEW device stream FIRST (on fresh
+/// rings); only on success swaps the render thread onto them and drops the old
+/// stream — so a device that fails to open leaves the current audio untouched and
+/// returns the error to the webview.
+#[tauri::command]
+fn set_output_device(
+    host: tauri::State<'_, Host>,
+    audio: tauri::State<'_, AudioState>,
+    name: String,
+) -> Result<(), String> {
+    // Empty → the default device (`None`), so "System default" reopens it rather
+    // than erroring on an empty name miss.
+    let selected = (!name.is_empty()).then_some(name.as_str());
+    let (rings, output, cue_output) = host.new_output_rings();
+    let stream =
+        engine_device::run_host_stream(selected, output, cue_output).map_err(|e| e.to_string())?;
+    // The new device is open; re-point the render thread onto its rings. Only on
+    // success do we drop the old stream below — if the command queue was full the
+    // swap did not land, so keep the old stream (still being filled) and drop the
+    // new one (returned by the `?`-less early return) rather than going silent.
+    if !host.install_output_rings(rings) {
+        return Err("the audio engine was momentarily busy — try switching again".into());
+    }
+    let info = stream.info();
+    println!(
+        "slipmate-app: output device switched — device='{}' channels={}",
+        info.device_name, info.device_channels
+    );
+    *audio.stream.lock().unwrap_or_else(|p| p.into_inner()) = Some(stream);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -218,6 +275,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            list_output_devices,
+            set_output_device,
             commands::set_crossfade,
             commands::set_eq,
             commands::set_volume,

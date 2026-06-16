@@ -328,3 +328,42 @@ describe('createNativeEngine — graceful native stubs', () => {
     expect(calls).toContainEqual({ cmd: 'set_cue_mix', args: { position: 0.3 } })
   })
 })
+
+describe('createNativeEngine — output device', () => {
+  it('listOutputDevices invokes list_output_devices and returns the array', async () => {
+    const devices = [
+      { name: 'Built-in', channels: 2, cueCapable: false },
+      { name: 'FLX4', channels: 4, cueCapable: true },
+    ]
+    // Serve the device list for the list command (other commands keep defaults).
+    const invoke = vi.fn((cmd: string, args?: unknown) => {
+      calls.push({ cmd, args })
+      if (cmd === 'list_output_devices') return Promise.resolve(devices)
+      return Promise.resolve(undefined)
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+
+    const engine = createNativeEngine()
+    const result = await engine.listOutputDevices()
+    expect(result).toEqual(devices)
+    expect(calls).toContainEqual({ cmd: 'list_output_devices', args: undefined })
+  })
+
+  it('setOutputDevice invokes set_output_device with the name', async () => {
+    const engine = createNativeEngine()
+    await engine.setOutputDevice('FLX4')
+    expect(calls).toContainEqual({ cmd: 'set_output_device', args: { name: 'FLX4' } })
+  })
+
+  it('setOutputDevice propagates a rejection so the caller can catch it', async () => {
+    const invoke = vi.fn((cmd: string, args?: unknown) => {
+      calls.push({ cmd, args })
+      if (cmd === 'set_output_device') return Promise.reject(new Error('device busy'))
+      return Promise.resolve(undefined)
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+
+    const engine = createNativeEngine()
+    await expect(engine.setOutputDevice('FLX4')).rejects.toThrow('device busy')
+  })
+})

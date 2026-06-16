@@ -10,9 +10,12 @@ type SelectProps = {
   options: SelectOption[]
   disabled?: boolean
   onChange: (value: string) => void
+  /** Fired as the field is about to open (focus/pointer) — lets callers
+   * refresh the option list each time the menu is reopened. */
+  onReopen?: () => void
 }
 
-export function Select({ label, value, options, disabled, onChange }: SelectProps) {
+export function Select({ label, value, options, disabled, onChange, onReopen }: SelectProps) {
   const id = useId()
   const entries = options.map((option) =>
     typeof option === 'string' ? { value: option, label: option } : option,
@@ -28,6 +31,8 @@ export function Select({ label, value, options, disabled, onChange }: SelectProp
         value={value}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
+        onMouseDown={onReopen}
+        onFocus={onReopen}
       >
         {entries.map((entry) => (
           <option key={entry.value} value={entry.value}>

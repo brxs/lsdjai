@@ -213,6 +213,13 @@ enum Command {
     /// callback), like `CaptureSample`. The caller parks on the receiver.
     #[allow(clippy::type_complexity)]
     TrackPeaks(usize, usize, Producer<Option<(Vec<f32>, Vec<f32>)>>),
+    /// Switch the output device: the render thread swaps its master + cue ring
+    /// producers to these fresh ones (dropping the old, which closes the old
+    /// rings the about-to-be-replaced device stream was draining). The new device
+    /// stream is opened on the matching consumers BEFORE this is sent, so a failed
+    /// open never reaches here and audio is undisturbed. Built off the render
+    /// thread (`Host::new_output_rings`) and moved in.
+    SwapOutputRings(Producer<f32>, Producer<f32>),
 }
 
 /// A point-in-time copy of the per-deck state the IPC thread reads back: track
@@ -310,6 +317,15 @@ impl OutputConsumer {
     }
 }
 
+/// A freshly-built master + cue output ring producer pair for an output-device
+/// switch. Built by [`Host::new_output_rings`] off the render thread and handed
+/// back to it via [`Host::install_output_rings`] once the new device stream is
+/// open. Opaque: the producers only travel from the host into the render thread.
+pub struct OutputRings {
+    output: Producer<f32>,
+    cue: Producer<f32>,
+}
+
 /// Owns the [`Engine`] on a dedicated render thread and exposes thread-safe
 /// control. Construct with [`Host::new`]; drive control through its methods (each
 /// enqueues a [`Command`] over the wait-free channel); read state back through
@@ -398,6 +414,41 @@ impl Host {
     /// Stop recording and return the take as a 16-bit PCM WAV.
     pub fn stop_recording(&self) -> Vec<u8> {
         self.recorder.stop()
+    }
+
+    /// Build a new master + cue output ring pair for an output-device switch:
+    /// returns the producers (carried in [`OutputRings`], installed later) and the
+    /// two device-side [`OutputConsumer`]s for the new cpal stream. The render
+    /// thread keeps filling the CURRENT rings until
+    /// [`install_output_rings`](Self::install_output_rings) swaps it — so the
+    /// caller opens the new stream on these consumers FIRST and only installs on
+    /// success, leaving audio undisturbed if the device fails to open.
+    pub fn new_output_rings(&self) -> (OutputRings, OutputConsumer, OutputConsumer) {
+        let (out_tx, out_rx) = RingBuffer::<f32>::new(OUTPUT_RING_FRAMES * CHANNELS as usize);
+        let (cue_tx, cue_rx) = RingBuffer::<f32>::new(OUTPUT_RING_FRAMES * CHANNELS as usize);
+        (
+            OutputRings {
+                output: out_tx,
+                cue: cue_tx,
+            },
+            OutputConsumer {
+                consumer: out_rx,
+                telemetry: self.telemetry.clone(),
+            },
+            OutputConsumer {
+                consumer: cue_rx,
+                telemetry: self.telemetry.clone(),
+            },
+        )
+    }
+
+    /// Hand the new ring producers to the render thread (it swaps off the old
+    /// rings on its next command drain). Call AFTER the new device stream is open
+    /// on the matching consumers. Returns false only if the command queue was
+    /// momentarily full — the caller then treats the switch as failed and keeps
+    /// the old stream (its rings are still being filled).
+    pub fn install_output_rings(&self, rings: OutputRings) -> bool {
+        self.send(Command::SwapOutputRings(rings.output, rings.cue))
     }
 
     /// Enqueue a command for the render thread. Drops the command (logged) if the
@@ -747,6 +798,14 @@ impl RenderLoop {
             Command::TrackPeaks(d, buckets, mut reply) => {
                 let peaks = self.engine.get_track_peaks(d, buckets);
                 let _ = reply.push(peaks);
+            }
+            Command::SwapOutputRings(output, cue) => {
+                // Re-point the render thread at the new device's rings. The old
+                // producers drop here (off the cpal callback), closing the rings
+                // the previous device stream drained — harmless, it is being
+                // dropped. The next `step` fills the new rings.
+                self.output = output;
+                self.cue_output = cue;
             }
         }
     }
@@ -1168,5 +1227,31 @@ mod tests {
         rec.start();
         let cleared = rec.stop();
         assert_eq!(cleared.len(), 44);
+    }
+
+    /// Switching the output device: a `SwapOutputRings` command re-points the
+    /// render loop's master + cue producers, so the next render fills the NEW
+    /// rings (the device-switch hand-off in `set_output_device`).
+    #[test]
+    fn swap_output_rings_repoints_the_render_loop() {
+        let mut host = TestHost::new();
+        // New device's rings; keep the consumers so we can observe the hand-off.
+        let (out_tx, out_rx) = RingBuffer::<f32>::new(OUTPUT_RING_FRAMES * CHANNELS as usize);
+        let (cue_tx, cue_rx) = RingBuffer::<f32>::new(OUTPUT_RING_FRAMES * CHANNELS as usize);
+        assert_eq!(out_rx.slots(), 0, "new master ring starts empty");
+        assert_eq!(cue_rx.slots(), 0, "new cue ring starts empty");
+
+        host.send(Command::SwapOutputRings(out_tx, cue_tx));
+        // step() drains the swap, then renders + pushes into the now-current rings.
+        host.loop_state.step();
+
+        assert!(
+            out_rx.slots() > 0,
+            "after the swap the render loop fills the new master ring"
+        );
+        assert!(
+            cue_rx.slots() > 0,
+            "after the swap the render loop fills the new cue ring"
+        );
     }
 }

@@ -35,6 +35,9 @@ export type AppSettings = {
   cueMix: number
   beatView: BeatViewLayout
   accent: AccentTheme
+  /** Last-chosen native output device, by name (M-cutover). The device
+   * may be gone on reload, so applying it is best-effort. */
+  outputDevice: string
 }
 
 const STORAGE_KEY = 'slipmate:v1'
@@ -162,6 +165,9 @@ export function loadAppSettings(): Partial<AppSettings> {
     stored.accent === 'cyan'
   ) {
     settings.accent = stored.accent
+  }
+  if (typeof stored.outputDevice === 'string' && stored.outputDevice) {
+    settings.outputDevice = stored.outputDevice
   }
   return settings
 }

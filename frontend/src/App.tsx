@@ -47,6 +47,12 @@ function App() {
   const [cueMix, setCueMix] = useState(
     () => loadAppSettings().cueMix ?? INITIAL_CUE_MIX,
   )
+  // The chosen native output device by name (empty = system default); the
+  // engine routes the headphone cue to its channels 3/4. App owns the
+  // persisted choice; the picker owns the live device list and switch.
+  const [outputDevice, setOutputDevice] = useState(
+    () => loadAppSettings().outputDevice ?? '',
+  )
   // The beat view's home (M22): centre stacked, top bar, or off.
   const [beatView, setBeatView] = useState<BeatViewLayout>(
     () => loadAppSettings().beatView ?? 'center',
@@ -72,12 +78,24 @@ function App() {
 
   // Hand the restored mix positions to the engine once — it holds them
   // until the bus is built on first play. Later moves go through the
-  // handlers, so this deliberately ignores state updates.
+  // handlers, so this deliberately ignores state updates. The persisted
+  // output device is applied best-effort: it may be gone since last run,
+  // and a failure must leave the engine's default routing undisturbed.
   useEffect(() => {
     engine.setCrossfade(crossfade)
     engine.setCueMix(cueMix)
+    if (outputDevice) void engine.setOutputDevice(outputDevice).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine])
+
+  // The one place a successful output-device switch lands: state + persist.
+  // The picker has already performed the switch on the engine; we only record
+  // the choice (so a rejected switch never reaches here and the selection
+  // reverts to the last good value).
+  const handleOutputDevice = useCallback((name: string) => {
+    setOutputDevice(name)
+    updateAppSettings({ outputDevice: name })
+  }, [])
 
   useEffect(() => {
     window.addEventListener('keydown', handleShortcutKey)
@@ -447,6 +465,8 @@ function App() {
             onCrossfadeChange={handleCrossfade}
             cueMix={cueMix}
             onCueMixChange={handleCueMix}
+            outputDevice={outputDevice}
+            onOutputDeviceChange={handleOutputDevice}
             getPhaseOffset={getPhaseOffset}
           />
         </div>

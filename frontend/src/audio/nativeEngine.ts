@@ -32,6 +32,7 @@ import {
   type AudioEngine,
   type DeckChannel,
   type DeckId,
+  type OutputDevice,
   type StatsHandler,
 } from './types'
 import type { FxKind } from './fx'
@@ -437,6 +438,11 @@ export function createNativeEngine(): AudioEngine {
     resume: () => Promise.resolve(),
     setCrossfade: (position) => coalesce('set_crossfade', 'set_crossfade', { position }),
     setCueMix: (position) => coalesce('set_cue_mix', 'set_cue_mix', { position }),
+    // Discrete, rare device commands — a direct invoke, never the per-frame
+    // coalescing. setOutputDevice's promise is returned so the caller can catch
+    // a rejection (the device couldn't be opened; audio stays undisturbed).
+    listOutputDevices: () => invoke<OutputDevice[]>('list_output_devices'),
+    setOutputDevice: (name) => invoke('set_output_device', { name }),
     getMasterLevel: () => snapshot?.health.masterPeak ?? 0,
     getMasterGainReduction: () => snapshot?.health.masterGainReductionDb ?? 0,
     // The engine taps the master bus on its render thread; stop returns a WAV.

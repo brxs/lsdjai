@@ -9,6 +9,7 @@ import { useControlBus } from '../control/busContext'
 import { Button } from '../ui/Button'
 import { Knob } from '../ui/Knob'
 import { LevelMeter } from '../ui/LevelMeter'
+import { OutputDevicePicker } from '../ui/OutputDevicePicker'
 import { PhaseMeter } from '../ui/PhaseMeter'
 import { Slider } from '../ui/Slider'
 import { Stat } from '../ui/Stat'
@@ -36,6 +37,11 @@ type MixerStripProps = {
   onCrossfadeChange: (position: number) => void
   cueMix: number
   onCueMixChange: (position: number) => void
+  /** The chosen native output device by name (empty = system default);
+   * the engine routes the cue to its channels 3/4. */
+  outputDevice: string
+  /** Fired when a device switch succeeds — the app persists the choice. */
+  onOutputDeviceChange: (name: string) => void
   /** Beat-phase offset between the decks (M20), null while either
    * clock is unconfident — the meter blanks. */
   getPhaseOffset: () => number | null
@@ -66,6 +72,8 @@ export function MixerStrip({
   onCrossfadeChange,
   cueMix,
   onCueMixChange,
+  outputDevice,
+  onOutputDeviceChange,
   getPhaseOffset,
 }: MixerStripProps) {
   const { t } = useTranslation()
@@ -216,6 +224,10 @@ export function MixerStrip({
           accent="master"
           value={cueMix}
           onChange={onCueMixChange}
+        />
+        <OutputDevicePicker
+          value={outputDevice}
+          onSelect={onOutputDeviceChange}
         />
       </div>
 

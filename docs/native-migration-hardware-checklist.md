@@ -63,10 +63,17 @@ The engine derives a headphone-cue feed (PFL bus blended with master per the cue
 mix) and the device routes it to channels 3/4 on a ≥4-channel output (the FLX4).
 Replaces the second-sink cue (ADR-0006) and the backend `sounddevice` sink
 (ADR-0007). (`sounddevice` + `cue.py` + `/ws/cue` are retired at cutover, part 7,
-with the browser path that still depends on them.)
+with the browser path that still depends on them.) The output device is chosen in
+the mixer's Phones section (the Output picker → `list_output_devices` /
+`set_output_device`); the engine opens it preferring its widest config so the cue
+reaches 3/4, and switches live (re-creates the PCM rings, swaps the render
+thread's producers). A device with < 4 channels shows "no cue" — master only.
 
-- [ ] FLX4 selected as the output: master plays on the main out (channels 1/2)
-      and the cue plays on the phones jack (channels 3/4).
+- [ ] FLX4 selected as the output (mixer → Phones → Output): master plays on the
+      main out (channels 1/2) and the cue plays on the phones jack (channels 3/4).
+- [ ] The Output picker lists devices, marks the cue-capable (≥4ch) ones, and
+      switching to the FLX4 takes effect live (no app restart); switching to a
+      bad/unplugged device surfaces an error and leaves the current audio playing.
 - [ ] Cue a deck (PFL): it is audible in the phones even when crossfaded fully
       out of the master.
 - [ ] The cue-mix knob blends cue ↔ master in the phones (0 = cue, 1 = master).
@@ -143,4 +150,8 @@ status arrives as `sidecar://status` events (`useDeck` selects this with
     - [ ] Dev: `just tauri-dev` launches the gen server + sidecars (the
           default `uv run` uses the backend dir as CWD; override with
           `SLIPMATE_GENERATION_CMD` / `SLIPMATE_SIDECAR_CMD`).
-  - [ ] Remove the now-inert browser cue UI (phones picker / `cueStream`).
+  - [x] Remove the now-inert browser cue UI (phones picker / `cueStream`) — done
+        at cutover, and the native Output picker (Part 5) replaces it: a
+        `list_output_devices` / `set_output_device` dropdown in the mixer's Phones
+        section that opens the chosen device (cue on 3/4 of a ≥4-channel device)
+        and switches live.

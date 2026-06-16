@@ -21,6 +21,8 @@ function makeEngine(overrides: Partial<AudioEngine> = {}): AudioEngine {
     resume: vi.fn(async () => {}),
     setCrossfade: vi.fn(),
     setCueMix: vi.fn(),
+    listOutputDevices: vi.fn(async () => []),
+    setOutputDevice: vi.fn(async () => {}),
     startRecording: vi.fn(async () => {}),
     stopRecording: vi.fn(async () => new Blob(['x'], { type: 'audio/wav' })),
     getMasterLevel: vi.fn(() => 0),
@@ -49,6 +51,8 @@ type MixerOverrides = {
   channels?: Record<'a' | 'b', ChannelControls>
   bus?: ControlBus
   onCueMixChange?: (position: number) => void
+  outputDevice?: string
+  onOutputDeviceChange?: (name: string) => void
 }
 
 function renderMixer(engine: AudioEngine, overrides: MixerOverrides = {}) {
@@ -61,6 +65,8 @@ function renderMixer(engine: AudioEngine, overrides: MixerOverrides = {}) {
           onCrossfadeChange={() => {}}
           cueMix={0.5}
           onCueMixChange={overrides.onCueMixChange ?? (() => {})}
+          outputDevice={overrides.outputDevice ?? ''}
+          onOutputDeviceChange={overrides.onOutputDeviceChange ?? (() => {})}
           getPhaseOffset={() => null}
         />
       </ControlBusProvider>
