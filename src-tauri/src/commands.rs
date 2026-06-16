@@ -563,8 +563,20 @@ pub fn deck_set_prompt(state: tauri::State<'_, Sidecars>, deck: usize, prompt: S
 /// Switch a deck's model (an in-process sidecar restart, reusing the deck ring).
 /// Validates the deck index and the model name at the trust boundary; the running
 /// sidecar is left untouched if the respawn fails.
+///
+/// MUST be `async`. The restart `join()`s the outgoing reader thread, which can be
+/// mid-`emit`/`Channel::send` to the webview — and a sync command runs on the MAIN
+/// (event-loop) thread, the very thread that services those webview sends. On the
+/// main thread the join would wait for the reader while the reader waits for the
+/// main thread: a hard deadlock (it surfaced switching to the slower-loading
+/// `mrt2_base`). `async` runs the command off the main thread, so the freed main
+/// thread drains the reader's send, the reader exits, and the join completes.
 #[tauri::command]
-pub fn deck_set_model(state: tauri::State<'_, Sidecars>, deck: usize, model: String) -> Result<(), String> {
+pub async fn deck_set_model(
+    state: tauri::State<'_, Sidecars>,
+    deck: usize,
+    model: String,
+) -> Result<(), String> {
     if !valid_deck(deck) {
         return Err("invalid deck".into());
     }
