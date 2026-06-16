@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react'
 
-import type { AudioEngine } from './engine'
+import type { AudioEngine } from './types'
 
 export const AudioEngineContext = createContext<AudioEngine | null>(null)
 

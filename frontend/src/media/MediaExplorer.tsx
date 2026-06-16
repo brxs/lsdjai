@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import type { DeckId } from '../audio/engine'
+import type { DeckId } from '../audio/types'
 import { getApiBaseUrl, invoke, isTauri } from '../audio/nativeEngine'
 import { useControlBus } from '../control/busContext'
 import { CrateBrowser } from '../crates/CrateBrowser'

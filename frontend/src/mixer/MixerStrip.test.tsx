@@ -9,7 +9,7 @@ import {
 import { describe, expect, it, vi } from 'vitest'
 
 import { AudioEngineProvider } from '../audio/AudioEngineProvider'
-import type { AudioEngine } from '../audio/engine'
+import type { AudioEngine } from '../audio/types'
 import { createControlBus, type ControlBus } from '../control/bus'
 import { ControlBusProvider } from '../control/ControlBusProvider'
 import { MixerStrip, type ChannelControls } from './MixerStrip'

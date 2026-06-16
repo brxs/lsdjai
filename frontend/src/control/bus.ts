@@ -3,7 +3,7 @@
  * components that own the state. Keyboard/mouse paths don't go through it. */
 
 import type { EqBand } from '../audio/eq'
-import type { DeckId } from '../audio/engine'
+import type { DeckId } from '../audio/types'
 import type { StylePreset } from '../presets'
 
 export type ControlIntent =

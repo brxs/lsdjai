@@ -2,7 +2,7 @@
  * headphone feed and stream it up /ws/cue so the backend can play it on
  * a device's phones pair — the channels Web Audio cannot reach. */
 
-import type { AudioEngine } from './engine'
+import type { AudioEngine } from './types'
 
 export type CueJackOutput = { name: string }
 

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { SAMPLE_RATE } from './engine'
+import { SAMPLE_RATE } from './types'
 import { createNativeEngine, isTauri } from './nativeEngine'
 
 // A controllable __TAURI__ global: records every invoke and serves a test

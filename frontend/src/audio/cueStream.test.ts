@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { listCueJackOutputs, startCueStream } from './cueStream'
-import type { AudioEngine } from './engine'
+import type { AudioEngine } from './types'
 
 class FakeWebSocket {
   static OPEN = 1

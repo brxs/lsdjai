@@ -32,7 +32,7 @@ import {
   type DeckChannel,
   type DeckId,
   type StatsHandler,
-} from './engine'
+} from './types'
 import type { FxKind } from './fx'
 import { interleaveChannels } from './styleSample'
 

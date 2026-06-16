@@ -8,7 +8,7 @@
  * inaudible at 14-bit resolution but visible to subscribers. Everything not
  * in the map — shift layers, jog wheels, releases — translates to null. */
 
-import type { DeckId } from '../audio/engine'
+import type { DeckId } from '../audio/types'
 import { LOOP_SLOT_COUNT } from '../audio/loops'
 import type { ControlIntent } from './bus'
 

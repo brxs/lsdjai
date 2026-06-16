@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { EQ_BANDS, type EqBand } from '../audio/eq'
-import type { DeckId } from '../audio/engine'
+import type { DeckId } from '../audio/types'
 import { useAudioEngine } from '../audio/engineContext'
 import { listCueJackOutputs } from '../audio/cueStream'
 import { TRIM_RANGE_DB } from '../audio/master'

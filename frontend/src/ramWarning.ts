@@ -1,4 +1,4 @@
-import type { DeckId } from './audio/engine'
+import type { DeckId } from './audio/types'
 import type { RamInfo } from './deck/deckState'
 
 // Above this share of total RAM, the combined model selection gets a

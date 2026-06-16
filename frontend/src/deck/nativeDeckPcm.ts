@@ -12,7 +12,7 @@
  * ring `post_pcm`, so the audio path is untouched (see `src-tauri/src/sidecar.rs`).
  */
 
-import type { DeckId } from '../audio/engine'
+import type { DeckId } from '../audio/types'
 import { isTauri } from '../audio/nativeEngine'
 
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }

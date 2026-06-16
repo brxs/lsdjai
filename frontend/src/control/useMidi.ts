@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-import type { DeckId } from '../audio/engine'
+import type { DeckId } from '../audio/types'
 import { useControlBus } from './busContext'
 import {
   createFlx4Translator,

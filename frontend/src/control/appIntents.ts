@@ -1,4 +1,4 @@
-import type { DeckId } from '../audio/engine'
+import type { DeckId } from '../audio/types'
 import { FX_KINDS } from '../audio/fx'
 import { tempoSliderToRate } from '../audio/track'
 import { isDeckOperable } from '../deck/deckState'

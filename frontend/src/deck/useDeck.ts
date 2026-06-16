@@ -36,7 +36,7 @@ import {
   type TrackLoop,
 } from '../audio/track'
 import { loadDeckSettings, updateDeckSettings } from '../persistence'
-import { SAMPLE_RATE, type DeckChannel, type DeckId } from '../audio/engine'
+import { SAMPLE_RATE, type DeckChannel, type DeckId } from '../audio/types'
 import {
   deckReducer,
   initialDeckState,

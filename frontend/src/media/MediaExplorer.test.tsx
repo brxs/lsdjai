@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { DeckId } from '../audio/engine'
+import type { DeckId } from '../audio/types'
 import { createControlBus, type ControlBus } from '../control/bus'
 import { ControlBusProvider } from '../control/ControlBusProvider'
 import type { StylePreset } from '../presets'

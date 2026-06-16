@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import type { DeckId } from '../audio/engine'
+import type { DeckId } from '../audio/types'
 import { useControlBus } from '../control/busContext'
 import { parsePresetsExport, serialisePresets, type StylePreset } from '../presets'
 import { Button } from '../ui/Button'

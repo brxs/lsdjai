@@ -1,7 +1,7 @@
 /** Last-used settings in localStorage, so a reload picks up where the
  * session left off. Tolerant on read: anything malformed loads as absent. */
 
-import type { DeckId } from './audio/engine'
+import type { DeckId } from './audio/types'
 import { EQ_BANDS, type EqBand } from './audio/eq'
 import { FX_KINDS, type FxKind } from './audio/fx'
 import { LOOP_LENGTH_OPTIONS } from './audio/loops'

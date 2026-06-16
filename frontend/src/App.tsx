@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { INITIAL_CROSSFADE, INITIAL_CUE_MIX, type DeckId } from './audio/engine'
+import { INITIAL_CROSSFADE, INITIAL_CUE_MIX, type DeckId } from './audio/types'
 import { startCueStream } from './audio/cueStream'
 import { uploadStyleSample } from './audio/styleSample'
 import { useAudioEngine } from './audio/engineContext'

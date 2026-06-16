@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AudioEngineProvider } from '../audio/AudioEngineProvider'
 import { updateDeckSettings } from '../persistence'
 import { clickTrack } from '../test/clickTrack'
-import type { AudioEngine, DeckChannel } from '../audio/engine'
+import type { AudioEngine, DeckChannel } from '../audio/types'
 import { useDeck } from './useDeck'
 
 class FakeWebSocket {

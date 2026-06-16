@@ -9,7 +9,7 @@
  * selects it with `isTauri()`. */
 
 import { isTauri } from '../audio/nativeEngine'
-import type { DeckId } from '../audio/engine'
+import type { DeckId } from '../audio/types'
 
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }
 
