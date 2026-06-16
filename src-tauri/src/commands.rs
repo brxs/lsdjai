@@ -21,10 +21,13 @@
 //! convert at the boundary).
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use slipmate_engine::host::{Health, Host};
 use slipmate_engine::{
     EqBand, FxKind, LoopRegion, LoopSlotStatus, TrackStatus, DECK_COUNT, LOOP_SLOT_COUNT,
 };
+
+use crate::sidecar::Sidecars;
 
 /// Reject a deck index outside `[0, DECK_COUNT)`. A bad index from the webview is
 /// a no-op (the command returns without touching the engine), never a panic.
@@ -454,6 +457,58 @@ pub fn track_peaks(state: tauri::State<'_, Host>, deck: usize, buckets: usize) -
     state
         .track_peaks(deck, buckets)
         .map(|(min, max)| TrackPeaksDto { min, max })
+}
+
+// --- Deck inference control (forwarded to the Python sidecars, part 4) ---
+
+/// A style-prompt entry the webview sends for `set_style` — text (or a sampled
+/// style id, M15) plus its blend weight. Validated/normalised here before it
+/// crosses to the sidecar (`worker.py` `set_style`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PromptEntryArg {
+    pub text: String,
+    pub weight: f32,
+    #[serde(default)]
+    pub sample: Option<String>,
+}
+
+#[tauri::command]
+pub fn deck_play(state: tauri::State<'_, Sidecars>, deck: usize) {
+    if valid_deck(deck) {
+        state.send(deck, &json!({ "type": "play" }).to_string());
+    }
+}
+
+#[tauri::command]
+pub fn deck_stop(state: tauri::State<'_, Sidecars>, deck: usize) {
+    if valid_deck(deck) {
+        state.send(deck, &json!({ "type": "stop" }).to_string());
+    }
+}
+
+#[tauri::command]
+pub fn deck_set_prompt(state: tauri::State<'_, Sidecars>, deck: usize, prompt: String) {
+    if valid_deck(deck) {
+        state.send(deck, &json!({ "type": "set_prompt", "prompt": prompt }).to_string());
+    }
+}
+
+#[tauri::command]
+pub fn deck_set_style(state: tauri::State<'_, Sidecars>, deck: usize, prompts: Vec<PromptEntryArg>) {
+    if !valid_deck(deck) {
+        return;
+    }
+    let entries: Vec<_> = prompts
+        .into_iter()
+        .map(|p| {
+            let mut entry = json!({ "text": p.text, "weight": p.weight });
+            if let Some(sample) = p.sample {
+                entry["sample"] = json!(sample);
+            }
+            entry
+        })
+        .collect();
+    state.send(deck, &json!({ "type": "set_style", "prompts": entries }).to_string());
 }
 
 /// The consolidated per-frame read-back: health + every deck's transport + every

@@ -61,9 +61,17 @@ build:
 
 # Native shell (Phase 2): run the Tauri app in dev. Builds the frontend first
 # (tauri.conf.json's beforeBuildCommand), embeds frontend/dist, and starts the
-# Rust audio engine's cpal device. Needs cargo-tauri (`cargo install tauri-cli@^2`).
+# Rust audio engine's cpal device. Sidecars are OFF here (set SLIPMATE_SIDECARS=1
+# or use `tauri-dev-native`). Needs cargo-tauri (`cargo install tauri-cli@^2`).
 tauri-dev:
     cd src-tauri && cargo tauri dev
+
+# Native shell with the Python inference sidecars (part 4): the Rust shell spawns
+# `uv run python -m slipmate.sidecar` per deck and streams PCM over loopback TCP
+# into the engine. Needs the backend deps + model weights (`just setup`). Override
+# the launch command with SLIPMATE_SIDECAR_CMD (e.g. the packaged binary).
+tauri-dev-native:
+    cd src-tauri && SLIPMATE_SIDECARS=1 cargo tauri dev
 
 # Native shell (Phase 2): build + bundle the Tauri app (.app/.dmg) into
 # src-tauri/target/release/bundle/. Needs cargo-tauri (`cargo install tauri-cli@^2`).

@@ -38,34 +38,46 @@ use slipmate_engine::DeckHandle;
 use tauri::Manager;
 
 mod commands;
+mod sidecar;
+
+/// The default per-deck model the sidecars load (mirrors `controller.py`
+/// `DEFAULT_MODEL`).
+const DEFAULT_MODEL: &str = "mrt2_small";
 
 /// Tauri-managed audio state held ALONGSIDE the [`Host`]: the running output
-/// stream (kept alive so its Drop does not stop audio), the deck producer handles
-/// (kept alive for the future sidecar feed; dropping a producer closes its ring),
-/// and whether the device actually started.
+/// stream (kept alive so its Drop does not stop audio) and whether the device
+/// actually started.
 ///
-/// The `Host` itself is managed separately so the commands can take it as
+/// The `Host` is managed separately so the commands can take it as
 /// `tauri::State<'_, Host>` directly. This struct holds the things the commands
 /// do not need but the app must keep alive.
-///
-/// Wrapped in `Mutex`es only to satisfy Tauri's `Send + Sync` managed-state bound
-/// uniformly; neither field is mutated after setup.
 struct AudioState {
     /// Held only to keep the cpal stream alive for the app's lifetime — its
     /// `Drop` stops audio. `None` in the sandbox/headless case.
     _stream: Mutex<Option<AudioStream>>,
-    /// The deck producer handles for the sidecar PCM feed (a later step). Held so
-    /// the input rings stay open; not yet written to.
-    _deck_handles: Mutex<Vec<DeckHandle>>,
     device_started: bool,
 }
 
+/// Deck producer handles NOT owned by a sidecar (sidecars disabled, or a spawn
+/// failed) — held in managed state only to keep their input rings open (dropping
+/// a producer closes its ring). Empty when every deck has a live sidecar.
+struct IdleHandles(#[allow(dead_code)] Mutex<Vec<DeckHandle>>);
+
+/// A sidecar status line for the webview (the `('status', dict)` worker output,
+/// or a synthetic `worker_died`). Emitted on the `sidecar://status` event.
+#[derive(Clone, serde::Serialize)]
+struct SidecarStatus {
+    deck: usize,
+    /// The raw status JSON from the worker; the webview parses it.
+    json: String,
+}
+
 /// Build the host (engine + render thread + decks), start the cpal device that
-/// drains the host's output ring, and return both the [`Host`] (for managed
-/// state, so the commands can drive it) and the [`AudioState`] holding the stream
-/// and the deck handles. The device-start path is graceful: a missing device
-/// leaves the host running headlessly with `device_started = false`.
-fn start_audio() -> (Host, AudioState) {
+/// drains the host's output ring, and return the [`Host`], the [`AudioState`]
+/// holding the stream, and the two deck producer handles (for the sidecar feed).
+/// The device-start path is graceful: a missing device leaves the host running
+/// headlessly with `device_started = false`.
+fn start_audio() -> (Host, AudioState, [DeckHandle; slipmate_engine::DECK_COUNT]) {
     let (host, output, deck_handles) = Host::new();
 
     let (stream, device_started) = match engine_device::run_host_stream(output) {
@@ -93,10 +105,51 @@ fn start_audio() -> (Host, AudioState) {
 
     let state = AudioState {
         _stream: Mutex::new(stream),
-        _deck_handles: Mutex::new(deck_handles.into_iter().collect()),
         device_started,
     };
-    (host, state)
+    (host, state, deck_handles)
+}
+
+/// Spawn one inference sidecar per deck, each fed by its [`DeckHandle`] and
+/// reporting status as a `sidecar://status` Tauri event. Gated behind the
+/// `SLIPMATE_SIDECARS` env var during the migration (so a plain `tauri dev` does
+/// not launch Python until the native inference path is enabled / on the
+/// checklist); part 7 (cutover) makes it the default. Handles for decks without a
+/// sidecar are returned to keep their rings open.
+fn start_sidecars(
+    app: &tauri::AppHandle,
+    handles: [DeckHandle; slipmate_engine::DECK_COUNT],
+) -> (sidecar::Sidecars, Vec<DeckHandle>) {
+    const DECK_IDS: [&str; slipmate_engine::DECK_COUNT] = ["a", "b"];
+    let enabled = std::env::var("SLIPMATE_SIDECARS").is_ok();
+    if !enabled {
+        eprintln!("slipmate-app: sidecars disabled (set SLIPMATE_SIDECARS=1 to enable)");
+        return (
+            sidecar::Sidecars::new(handles.iter().map(|_| None).collect()),
+            handles.into_iter().collect(),
+        );
+    }
+
+    let mut decks = Vec::new();
+    for (idx, handle) in handles.into_iter().enumerate() {
+        let app = app.clone();
+        let deck_id = DECK_IDS[idx];
+        match sidecar::Sidecar::spawn(deck_id, DEFAULT_MODEL, handle, move |json| {
+            use tauri::Emitter;
+            let _ = app.emit("sidecar://status", SidecarStatus { deck: idx, json });
+        }) {
+            Ok(sidecar) => decks.push(Some(sidecar)),
+            Err(e) => {
+                // A failed spawn drops that deck's handle (ring closes); the deck
+                // stays silent, like the no-audio-device path.
+                eprintln!("slipmate-app: deck {deck_id} sidecar spawn failed: {e}");
+                decks.push(None);
+            }
+        }
+    }
+    // Every handle was moved into a sidecar (or dropped on a failed spawn), so no
+    // idle handles remain in the enabled path.
+    (sidecar::Sidecars::new(decks), Vec::new())
 }
 
 /// Report the app version and whether the cpal device came up. Lets the frontend
@@ -123,11 +176,15 @@ pub fn run() {
         // into the webview.
         .plugin(tauri_plugin_midi::init())
         .setup(|app| {
-            // Start the audio host (engine + render thread + device) and hold the
-            // Host and the AudioState in managed state for the app's lifetime.
-            let (host, audio_state) = start_audio();
+            // Start the audio host (engine + render thread + device), then spawn
+            // the per-deck inference sidecars fed by the deck handles. Everything
+            // is held in managed state for the app's lifetime.
+            let (host, audio_state, deck_handles) = start_audio();
+            let (sidecars, idle_handles) = start_sidecars(&app.handle().clone(), deck_handles);
             app.manage(host);
             app.manage(audio_state);
+            app.manage(sidecars);
+            app.manage(IdleHandles(Mutex::new(idle_handles)));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -160,6 +217,10 @@ pub fn run() {
             commands::loop_slots,
             commands::track_peaks,
             commands::engine_snapshot,
+            commands::deck_play,
+            commands::deck_stop,
+            commands::deck_set_prompt,
+            commands::deck_set_style,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
