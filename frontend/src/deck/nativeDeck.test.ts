@@ -45,8 +45,16 @@ describe('sendNativeDeckCommand', () => {
     ])
   })
 
-  it('drops model switch / restart (unsupported in native v1)', () => {
+  it('maps set_model and restart to deck_set_model (with the model)', () => {
     sendNativeDeckCommand('a', { type: 'set_model', model: 'mrt2_base' })
+    sendNativeDeckCommand('b', { type: 'restart', model: 'mrt2_small' })
+    expect(invokeCalls).toEqual([
+      { cmd: 'deck_set_model', args: { deck: 0, model: 'mrt2_base' } },
+      { cmd: 'deck_set_model', args: { deck: 1, model: 'mrt2_small' } },
+    ])
+  })
+
+  it('drops a model switch with no model (rejected at the Rust boundary anyway)', () => {
     sendNativeDeckCommand('a', { type: 'restart' })
     expect(invokeCalls).toEqual([])
   })

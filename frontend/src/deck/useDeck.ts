@@ -1052,8 +1052,10 @@ export function useDeck(deckId: DeckId): DeckControls {
   )
 
   const restartWorker = useCallback(() => {
-    send({ type: 'restart' })
-  }, [send])
+    // Carry the current model so the native path can respawn the same model (the
+    // web controller ignores it and restarts with the model it already tracks).
+    send({ type: 'restart', model: state.model ?? undefined })
+  }, [send, state.model])
 
   const setVolume = useCallback(
     (next: number) => {

@@ -91,8 +91,15 @@ status arrives as `sidecar://status` events (`useDeck` selects this with
 - [ ] Remaining native integration (follow-ups, need the live stack):
   - [ ] Beat/loudness analysis fed from a sidecar/engine feature tap (the model
         PCM no longer transits the UI, so analysis is currently inactive in the
-        native shell).
-  - [ ] In-process model switch / sidecar restart (the model is fixed at spawn).
+        native shell). — addressed by the analysis PCM tap (gap 1).
+  - [x] In-process model switch / sidecar restart (the model is fixed at spawn).
+        — done: `deck_set_model` restarts the sidecar reusing the deck ring. On
+        the live stack, verify: switching a deck's model reloads + plays the new
+        model; no `worker_died`; the other deck is uninterrupted; a bad/missing
+        model leaves the old sidecar running (bind/launch fails) or surfaces
+        `worker_died` recoverable by re-selecting. Known follow-up: the old
+        model's already-buffered ~3 s of ring PCM is not flushed on switch (needs
+        an engine-side realtime-ring reset), so a brief old-model tail can play.
   - [ ] The sa3 pad/track HTTP generation path (`/api/render`, `/api/generate`)
         rehosted for the native app.
   - [ ] Remove the now-inert browser cue UI (phones picker / `cueStream`).

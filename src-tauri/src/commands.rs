@@ -507,6 +507,20 @@ pub fn deck_set_prompt(state: tauri::State<'_, Sidecars>, deck: usize, prompt: S
     }
 }
 
+/// Switch a deck's model (an in-process sidecar restart, reusing the deck ring).
+/// Validates the deck index and the model name at the trust boundary; the running
+/// sidecar is left untouched if the respawn fails.
+#[tauri::command]
+pub fn deck_set_model(state: tauri::State<'_, Sidecars>, deck: usize, model: String) -> Result<(), String> {
+    if !valid_deck(deck) {
+        return Err("invalid deck".into());
+    }
+    if model.is_empty() || model.len() > 64 {
+        return Err("invalid model name".into());
+    }
+    state.restart(deck, &model)
+}
+
 #[tauri::command]
 pub fn deck_set_style(state: tauri::State<'_, Sidecars>, deck: usize, prompts: Vec<PromptEntryArg>) {
     if !valid_deck(deck) {

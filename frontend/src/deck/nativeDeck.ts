@@ -31,9 +31,10 @@ function tauri(): TauriGlobal | null {
 export type DeckCommand = { type: string; [key: string]: unknown }
 
 /** Forward a deck command to the sidecar over IPC. play/stop/set_style map to the
- * `deck_*` commands; model switch + worker restart are NOT supported in the
- * native v1 (the sidecar's model is fixed at spawn — in-process restart is a
- * documented follow-up), so they are dropped. */
+ * `deck_*` commands; set_model and restart both map to `deck_set_model` (a model
+ * switch restarts the sidecar with the new model, reusing the deck ring; restart
+ * re-uses the deck's current model, which `useDeck` passes through). A command
+ * with no model is dropped (the Rust side rejects an empty model). */
 export function sendNativeDeckCommand(deckId: DeckId, command: DeckCommand): void {
   const core = tauri()?.core
   if (!core) return
@@ -50,7 +51,9 @@ export function sendNativeDeckCommand(deckId: DeckId, command: DeckCommand): voi
       break
     case 'set_model':
     case 'restart':
-      // Unsupported in native v1 (sidecar model fixed at spawn) — no-op.
+      if (typeof command.model === 'string' && command.model) {
+        void core.invoke('deck_set_model', { deck, model: command.model })
+      }
       break
     default:
       break

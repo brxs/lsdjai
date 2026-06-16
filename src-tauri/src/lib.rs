@@ -223,6 +223,7 @@ pub fn run() {
             commands::deck_stop,
             commands::deck_set_prompt,
             commands::deck_set_style,
+            commands::deck_set_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

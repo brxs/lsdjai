@@ -135,6 +135,25 @@ pub fn run_reader(
     deck_handle
 }
 
+/// What a reader thread hands back when its sidecar connection ends: the deck
+/// ring producer ([`DeckHandle`]) and the status sink. The engine's input ring is
+/// PERMANENT across a sidecar exit (the consumer lives inside the engine), so the
+/// producer must be RECLAIMED — never dropped — to feed a respawned sidecar after
+/// a model switch. [`Sidecar::restart`] joins the reader to take these back.
+struct ReaderExit {
+    handle: DeckHandle,
+    on_status: Box<dyn FnMut(String) + Send>,
+}
+
+/// The freshly-built control writer, child handle, stop flag, and reader thread —
+/// the pieces a (re)spawn produces and a [`Sidecar`] installs.
+struct ReaderParts {
+    control: Arc<Mutex<Option<TcpStream>>>,
+    child: Arc<Mutex<Option<Child>>>,
+    stop: Arc<AtomicBool>,
+    reader: JoinHandle<ReaderExit>,
+}
+
 /// One supervised deck sidecar: the spawned Python process, the control writer
 /// (engine → sidecar), and the reader thread (sidecar → engine). Dropping it
 /// stops the reader, closes the socket, and kills the child.
@@ -145,7 +164,87 @@ pub struct Sidecar {
     control: Arc<Mutex<Option<TcpStream>>>,
     child: Arc<Mutex<Option<Child>>>,
     stop: Arc<AtomicBool>,
-    reader: Option<JoinHandle<()>>,
+    /// The accept+read thread; its result carries the reclaimable [`ReaderExit`].
+    reader: Option<JoinHandle<ReaderExit>>,
+}
+
+/// Bind a loopback listener and launch the Python sidecar pointed at it — the
+/// FALLIBLE prefix, done BEFORE any [`DeckHandle`] is committed, so a bad launch
+/// (or a bind failure) never costs the deck its ring producer. [`Sidecar::restart`]
+/// runs this first and leaves the running sidecar untouched if it fails.
+fn bind_and_launch(deck_id: &str, model: &str) -> io::Result<(TcpListener, Child)> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(false).ok();
+    let port = listener.local_addr()?.port();
+    let child = sidecar_command(deck_id, model, port)?.spawn()?;
+    Ok((listener, child))
+}
+
+/// Start the accept+read thread for an already-launched `child`, moving the deck
+/// `handle` and `on_status` sink into it. The thread accepts the sidecar's
+/// connection, stashes the control writer, runs [`run_reader`], and returns the
+/// reclaimable [`ReaderExit`] when the connection ends.
+///
+/// Infallible by design: a reader-thread spawn failure is resource exhaustion and
+/// PANICS (like the engine render thread, `host.rs`). The alternative — returning
+/// the `handle` on a recoverable error — is moot when the OS is out of threads,
+/// and a fallible signature would risk DROPPING the deck's permanent ring producer
+/// in a half-built state. The fallible prefix (bind + launch) lives in
+/// [`bind_and_launch`], BEFORE the handle is committed, so a restart can leave the
+/// running sidecar untouched on the only recoverable failures.
+fn start_reader(
+    listener: TcpListener,
+    deck_id: &str,
+    child: Child,
+    handle: DeckHandle,
+    mut on_status: Box<dyn FnMut(String) + Send>,
+) -> ReaderParts {
+    let control: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
+    let stop = Arc::new(AtomicBool::new(false));
+    let control_for_reader = control.clone();
+    let stop_for_reader = stop.clone();
+    let deck_label = deck_id.to_string();
+    let reader = thread::Builder::new()
+        .name(format!("slipmate-sidecar-{deck_id}"))
+        .spawn(move || {
+            // Bound the accept so a sidecar that never connects cannot hang the
+            // thread forever; poll the listener until the deadline OR until `stop`
+            // is set — a teardown / restart wakes a never-connected accept promptly
+            // instead of waiting out ACCEPT_TIMEOUT (which would freeze the deck's
+            // control while the supervisor joins this thread).
+            let stream = match accept_with_timeout(&listener, &stop_for_reader, ACCEPT_TIMEOUT) {
+                Some(s) => s,
+                None => {
+                    eprintln!("slipmate-sidecar-{deck_label}: sidecar never connected");
+                    return ReaderExit { handle, on_status };
+                }
+            };
+            stream.set_nodelay(true).ok();
+            match stream.try_clone() {
+                Ok(writer) => {
+                    *control_for_reader.lock().unwrap_or_else(|p| p.into_inner()) = Some(writer)
+                }
+                Err(e) => {
+                    eprintln!("slipmate-sidecar-{deck_label}: cannot split socket: {e}");
+                    return ReaderExit { handle, on_status };
+                }
+            }
+            let handle = run_reader(stream, handle, &mut on_status);
+            // Reader returned → the sidecar exited / disconnected. Report it unless
+            // we asked it to stop (a clean shutdown / model switch).
+            *control_for_reader.lock().unwrap_or_else(|p| p.into_inner()) = None;
+            if !stop_for_reader.load(Ordering::Acquire) {
+                on_status(format!("{{\"event\":\"worker_died\",\"deck\":\"{deck_label}\"}}"));
+            }
+            ReaderExit { handle, on_status }
+        })
+        .expect("failed to spawn slipmate sidecar reader thread");
+    ReaderParts {
+        control,
+        child: Arc::new(Mutex::new(Some(child))),
+        stop,
+        reader,
+    }
 }
 
 impl Sidecar {
@@ -164,61 +263,67 @@ impl Sidecar {
         deck_handle: DeckHandle,
         on_status: impl FnMut(String) + Send + 'static,
     ) -> io::Result<Sidecar> {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        listener.set_nonblocking(false).ok();
-        let port = listener.local_addr()?.port();
-
-        let child = sidecar_command(deck_id, model, port)?.spawn()?;
-
-        let control: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
-        let stop = Arc::new(AtomicBool::new(false));
-
-        // Accept + read on one thread: it owns the listener until the sidecar
-        // dials back, stashes the control writer, then runs the read loop.
-        let control_for_reader = control.clone();
-        let stop_for_reader = stop.clone();
-        let deck_label = deck_id.to_string();
-        let mut on_status = on_status;
-        let reader = thread::Builder::new()
-            .name(format!("slipmate-sidecar-{deck_id}"))
-            .spawn(move || {
-                // Bound the accept so a sidecar that never connects cannot hang
-                // the thread forever; poll the listener until the deadline.
-                let stream = match accept_with_timeout(&listener, ACCEPT_TIMEOUT) {
-                    Some(s) => s,
-                    None => {
-                        eprintln!("slipmate-sidecar-{deck_label}: sidecar never connected");
-                        return;
-                    }
-                };
-                stream.set_nodelay(true).ok();
-                match stream.try_clone() {
-                    Ok(writer) => *control_for_reader.lock().unwrap() = Some(writer),
-                    Err(e) => {
-                        eprintln!("slipmate-sidecar-{deck_label}: cannot split socket: {e}");
-                        return;
-                    }
-                }
-                let _handle = run_reader(stream, deck_handle, &mut on_status);
-                // Reader returned → the sidecar exited / disconnected. Report it
-                // unless we asked it to stop (a clean shutdown / model switch). The
-                // handle is dropped here; v1 spawns one sidecar per deck for the
-                // app's lifetime (in-process restart is a documented follow-up).
-                *control_for_reader.lock().unwrap() = None;
-                if !stop_for_reader.load(Ordering::Acquire) {
-                    on_status(format!(
-                        "{{\"event\":\"worker_died\",\"deck\":\"{deck_label}\"}}"
-                    ));
-                }
-            })?;
-
+        let (listener, child) = bind_and_launch(deck_id, model)?;
+        let parts = start_reader(listener, deck_id, child, deck_handle, Box::new(on_status));
         Ok(Sidecar {
             deck_id: deck_id.to_string(),
-            control,
-            child: Arc::new(Mutex::new(Some(child))),
-            stop,
-            reader: Some(reader),
+            control: parts.control,
+            child: parts.child,
+            stop: parts.stop,
+            reader: Some(parts.reader),
         })
+    }
+
+    /// Restart this deck's sidecar with `new_model`, REUSING the deck's permanent
+    /// ring producer (an in-process model switch). The new child is launched
+    /// FIRST, so a bind/launch failure leaves the running sidecar untouched and
+    /// returns `Err`; only once it is up is the old child torn down, its
+    /// [`DeckHandle`] reclaimed (the reader returns it), and handed to the new
+    /// reader. The engine's input ring stays open throughout — `render` just
+    /// under-runs to silence on that deck while the new model loads. A model that
+    /// fails to LOAD surfaces as `worker_died` and leaves the deck silent until a
+    /// valid model is selected; the ring is preserved, so recovery is a re-select.
+    ///
+    /// Emits a `model_loading` status across the switch (parity with the Web
+    /// path), so the deck resets its channel and shows the loading state. (Flushing
+    /// the old model's already-buffered ~3 s of ring PCM needs an engine-side ring
+    /// reset — a documented follow-up; until then a brief old-model tail can play
+    /// out as the new stream takes over.)
+    pub fn restart(&mut self, new_model: &str) -> io::Result<()> {
+        // Launch the new child FIRST. On a bind/launch failure the running sidecar
+        // — and its ring producer — are completely untouched; only after this
+        // succeeds do we reclaim the handle, so it is never at risk on a recoverable
+        // error.
+        let (listener, child) = bind_and_launch(&self.deck_id, new_model)?;
+
+        // `stop` suppresses the old reader's `worker_died` across the deliberate
+        // switch; killing the old child closes its socket (and the stop flag wakes a
+        // never-connected accept), so the join returns promptly.
+        self.stop.store(true, Ordering::Release);
+        *self.control.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        if let Some(mut old) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            let _ = old.kill();
+            let _ = old.wait();
+        }
+        let exit = self
+            .reader
+            .take()
+            .ok_or_else(|| io::Error::other("sidecar has no reader to reclaim"))?
+            .join()
+            .map_err(|_| io::Error::other("sidecar reader thread panicked"))?;
+
+        let mut on_status = exit.on_status;
+        on_status(format!(
+            "{{\"event\":\"model_loading\",\"deck\":\"{}\",\"model\":\"{new_model}\"}}",
+            self.deck_id
+        ));
+
+        let parts = start_reader(listener, &self.deck_id, child, exit.handle, on_status);
+        self.control = parts.control;
+        self.child = parts.child;
+        self.stop = parts.stop;
+        self.reader = Some(parts.reader);
+        Ok(())
     }
 
     /// Send a JSON deck command to the sidecar (`{"type":"play"}`, `set_style`,
@@ -237,21 +342,40 @@ impl Sidecar {
 
 /// All per-deck sidecars, held in Tauri managed state. The deck-control commands
 /// forward validated JSON to the matching sidecar; a deck with no sidecar (spawn
-/// failed, or sidecars disabled) silently drops the command.
+/// failed, or sidecars disabled) silently drops the command. Each slot is a
+/// `Mutex` so `deck_set_model` can mutate one sidecar (a model switch) through the
+/// shared `tauri::State` without a supervisor thread.
 pub struct Sidecars {
-    decks: Vec<Option<Sidecar>>,
+    decks: Vec<Mutex<Option<Sidecar>>>,
 }
 
 impl Sidecars {
     pub fn new(decks: Vec<Option<Sidecar>>) -> Self {
-        Sidecars { decks }
+        Sidecars {
+            decks: decks.into_iter().map(Mutex::new).collect(),
+        }
     }
 
     /// Forward a JSON deck command to the sidecar for `deck` (a no-op for a deck
     /// without a live sidecar). `deck` is validated by the IPC layer.
     pub fn send(&self, deck: usize, json: &str) {
-        if let Some(Some(sidecar)) = self.decks.get(deck) {
-            sidecar.send_control(json);
+        if let Some(slot) = self.decks.get(deck) {
+            if let Some(sidecar) = slot.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+                sidecar.send_control(json);
+            }
+        }
+    }
+
+    /// Restart a deck's sidecar with `model` (an in-process model switch). Errors
+    /// if the deck index is invalid, the deck has no sidecar, or the respawn fails
+    /// (in which case the running sidecar is left untouched). `deck` is validated
+    /// by the IPC layer.
+    pub fn restart(&self, deck: usize, model: &str) -> Result<(), String> {
+        let slot = self.decks.get(deck).ok_or("invalid deck")?;
+        let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
+        match guard.as_mut() {
+            Some(sidecar) => sidecar.restart(model).map_err(|e| e.to_string()),
+            None => Err("deck has no sidecar".to_string()),
         }
     }
 }
@@ -259,23 +383,30 @@ impl Sidecars {
 impl Drop for Sidecar {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        // Closing the control writer + killing the child closes the socket, so
-        // the reader's `read_frame` returns and the thread exits.
-        if let Some(mut child) = self.child.lock().unwrap().take() {
+        // Closing the control writer + killing the child closes the socket, so the
+        // reader's `read_frame` returns; `stop` (set above) also wakes a
+        // never-connected accept, so the join never waits out ACCEPT_TIMEOUT.
+        if let Some(mut child) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
             let _ = child.kill();
             let _ = child.wait();
         }
-        *self.control.lock().unwrap() = None;
+        *self.control.lock().unwrap_or_else(|p| p.into_inner()) = None;
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
     }
 }
 
-/// Poll-accept the first connection within `timeout`, or `None` on timeout. Uses
-/// a brief non-blocking poll loop so the wait is bounded without a dedicated
-/// timer thread.
-fn accept_with_timeout(listener: &TcpListener, timeout: Duration) -> Option<TcpStream> {
+/// Poll-accept the first connection within `timeout`, or `None` on timeout / when
+/// `stop` is set. Uses a brief non-blocking poll loop so the wait is bounded
+/// without a dedicated timer thread, and checks `stop` each iteration so a
+/// teardown (`Drop`) or a model switch (`restart`) unblocks a never-connected
+/// accept promptly rather than waiting out the whole `timeout`.
+fn accept_with_timeout(
+    listener: &TcpListener,
+    stop: &AtomicBool,
+    timeout: Duration,
+) -> Option<TcpStream> {
     let deadline = std::time::Instant::now() + timeout;
     listener.set_nonblocking(true).ok();
     loop {
@@ -285,7 +416,7 @@ fn accept_with_timeout(listener: &TcpListener, timeout: Duration) -> Option<TcpS
                 return Some(stream);
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                if std::time::Instant::now() >= deadline {
+                if stop.load(Ordering::Acquire) || std::time::Instant::now() >= deadline {
                     return None;
                 }
                 thread::sleep(Duration::from_millis(20));
@@ -407,5 +538,82 @@ mod tests {
         let mut sink = |s: String| statuses.push(s);
         let _handle = run_reader(server, handle, &mut sink);
         assert_eq!(statuses, vec!["{\"event\":\"ready\"}".to_string()]);
+    }
+
+    /// In-process model switch: `restart` respawns the sidecar with a new model,
+    /// reusing the deck's permanent ring producer, and suppresses a false
+    /// `worker_died` across the deliberate switch. Wires a minimal stdlib-only
+    /// Python stand-in (no models) via `SLIPMATE_SIDECAR_CMD`.
+    #[test]
+    fn restart_switches_model_without_a_worker_died() {
+        // A stand-in sidecar: connect to --port, announce ready with --model, then
+        // block until the parent closes the socket. No backend deps.
+        let script = r#"import socket, struct, json, argparse
+p = argparse.ArgumentParser()
+p.add_argument('--port', type=int)
+p.add_argument('--model')
+p.add_argument('--deck')
+a, _ = p.parse_known_args()
+s = socket.create_connection(('127.0.0.1', a.port))
+b = json.dumps({'event': 'ready', 'model': a.model}).encode()
+s.sendall(struct.pack('<BI', 2, len(b)) + b)
+while s.recv(4096):
+    pass
+"#;
+        let path =
+            std::env::temp_dir().join(format!("slipmate_fake_sidecar_{}.py", std::process::id()));
+        std::fs::write(&path, script).unwrap();
+        // SAFETY-ish: no other test reads SLIPMATE_SIDECAR_CMD or calls
+        // Sidecar::spawn, so this process-global is uncontended; removed at the end.
+        std::env::set_var("SLIPMATE_SIDECAR_CMD", format!("python3 {}", path.display()));
+
+        let mut engine = Engine::new();
+        let handle = engine.create_deck(0);
+        let statuses = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = {
+            let statuses = statuses.clone();
+            move |s: String| statuses.lock().unwrap().push(s)
+        };
+
+        let mut sidecar = Sidecar::spawn("a", "model_a", handle, sink).expect("spawn fake sidecar");
+
+        // Wait for a `ready` status carrying `model` — distinct from the
+        // `model_loading` status restart also emits (which is not a `ready`).
+        let saw_ready = |model: &str| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                if statuses
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|s| s.contains("ready") && s.contains(model))
+                {
+                    return true;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            false
+        };
+
+        assert!(saw_ready("model_a"), "first child should report ready with model_a");
+        sidecar.restart("model_b").expect("restart");
+        assert!(
+            saw_ready("model_b"),
+            "the restarted child should report ready with model_b"
+        );
+        let log = statuses.lock().unwrap();
+        assert!(
+            !log.iter().any(|s| s.contains("worker_died")),
+            "a deliberate model switch must not emit worker_died"
+        );
+        assert!(
+            log.iter().any(|s| s.contains("model_loading") && s.contains("model_b")),
+            "the switch should emit model_loading for the new model"
+        );
+        drop(log);
+
+        drop(sidecar);
+        std::env::remove_var("SLIPMATE_SIDECAR_CMD");
+        let _ = std::fs::remove_file(&path);
     }
 }
