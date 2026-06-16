@@ -324,6 +324,84 @@ fn raw_payload<'a>(request: &'a tauri::ipc::Request<'_>) -> Result<&'a [u8], Str
     }
 }
 
+/// The audio extensions the folder browser surfaces (mirrors the frontend
+/// `AUDIO_FILE` regex). Compared case-insensitively.
+const AUDIO_EXTENSIONS: [&str; 7] = ["wav", "mp3", "flac", "m4a", "ogg", "aif", "aiff"];
+
+/// Whether `path` has one of [`AUDIO_EXTENSIONS`] (case-insensitive).
+fn is_audio_file(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| AUDIO_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// Upper bound on a file [`read_audio_file`] will return. Generous for a long
+/// high-res track yet bounds a pathological huge file (a blind read into memory).
+const MAX_AUDIO_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// List the audio file NAMES directly inside `dir` (non-recursive), sorted
+/// case-insensitively (matching the web path's `localeCompare`). `dir` is a folder
+/// the user just chose in the native picker (WKWebView has no File System Access
+/// API). Only names are returned — [`read_audio_file`] re-derives and re-validates
+/// the path from `dir` + name, so the webview never supplies a path to read. A read
+/// error (missing / not a directory / no permission) surfaces to the webview.
+#[tauri::command]
+pub fn list_audio_files(dir: String) -> Result<Vec<String>, String> {
+    let entries = std::fs::read_dir(&dir).map_err(|e| format!("cannot read folder: {e}"))?;
+    let mut names: Vec<String> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && is_audio_file(path))
+        .filter_map(|path| path.file_name()?.to_str().map(str::to_string))
+        .collect();
+    names.sort_by_key(|name| name.to_lowercase());
+    Ok(names)
+}
+
+/// Read one audio file the user picked, SCOPED to the folder they chose: `name`
+/// must be a plain filename resolving to a regular file directly inside `dir`. The
+/// webview is an untrusted caller (module header / `.claude/rules/security.md`), so
+/// THIS — not the extension — is the boundary: without it a raw path would let a
+/// compromised webview read any file the user can (SSH keys, keychains, cookie DBs).
+/// Canonicalising both sides defeats `..` traversal and symlinks that escape the
+/// folder; the regular-file + size checks reject FIFOs / devices / huge files that a
+/// blind `read` would hang or OOM on. `async` keeps the read off the main thread.
+/// Returns the bytes as binary (a track is many MB — `ipc::Response`).
+#[tauri::command]
+pub async fn read_audio_file(dir: String, name: String) -> Result<tauri::ipc::Response, String> {
+    // `name` must be a single ordinary path component — never a path, "..", or
+    // absolute — so it cannot point outside `dir`.
+    let mut comps = std::path::Path::new(&name).components();
+    if !matches!(
+        (comps.next(), comps.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    ) {
+        return Err("invalid file name".to_string());
+    }
+    // Canonicalise both sides and require the resolved file is a DIRECT CHILD of the
+    // resolved chosen folder — this rejects `..` and any symlink whose target
+    // escapes the folder.
+    let base = std::fs::canonicalize(&dir).map_err(|e| format!("cannot resolve folder: {e}"))?;
+    let target =
+        std::fs::canonicalize(base.join(&name)).map_err(|e| format!("cannot resolve file: {e}"))?;
+    if target.parent() != Some(base.as_path()) {
+        return Err("file is outside the chosen folder".to_string());
+    }
+    if !is_audio_file(&target) {
+        return Err("not an audio file".to_string());
+    }
+    let meta = std::fs::metadata(&target).map_err(|e| format!("cannot stat file: {e}"))?;
+    if !meta.is_file() {
+        return Err("not a regular file".to_string());
+    }
+    if meta.len() > MAX_AUDIO_BYTES {
+        return Err("file is too large".to_string());
+    }
+    let bytes = std::fs::read(&target).map_err(|e| format!("cannot read file: {e}"))?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 /// Load a decoded track onto a deck, switching it to Playback. The payload is a
 /// little-endian `u32` deck index followed by interleaved-stereo f32 @ 48 kHz
 /// (the webview decodes + resamples a WAV and ships the bytes). Sent over Tauri's

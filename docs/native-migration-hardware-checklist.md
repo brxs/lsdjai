@@ -25,6 +25,11 @@ Run the native stack with `just tauri-dev` (Tauri app + sidecars; needs
 - [ ] Selecting / clearing an effect (FX-none) engages / removes it.
 - [ ] Load a track: waveform overview renders, transport (play/pause/seek), the
       varispeed tempo, and a track loop work; the playhead is exact.
+- [ ] Media browser → Folder tab: the native OS picker opens (dialog plugin), the
+      chosen folder's audio files list, and loading one onto a deck plays it. (The
+      Chromium File System Access API is unavailable in WKWebView; this is the
+      `list_audio_files` / `read_audio_file` path. A read is scoped to the chosen
+      folder — picking a folder then loading a file outside it must fail.)
 - [ ] Freeze pads, generated pads (one-shots + loops), and style-sample capture.
 - [ ] Master recording works: record the master bus, stop, and the downloaded
       WAV plays back the set (16-bit PCM, capped at 30 min).

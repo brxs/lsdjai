@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main-window capability — Tauri core plus WebMIDI via tauri-plugin-midi (ADR-0005).",
+  "description": "Main-window capability — Tauri core, WebMIDI via tauri-plugin-midi (ADR-0005), and the native folder picker (dialog open).",
   "windows": ["main"],
-  "permissions": ["core:default", "midi:default"]
+  "permissions": ["core:default", "midi:default", "dialog:allow-open"]
 }

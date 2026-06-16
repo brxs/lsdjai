@@ -192,6 +192,9 @@ pub fn run() {
         // The WebMIDI shim (ADR-0005): injects `navigator.requestMIDIAccess`
         // into the webview.
         .plugin(tauri_plugin_midi::init())
+        // Native file/folder picker for the media browser's folder tab (WKWebView
+        // has no File System Access API).
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Start the audio host (engine + render thread + device), then spawn
             // the per-deck inference sidecars fed by the deck handles. Everything
@@ -227,6 +230,8 @@ pub fn run() {
             commands::set_cue_mix,
             commands::start_recording,
             commands::stop_recording,
+            commands::list_audio_files,
+            commands::read_audio_file,
             commands::load_track,
             commands::unload_track,
             commands::play_track,

@@ -34,6 +34,11 @@ tauri = { version = "2", features = [] }
 # the shell carries the plugin from the start; the frontend rewire to it is a
 # later step.
 tauri-plugin-midi = "0.2"
+# Native file/folder picker for the media browser's folder tab — WKWebView has no
+# File System Access API, so the Chromium showDirectoryPicker path can't run
+# natively. First-party Tauri plugin; the directory listing + file reads are our
+# own commands (no fs plugin / scope needed).
+tauri-plugin-dialog = "2"
 # The audio engine as a workspace member (the cpal device + RT-safe mix core).
 slipmate-engine = { path = "engine" }
 serde = { version = "1", features = ["derive"] }

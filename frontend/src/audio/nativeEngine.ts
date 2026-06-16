@@ -71,9 +71,11 @@ export function getApiBaseUrl(): Promise<string> {
   return apiBaseUrlPromise
 }
 
-/** Fire a command at the Rust engine. Rejects (caught by callers that care) when
- * the IPC bridge is absent — never throws synchronously. */
-function invoke<T = void>(cmd: string, args?: unknown, options?: unknown): Promise<T> {
+/** Fire a command at the Rust engine (or a Tauri plugin, e.g. `plugin:dialog|open`).
+ * Rejects (caught by callers that care) when the IPC bridge is absent — never
+ * throws synchronously. Exported for the few non-engine native callers
+ * (MediaExplorer's folder picker). */
+export function invoke<T = void>(cmd: string, args?: unknown, options?: unknown): Promise<T> {
   const g = tauriGlobal()
   if (!g) return Promise.reject(new Error('Tauri IPC unavailable'))
   return g.core.invoke<T>(cmd, args, options)
