@@ -1,0 +1,38 @@
+[package]
+name = "slipmate-engine"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "SlipMate native audio engine: RT-safe two-deck cpal/fundsp mix (Phase 1, ADR-0017/0019)."
+
+# The audio engine as a LIBRARY crate so the RT-safe core (Engine::render) is
+# testable headless in CI (cargo test, no device). The cpal device path is a
+# thin wrapper exercised by the device_run binary and on real hardware.
+[lib]
+name = "slipmate_engine"
+path = "src/lib.rs"
+
+# A standalone binary that drives the library against a real output device for
+# N seconds with synthetic producers — keeps the device path exercisable.
+[[bin]]
+name = "device_run"
+path = "src/bin/device_run.rs"
+
+[dependencies]
+# Pinned per .claude/rules/security.md; same versions proven in Spike A
+# (spike/rust-audio/engine/Cargo.toml):
+#   fundsp — DSP graph library; the per-deck EQ biquad chain (flat for now).
+#   cpal   — de-facto Rust cross-platform audio I/O (CoreAudio backend).
+#   rtrb   — realtime-safe wait-free SPSC ring (the per-deck player ring).
+#   assert_no_alloc — allocator guard proving the cpal callback never allocs.
+fundsp = "=0.23.0"
+cpal = "=0.18.1"
+rtrb = "=0.3.4"
+# assert_no_alloc: default features include `disable_release`, which makes the
+# guard a no-op in release. We turn that off and enable `warn_release` so the
+# check stays live in release but only WARNS (never aborts) — an alloc in the
+# audio callback must not crash the stream.
+assert_no_alloc = { version = "=1.1.2", default-features = false, features = ["warn_release", "warn_debug"] }
+
+[profile.release]
+opt-level = 3

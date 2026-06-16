@@ -1,0 +1,382 @@
+//! The bare mix, ported from the Spike A `rt_engine` callback
+//! (`spike/rust-audio/engine/src/bin/rt_engine.rs`): per-deck 3-band EQ, a
+//! per-deck volume fader, an equal-power crossfade, and the master limiter
+//! (feed-forward compressor → makeup cancellation → clip-guard ceiling).
+//!
+//! Built OFF the RT thread (the `fundsp` nodes allocate at construction). On the
+//! RT path only `tick` / arithmetic run — both alloc-free on a pre-built node.
+//!
+//! ## Parity discipline (Spike A, `docs/spike-rust-audio.md`)
+//!
+//! The exact Chromium-vs-fundsp waveform parity was already proven offline in
+//! Spike A against an `OfflineAudioContext` golden (`spike/rust-audio/golden/`):
+//! the EQ shelves/bell match to ~1e-6, the limiter holds the two invariants
+//! (ceiling exact, sub-threshold transparency). The headless CI tests in this
+//! crate verify the *curve* (EQ kill/flat/boost levels) and the limiter
+//! *invariants*, not a waveform diff — the diff was the spike's job, not CI's.
+
+use fundsp::prelude32::*;
+
+use crate::fx::{FxInsert, FxKind};
+use crate::{CHANNELS, DECK_COUNT, MASTER_CEILING, SAMPLE_RATE};
+
+/// Shelf Q matching the Web Audio fixed-slope shelves (S = 1 → Q = 1/√2). The
+/// offline parity renderer uses the same value; see `spike/rust-audio`. Spike A
+/// confirmed this matches WA's RBJ S=1 shelves to ~1e-6.
+const EQ_SHELF_Q: f32 = std::f32::consts::FRAC_1_SQRT_2;
+
+/// Centre/flat knob value: both halves of the curve meet at 0 dB here.
+const EQ_FLAT: f32 = 0.5;
+/// Boost at knob = 1 (`frontend/src/audio/eq.ts` `EQ_BOOST_DB`).
+const EQ_BOOST_DB: f32 = 6.0;
+/// Kill at knob = 0 (`frontend/src/audio/eq.ts` `EQ_KILL_DB`).
+const EQ_KILL_DB: f32 = -40.0;
+
+/// EQ band centre frequencies (`frontend/src/audio/eq.ts` `EQ_FILTERS`). The low
+/// and high are true shelves; the mid is a peaking bell with gain.
+const EQ_LOW_HZ: f32 = 250.0;
+const EQ_MID_HZ: f32 = 1_000.0;
+const EQ_HIGH_HZ: f32 = 2_500.0;
+/// Mid bell Q (`frontend/src/audio/eq.ts`, matched at 0.7 in Spike A — WA
+/// peaking Q is linear, so it passes straight to fundsp).
+const EQ_MID_Q: f32 = 0.7;
+
+/// One stateful 3-band EQ chain per (deck, channel). `fundsp` filters are
+/// stateful, so each channel needs its own instance.
+const EQ_CHAINS: usize = DECK_COUNT * CHANNELS as usize;
+
+// --- Master limiter (M17 feed-forward compressor) constants ---
+//
+// `frontend/src/audio/master.ts`. Spike A established fundsp's `limiter` cannot
+// reproduce Web Audio's `DynamicsCompressorNode` body, so this is a standard
+// hand-rolled feed-forward compressor whose CONTRACT is two invariants (ceiling +
+// sub-threshold transparency), not a waveform match.
+
+/// Compressor threshold (dBFS): gain reduction begins above this.
+const LIMITER_THRESHOLD_DB: f32 = -6.0;
+/// High ratio → a limiter, not a gentle compressor.
+const LIMITER_RATIO: f32 = 20.0;
+/// Attack / release times (seconds). Fast attack catches transients; slow
+/// release avoids pumping.
+const LIMITER_ATTACK_SECONDS: f32 = 0.002;
+const LIMITER_RELEASE_SECONDS: f32 = 0.25;
+
+/// The implicit makeup Web Audio's `DynamicsCompressor` applies on EVERYTHING is
+/// `(1/fullScaleGain)^0.6`; in dB that is `-0.6 * FULL_SCALE_GAIN_DB` where
+/// `FULL_SCALE_GAIN_DB = thr - thr/ratio = -6 - (-6/20) = -5.7`. So the implicit
+/// makeup is `-0.6 * -5.7 = +3.42 dB`. We CANCEL it (apply the inverse,
+/// `10^(-3.42/20) ≈ 0.6745`) so the limiter is level-transparent below threshold
+/// — the sub-threshold-transparency invariant. Mirrors `LIMITER_MAKEUP_DB` in
+/// `master.ts`. Computed (not const-folded) so the `powf`s stay exact; see
+/// `MasterLimiter::new`.
+const LIMITER_FULL_SCALE_GAIN_DB: f32 =
+    LIMITER_THRESHOLD_DB - LIMITER_THRESHOLD_DB / LIMITER_RATIO;
+const LIMITER_MAKEUP_DB: f32 = -0.6 * LIMITER_FULL_SCALE_GAIN_DB;
+
+/// The hand-rolled feed-forward master limiter: peak detector → gain computer
+/// (hard knee, threshold −6 dB, ratio 20) → attack/release envelope smoothing →
+/// makeup cancellation. The clip guard (a ±MASTER_CEILING clamp) runs after this
+/// in `mix_frame` and guarantees the ceiling invariant unconditionally.
+///
+/// The gain it applies is shared across L and R (a stereo-linked limiter, like
+/// the Web Audio `DynamicsCompressorNode`), so the image is preserved. Its
+/// per-sample `gain` is exposed as telemetry (master gain reduction in dB).
+struct MasterLimiter {
+    /// Smoothed gain currently applied (1.0 = no reduction). Envelope state.
+    envelope_gain: f32,
+    /// Threshold as a linear magnitude (`10^(thr_db/20)`); precomputed.
+    threshold_lin: f32,
+    /// Web Audio's implicit makeup `10^(makeup_db/20) ≈ 1.482` (+3.42 dB),
+    /// applied on EVERYTHING by the `DynamicsCompressor`; precomputed.
+    implicit_makeup: f32,
+    /// Compensating gain `10^(-makeup_db/20) ≈ 0.6745` (−3.42 dB) cancelling the
+    /// implicit makeup so sub-threshold passes at unity; precomputed.
+    makeup_cancel: f32,
+    /// Per-sample attack coefficient (toward more reduction).
+    attack_coeff: f32,
+    /// Per-sample release coefficient (toward less reduction).
+    release_coeff: f32,
+}
+
+impl MasterLimiter {
+    fn new(sample_rate: f32) -> Self {
+        // One-pole smoothing coefficients: `exp(-1 / (tau * sr))`. The envelope
+        // moves toward the target gain at the attack rate when clamping down and
+        // the release rate when opening back up.
+        let attack_coeff = (-1.0 / (LIMITER_ATTACK_SECONDS * sample_rate)).exp();
+        let release_coeff = (-1.0 / (LIMITER_RELEASE_SECONDS * sample_rate)).exp();
+        MasterLimiter {
+            envelope_gain: 1.0,
+            threshold_lin: 10f32.powf(LIMITER_THRESHOLD_DB / 20.0),
+            implicit_makeup: 10f32.powf(LIMITER_MAKEUP_DB / 20.0),
+            makeup_cancel: 10f32.powf(-LIMITER_MAKEUP_DB / 20.0),
+            attack_coeff,
+            release_coeff,
+        }
+    }
+
+    /// Process one stereo frame. Returns the limited `(l, r)` PRE clip-guard
+    /// (the guard is applied by the caller) and the **compressor** gain reduction
+    /// applied this frame as a linear factor in `(0, 1]` (1.0 = no reduction),
+    /// for telemetry.
+    ///
+    /// The returned reduction is the compressor envelope ALONE, NOT including the
+    /// fixed makeup-cancellation staging gain — so it is an honest account of net
+    /// level change (0 dB / 1.0 sub-threshold, where the body is transparent),
+    /// matching `getMasterGainReduction` in the Web Audio engine.
+    #[inline]
+    fn process(&mut self, l: f32, r: f32) -> (f32, f32, f32) {
+        // Peak/level detector: the stereo peak drives a single linked gain.
+        let peak = l.abs().max(r.abs());
+
+        // Gain computer (hard knee, ratio R): below threshold the target gain is
+        // 1; above it the overshoot in dB is reduced by the ratio, so the target
+        // linear gain is `(peak/thr)^(1/R - 1)`.
+        let target_gain = if peak > self.threshold_lin {
+            (peak / self.threshold_lin).powf(1.0 / LIMITER_RATIO - 1.0)
+        } else {
+            1.0
+        };
+
+        // Attack/release envelope: clamp DOWN fast (attack) when the target asks
+        // for more reduction than we currently apply, open UP slowly (release)
+        // otherwise. Standard one-pole on the gain.
+        let coeff = if target_gain < self.envelope_gain {
+            self.attack_coeff
+        } else {
+            self.release_coeff
+        };
+        self.envelope_gain = target_gain + coeff * (self.envelope_gain - target_gain);
+
+        // Reproduce the Web Audio chain faithfully: the `DynamicsCompressor`
+        // applies its IMPLICIT makeup (+3.42 dB) on top of the reduction, and the
+        // engine then CANCELS it (−3.42 dB) so inserting the limiter is
+        // level-transparent below threshold. The two makeup gains cancel exactly,
+        // leaving the compressor envelope as the net effect — which is precisely
+        // the sub-threshold-transparency invariant. Telemetry reports the
+        // envelope alone (the transparent staging excluded), an honest account of
+        // net level change.
+        let applied = self.envelope_gain * self.implicit_makeup * self.makeup_cancel;
+        (l * applied, r * applied, self.envelope_gain)
+    }
+
+    fn reset(&mut self) {
+        self.envelope_gain = 1.0;
+    }
+}
+
+/// The mix graph: per-channel EQ chains, per-deck volume, the crossfade gains,
+/// and the master limiter. Holds no ring state — `render()` feeds it frame
+/// samples and reads back the mixed, limited pair.
+pub(crate) struct MixGraph {
+    /// Layout: `[deckA_L, deckA_R, deckB_L, deckB_R]`. Boxed trait objects so the
+    /// chain type need not be named; built once, ticked in place on the RT path.
+    /// Rebuilt (off the RT path) by `set_eq` when a band changes — see the note
+    /// there on why that is RT-safe.
+    eq: Vec<Box<dyn AudioUnit>>,
+    /// Per-deck EQ knob values in `[0, 1]`, `[low, mid, high]`. Default flat
+    /// (0.5). Kept so `set_eq` can rebuild a deck's chain from the full triple.
+    eq_values: [[f32; 3]; DECK_COUNT],
+    /// Per-deck Color FX insert (ADR-0008), placed post-EQ / pre-fader. At the
+    /// effect's rest position it is a bit-exact dry passthrough. Rebuilt /
+    /// reconfigured off the RT path by `set_fx` / `set_fx_amount`; `mix_frame`
+    /// only ticks the pre-built nodes.
+    fx: [FxInsert; DECK_COUNT],
+    /// Per-deck channel-fader volume (linear, default 1.0), applied before the
+    /// crossfade. Recomputed by `set_volume` (non-RT).
+    volumes: [f32; DECK_COUNT],
+    /// Equal-power crossfade gains, one per deck. `gains[0]` weights deck A,
+    /// `gains[1]` weights deck B. Recomputed by `set_crossfade` (non-RT).
+    gains: [f32; DECK_COUNT],
+    /// The master limiter (feed-forward compressor); ticked per frame on the RT
+    /// path. Its applied gain feeds the gain-reduction telemetry.
+    limiter: MasterLimiter,
+}
+
+/// Map a knob value `v ∈ [0, 1]` to a band gain in dB, matching
+/// `eqValueToDb` in `frontend/src/audio/eq.ts`: 0 → −40 dB kill, 0.5 → 0 dB,
+/// 1 → +6 dB, linear within each half.
+fn eq_value_to_db(value: f32) -> f32 {
+    let v = value.clamp(0.0, 1.0);
+    if v >= EQ_FLAT {
+        ((v - EQ_FLAT) / (1.0 - EQ_FLAT)) * EQ_BOOST_DB
+    } else {
+        (1.0 - v / EQ_FLAT) * EQ_KILL_DB
+    }
+}
+
+/// Linear gain (`10^(dB/20)`) for a band knob value.
+fn eq_value_to_gain(value: f32) -> f32 {
+    10f32.powf(eq_value_to_db(value) / 20.0)
+}
+
+/// Build one (deck, channel) EQ chain from a deck's three band knob values.
+/// `lowshelf` 250 Hz → `bell` (peaking) 1000 Hz Q 0.7 → `highshelf` 2500 Hz, each
+/// with its band's curve gain. Allocates — call OFF the RT path only.
+fn build_eq_chain(eq_values: [f32; 3]) -> Box<dyn AudioUnit> {
+    let low_gain = eq_value_to_gain(eq_values[0]);
+    let mid_gain = eq_value_to_gain(eq_values[1]);
+    let high_gain = eq_value_to_gain(eq_values[2]);
+    let node = lowshelf_hz(EQ_LOW_HZ, EQ_SHELF_Q, low_gain)
+        >> bell_hz(EQ_MID_HZ, EQ_MID_Q, mid_gain)
+        >> highshelf_hz(EQ_HIGH_HZ, EQ_SHELF_Q, high_gain);
+    let mut boxed: Box<dyn AudioUnit> = Box::new(node);
+    boxed.set_sample_rate(SAMPLE_RATE as f64);
+    boxed.reset();
+    boxed
+}
+
+impl MixGraph {
+    /// Build the graph off-thread. EQ defaults flat (every band at 0.5 → unity);
+    /// volume defaults 1.0; crossfade centred.
+    pub(crate) fn new() -> Self {
+        let eq_values = [[EQ_FLAT; 3]; DECK_COUNT];
+        let eq = (0..EQ_CHAINS)
+            .map(|chain| build_eq_chain(eq_values[chain / CHANNELS as usize]))
+            .collect();
+
+        let mut graph = MixGraph {
+            eq,
+            eq_values,
+            fx: std::array::from_fn(|_| FxInsert::new(SAMPLE_RATE as f32)),
+            volumes: [1.0; DECK_COUNT],
+            gains: [0.0; DECK_COUNT],
+            limiter: MasterLimiter::new(SAMPLE_RATE as f32),
+        };
+        // Centre crossfade by default (equal-power 0.5).
+        graph.set_crossfade(0.5);
+        graph
+    }
+
+    /// Set the crossfader position in `[0, 1]` (0 = full deck A, 1 = full deck
+    /// B) and recompute the equal-power gains. Non-RT (called from a control
+    /// path); cheap arithmetic, but it writes `self.gains` which the RT
+    /// `mix_frame` reads — see the note in `lib.rs` on the single-threaded
+    /// ownership that keeps this sound.
+    pub(crate) fn set_crossfade(&mut self, position: f32) {
+        let p = position.clamp(0.0, 1.0);
+        // Equal-power law: gain_a = cos(p·π/2), gain_b = sin(p·π/2). At p = 0.5
+        // both are cos(π/4) = sin(π/4), matching the Spike A constant mix.
+        let angle = p * std::f32::consts::FRAC_PI_2;
+        self.gains[0] = angle.cos();
+        self.gains[1] = angle.sin();
+    }
+
+    /// Set a deck's channel-fader volume (linear, 0..1+). Non-RT; writes
+    /// `self.volumes`, read by the RT `mix_frame`.
+    pub(crate) fn set_volume(&mut self, deck: usize, gain: f32) {
+        self.volumes[deck] = gain;
+    }
+
+    /// Set a deck's EQ band knob value in `[0, 1]` and **rebuild that deck's two
+    /// EQ chains off the RT path**.
+    ///
+    /// Rebuilding (rather than mutating settable-coefficient filters in place) is
+    /// the simple, RT-safe choice HERE because `set_eq` takes `&mut self`: by
+    /// Rust's ownership rules a `set_eq` call and a `render`/`mix_frame` call can
+    /// never overlap, so the allocation in `build_eq_chain` cannot land on the RT
+    /// thread. `render` itself only ticks the already-built fixed nodes — no
+    /// alloc, no lock, no syscall.
+    ///
+    /// When the device wrapper later owns the `Engine` in its audio callback, a
+    /// control change cannot be a `&mut Engine` from another thread; it would be
+    /// delivered over a wait-free device-command channel and either (a) the
+    /// freshly-built chain handed across (built non-RT, swapped in by the
+    /// callback, old one freed non-RT), or (b) the gain driven through a
+    /// `shared()`/`var` into fundsp's settable `lowshelf()`/`bell()`/`highshelf()`
+    /// (gain as an audio-rate input) so no rebuild is needed at all. Either keeps
+    /// the alloc off the RT thread; this slice uses the rebuild because the core
+    /// API is single-`&mut self`.
+    pub(crate) fn set_eq(&mut self, deck: usize, band: usize, value: f32) {
+        self.eq_values[deck][band] = value;
+        let base = deck * CHANNELS as usize;
+        for ch in 0..CHANNELS as usize {
+            self.eq[base + ch] = build_eq_chain(self.eq_values[deck]);
+        }
+    }
+
+    /// Switch a deck's Color FX effect, rebuilding the effect's nodes **off the RT
+    /// path** (it takes `&mut self`, so it can never overlap a `mix_frame` call —
+    /// the same ownership argument as `set_eq`). The new effect lands at its rest
+    /// position (bypassed); the control layer re-applies the knob amount.
+    pub(crate) fn set_fx(&mut self, deck: usize, kind: FxKind) {
+        self.fx[deck].set_kind(kind);
+    }
+
+    /// Set a deck's Color FX knob amount in `[0, 1]`, reconfiguring the effect's
+    /// parameters off the RT path. Within the effect's dead zone the insert is a
+    /// bit-exact dry passthrough.
+    pub(crate) fn set_fx_amount(&mut self, deck: usize, amount: f32) {
+        self.fx[deck].set_amount(amount);
+    }
+
+    /// Process one frame: per-deck EQ both channels, the Color FX insert, per-deck
+    /// volume, equal-power crossfade, the master limiter, then the clip-guard
+    /// ceiling clamp.
+    /// `decks[d] = (left, right)` pre-EQ. Returns the mixed, limited, clamped
+    /// `(left, right)` and the master limiter's gain reduction this frame as a
+    /// linear factor in `(0, 1]` (1.0 = no reduction), for telemetry.
+    ///
+    /// RT-safe: only `tick` on pre-built nodes (alloc-free) and arithmetic.
+    #[inline]
+    pub(crate) fn mix_frame(&mut self, decks: [(f32, f32); DECK_COUNT]) -> (f32, f32, f32) {
+        let mut in1 = [0.0f32; 1];
+        let mut out1 = [0.0f32; 1];
+
+        let mut mixed_l = 0.0f32;
+        let mut mixed_r = 0.0f32;
+
+        for (d, (l, r)) in decks.into_iter().enumerate() {
+            let li = d * CHANNELS as usize;
+            in1[0] = l;
+            self.eq[li].tick(&in1, &mut out1);
+            let l = out1[0];
+            in1[0] = r;
+            self.eq[li + 1].tick(&in1, &mut out1);
+            let r = out1[0];
+
+            // Color FX insert (ADR-0008): post-EQ, pre-fader. At the effect's rest
+            // position this is a bit-exact dry passthrough.
+            let (l, r) = self.fx[d].process(l, r);
+
+            // Channel fader, then the equal-power crossfade weight.
+            let g = self.volumes[d] * self.gains[d];
+            mixed_l += l * g;
+            mixed_r += r * g;
+        }
+
+        // Master limiter: feed-forward compressor (thr −6 dB, ratio 20, attack
+        // 2 ms, release 250 ms) with the implicit makeup cancelled, then the clip
+        // guard (a hard ±MASTER_CEILING clamp) which GUARANTEES the ceiling
+        // invariant regardless of what the compressor's attack lets through. The
+        // body need not bit-match Chromium (implementation-defined); only the two
+        // invariants — ceiling and sub-threshold transparency — must hold.
+        let (lim_l, lim_r, applied_gain) = self.limiter.process(mixed_l, mixed_r);
+
+        let mut ol = lim_l.clamp(-MASTER_CEILING, MASTER_CEILING);
+        let mut or = lim_r.clamp(-MASTER_CEILING, MASTER_CEILING);
+
+        // Flush any denormal that slipped through (belt-and-braces; FTZ/DAZ on
+        // the device thread handles the rest).
+        if ol.abs() < 1.0e-30 {
+            ol = 0.0;
+        }
+        if or.abs() < 1.0e-30 {
+            or = 0.0;
+        }
+        (ol, or, applied_gain)
+    }
+
+    /// Reset all EQ filter state and the limiter envelope (e.g. on a hard engine
+    /// reset). Non-RT.
+    #[allow(dead_code)] // wired up by Engine::reset in a later slice
+    pub(crate) fn reset(&mut self) {
+        for node in &mut self.eq {
+            node.reset();
+        }
+        for insert in &mut self.fx {
+            insert.reset();
+        }
+        self.limiter.reset();
+    }
+}
