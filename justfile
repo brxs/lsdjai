@@ -55,7 +55,8 @@ setup-sa3:
     done
     touch "$stamp"
 
-# Build the frontend (the backend serves frontend/dist).
+# Build the frontend into frontend/dist (the Tauri webview loads it via
+# tauri.conf's frontendDist; tauri-dev / tauri-build depend on this).
 build:
     cd frontend && npm run build
 
@@ -107,21 +108,3 @@ format:
 
 # Everything a PR must pass: lint + tests.
 check: lint test
-
-# Worklet module graph loads in real Chromium (self-contained; jsdom
-# executes none of the worklet code).
-verify-worklets: build
-    cd frontend && node scripts/verify_worklet_modules.mjs
-
-# UI e2e in headless Chromium against a running server.
-verify-ui:
-    cd frontend && node scripts/verify_m2.mjs
-    cd frontend && node scripts/verify_m3.mjs
-    cd frontend && node scripts/verify_m4.mjs
-    cd frontend && node scripts/verify_m5.mjs
-    cd frontend && node scripts/verify_m6.mjs
-    cd frontend && node scripts/verify_m17.mjs
-    cd frontend && node scripts/verify_m18.mjs
-    cd frontend && node scripts/verify_m19.mjs
-    cd frontend && node scripts/verify_m20.mjs
-    cd frontend && node scripts/verify_m21.mjs

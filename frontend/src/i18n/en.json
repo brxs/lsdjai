@@ -62,7 +62,6 @@
     },
     "folder": {
       "choose": "Choose folder",
-      "unsupported": "Folder browsing needs Chromium's File System Access API",
       "empty": "No audio files in {{name}}"
     }
   },

@@ -24,9 +24,8 @@ pads and finished tracks come from Stable Audio 3. See
   ~4.5 GB for both deck models, Stable Audio 3 ~8 GB including the
   medium track model)
 - macOS 11+ — SlipMate ships as a native app (Tauri + a Rust audio engine +
-  Python inference sidecars; build with `just tauri-build`). A Chromium-based
-  browser is needed only for the dev/parity path (`just dev-frontend`, the Web
-  Audio reference the Rust engine is checked against)
+  Python inference sidecars; run with `just tauri-dev`, build with
+  `just tauri-build`)
 - Optional: a Pioneer DDJ-FLX4 for hardware control and its headphone jack
 
 All common tasks live in the [`justfile`](justfile) — run `just` to list them.
@@ -49,10 +48,10 @@ that half alone.
 ## Run
 
 ```sh
-just run
+just tauri-dev
 ```
 
-Then open <http://127.0.0.1:8000> — add style targets to a deck's pad, hit
+This launches the native app — add style targets to a deck's pad, hit
 play, blend targets by dragging the cursor (or the dots themselves, to
 cluster them), and ride the crossfader between decks.
 
@@ -83,16 +82,16 @@ cluster them), and ride the crossfader between decks.
   reduction shows in the mixer) and per-channel auto-gain Trim that
   levels decks of different loudness, with a manual override.
 - **Headphone cue** — hit a channel's **Cue**, ride the **Cue mix** knob
-  between cue and master, and pick a **Phones out**: any output device the
-  browser can reach, or the FLX4's own headphone jack, which is fed by the
-  backend over USB ([ADR-0007](docs/adr/0007-flx4-phones-jack-via-a-backend-cue-sink.md)).
+  between cue and master, and pick a **Phones out**: an output device the Rust
+  engine can reach, or the FLX4's own headphone jack
+  ([ADR-0007](docs/adr/0007-flx4-phones-jack-via-a-backend-cue-sink.md)).
 
 Settings (pad arrangements, volumes, crossfade) persist across reloads.
 Shortcuts: `A`/`B` focus a deck's style-target input, `X` focuses the
 crossfader.
 
-For frontend development: `just dev-backend` in one terminal, `just
-dev-frontend` in another (the Vite dev server proxies `/ws` to the backend).
+For development, `just tauri-dev` runs the native shell with a hot-reloading
+webview against the Rust engine and the Python sidecars.
 
 ## Hardware control (Pioneer DDJ-FLX4)
 
@@ -120,10 +119,5 @@ mirror app state. The measured byte map lives in
 - `just test` — backend pytest + frontend vitest
 - `just lint` — format check, ruff, eslint, tsc
 - `just check` — both of the above; what a PR must pass
-- `just verify-stream` / `just verify-ui` — e2e against a running server
-  (UI e2e needs Playwright Chromium once: `npx playwright install chromium`
-  in `frontend/`)
-- `just verify-worklets` — the audio-worklet module graph loads in real
-  Chromium (self-contained; jsdom executes none of the worklet code)
 - Hardware behaviour is verified by a human against the checklists in
   `docs/` (`m7-`, `m9-m10-`, `m12-hardware-checklist.md`)
