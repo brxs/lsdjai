@@ -311,19 +311,37 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
 }
 
+/// The raw bytes of a binary IPC request. The webview invokes the binary commands
+/// with a `Uint8Array` as the sole argument, which Tauri's IPC delivers as an
+/// [`InvokeBody::Raw`](tauri::ipc::InvokeBody::Raw) (the fast binary path, not a
+/// JSON args map). The command MUST read the body here: binding a `payload: Vec<u8>`
+/// parameter instead makes Tauri look for a JSON "payload" key and reject the raw
+/// bytes ("expected a value for key payload but the IPC call used a bytes payload").
+fn raw_payload<'a>(request: &'a tauri::ipc::Request<'_>) -> Result<&'a [u8], String> {
+    match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => Ok(bytes.as_slice()),
+        tauri::ipc::InvokeBody::Json(_) => Err("expected a raw bytes payload".to_string()),
+    }
+}
+
 /// Load a decoded track onto a deck, switching it to Playback. The payload is a
 /// little-endian `u32` deck index followed by interleaved-stereo f32 @ 48 kHz
 /// (the webview decodes + resamples a WAV and ships the bytes). Sent over Tauri's
 /// binary IPC as a single `Vec<u8>` arg — a JSON number array would be megabytes
 /// of text for a full track.
 #[tauri::command]
-pub fn load_track(state: tauri::State<'_, Host>, payload: Vec<u8>) {
-    let Some(deck) = read_u32_le(&payload, 0).map(|d| d as usize) else {
-        return;
+pub fn load_track(
+    state: tauri::State<'_, Host>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    let payload = raw_payload(&request)?;
+    let Some(deck) = read_u32_le(payload, 0).map(|d| d as usize) else {
+        return Err("load_track payload too short".to_string());
     };
     if valid_deck(deck) {
         state.load_track(deck, pcm_from_le_bytes(&payload[4..]));
     }
+    Ok(())
 }
 
 #[tauri::command]
@@ -417,17 +435,22 @@ pub fn clear_loop(state: tauri::State<'_, Host>, deck: usize, slot: usize) {
 /// A one-shot plays once; otherwise it loops (seam folded). Binary IPC, like
 /// [`load_track`].
 #[tauri::command]
-pub fn load_generated_loop(state: tauri::State<'_, Host>, payload: Vec<u8>) {
+pub fn load_generated_loop(
+    state: tauri::State<'_, Host>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    let payload = raw_payload(&request)?;
     let (Some(deck), Some(slot), Some(one_shot)) = (
-        read_u32_le(&payload, 0).map(|d| d as usize),
-        read_u32_le(&payload, 4).map(|s| s as usize),
-        read_u32_le(&payload, 8).map(|f| f != 0),
+        read_u32_le(payload, 0).map(|d| d as usize),
+        read_u32_le(payload, 4).map(|s| s as usize),
+        read_u32_le(payload, 8).map(|f| f != 0),
     ) else {
-        return;
+        return Err("load_generated_loop payload too short".to_string());
     };
     if valid_deck(deck) && valid_slot(slot) {
         state.load_generated_loop(deck, slot, pcm_from_le_bytes(&payload[12..]), one_shot);
     }
+    Ok(())
 }
 
 /// Capture the last `seconds` of played history on a Realtime deck (M15 style
@@ -557,20 +580,25 @@ pub fn deck_set_model(state: tauri::State<'_, Sidecars>, deck: usize, model: Str
 /// the deck's sidecar over the control socket (the generation server has no deck
 /// workers).
 #[tauri::command]
-pub fn deck_embed_sample(state: tauri::State<'_, Sidecars>, payload: Vec<u8>) {
+pub fn deck_embed_sample(
+    state: tauri::State<'_, Sidecars>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    let payload = raw_payload(&request)?;
     let (Some(deck), Some(id_len)) = (
-        read_u32_le(&payload, 0).map(|d| d as usize),
-        read_u32_le(&payload, 4).map(|l| l as usize),
+        read_u32_le(payload, 0).map(|d| d as usize),
+        read_u32_le(payload, 4).map(|l| l as usize),
     ) else {
-        return;
+        return Err("deck_embed_sample payload too short".to_string());
     };
     let id_end = 8 + id_len;
     let Some(id) = payload.get(8..id_end).and_then(|b| std::str::from_utf8(b).ok()) else {
-        return;
+        return Err("deck_embed_sample invalid sample id".to_string());
     };
     if valid_deck(deck) {
         state.embed(deck, id, &payload[id_end..]);
     }
+    Ok(())
 }
 
 #[tauri::command]
