@@ -1268,6 +1268,116 @@ mod tests {
         );
     }
 
+    /// (S2-1c) Re-applying a band's CURRENT value mid-stream is a pure no-op. The
+    /// old `set_eq` rebuilt the deck's chains and `reset()` their filter state on
+    /// every call, so even a redundant set glitched the audio (the click the user
+    /// hears on EQ moves). The settable-input path stores the same smoothed target
+    /// and disturbs nothing. Two identical engines rendered in lock-step, one given
+    /// a redundant `set_eq`, must stay sample-identical. (Fails on the rebuild
+    /// path: zeroing the delay line mid-tone rings, diverging the two outputs.)
+    #[test]
+    fn eq_reapplying_the_same_value_is_a_no_op() {
+        const AMP: f32 = 0.2;
+        let freq = 120.0f32; // a low tone the low shelf acts on, so a reset shows
+
+        let build = || {
+            let mut engine = Engine::new();
+            let deck_a = engine.create_deck(0);
+            let _deck_b = engine.create_deck(1);
+            engine.set_crossfade(0.0); // full deck A, sub-threshold (limiter out)
+            // Boost the low band so the shelf actually FILTERS the tone (at flat it
+            // is the identity, where a state reset would be invisible). Set before
+            // the first render, so `follow()` snaps to it — both engines settle
+            // identically.
+            engine.set_eq(0, EqBand::Low, 1.0);
+            let mut src = SineSource::new(freq, AMP);
+            let mut handle = deck_a;
+            feed(&mut handle, &mut src, PREBUFFER_FRAMES + 40 * BLOCK);
+            (engine, handle, _deck_b)
+        };
+        let (mut ref_eng, _ref_a, _ref_b) = build();
+        let (mut set_eng, _set_a, _set_b) = build();
+
+        let mut ro = vec![0.0f32; BLOCK * CHANNELS as usize];
+        let mut so = vec![0.0f32; BLOCK * CHANNELS as usize];
+        // Warm both identically to steady state.
+        for _ in 0..8 {
+            ref_eng.render(&mut ro, BLOCK);
+            set_eng.render(&mut so, BLOCK);
+        }
+        // Mid-stream, re-apply deck A's CURRENT low value (the boost) to one engine.
+        set_eng.set_eq(0, EqBand::Low, 1.0);
+        let mut max_diff = 0.0f32;
+        for _ in 0..16 {
+            ref_eng.render(&mut ro, BLOCK);
+            set_eng.render(&mut so, BLOCK);
+            for (a, b) in ro.iter().zip(so.iter()) {
+                max_diff = max_diff.max((a - b).abs());
+            }
+        }
+        assert!(
+            max_diff < 1e-6,
+            "re-applying the same EQ value disturbed the audio (state reset?): max diff {max_diff}"
+        );
+    }
+
+    /// (S2-1d) A real mid-stream change glides instead of stepping: the band gain
+    /// ramps over a few ms (no zipper) and the filter keeps its state (no click).
+    /// Measure the output peak in short windows across a mid-stream mid-band boost;
+    /// the window-to-window peak must climb gradually. An un-smoothed coefficient
+    /// step (or a rebuild) would dump the whole +6 dB rise into one window boundary.
+    #[test]
+    fn eq_change_mid_stream_glides_without_a_step() {
+        const AMP: f32 = 0.2;
+        let freq = 1_000.0f32; // the mid bell's centre, where the boost shows fully
+
+        let mut engine = Engine::new();
+        let mut deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+        engine.set_crossfade(0.0);
+        let mut src = SineSource::new(freq, AMP);
+        feed(&mut deck_a, &mut src, PREBUFFER_FRAMES + 64 * BLOCK);
+
+        let mut out = vec![0.0f32; BLOCK * CHANNELS as usize];
+        for _ in 0..8 {
+            engine.render(&mut out, BLOCK); // reach steady state
+        }
+
+        let mut samples = Vec::new();
+        for _ in 0..2 {
+            engine.render(&mut out, BLOCK);
+            for f in 0..BLOCK {
+                samples.push(out[2 * f]);
+            }
+        }
+        engine.set_eq(0, EqBand::Mid, 1.0); // flat → +6 dB boost, mid-stream
+        for _ in 0..24 {
+            engine.render(&mut out, BLOCK);
+            for f in 0..BLOCK {
+                samples.push(out[2 * f]);
+            }
+        }
+
+        // Peak per 64-sample window (≈1.3 periods at 1 kHz, so each holds a peak);
+        // the largest jump between adjacent window peaks.
+        let peaks: Vec<f32> = samples
+            .chunks(64)
+            .map(|c| c.iter().fold(0.0f32, |m, &s| m.max(s.abs())))
+            .collect();
+        let max_peak_jump = peaks
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max);
+
+        // Boost is +6 dB (×2): peak ~0.2 → ~0.4, a ~0.2 total rise. Smoothed over
+        // ~tens of ms each 64-sample window climbs a small fraction; a step would
+        // put the whole rise into one boundary.
+        assert!(
+            max_peak_jump < 0.05,
+            "mid-band boost stepped the level (zipper / rebuild): max window-peak jump {max_peak_jump:.4}"
+        );
+    }
+
     /// (S2-2) Per-deck volume scales a deck's contribution linearly: deck A at
     /// volume g produces g× the output of deck A at volume 1.0 (full crossfade on
     /// A, sub-threshold so the limiter stays out of it).

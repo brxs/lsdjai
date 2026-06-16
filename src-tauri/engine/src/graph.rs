@@ -41,6 +41,15 @@ const EQ_HIGH_HZ: f32 = 2_500.0;
 /// peaking Q is linear, so it passes straight to fundsp).
 const EQ_MID_Q: f32 = 0.7;
 
+/// EQ gain smoothing: the `follow()` halfway-response time. A knob move glides
+/// the band's linear gain over this rather than stepping the biquad coefficients
+/// (which removes the zipper); the filter keeps its delay-line state across the
+/// change (no rebuild/reset, so no click). `follow()` is a three-pole one-pole
+/// cascade, so the full settle is a few × this — 15 ms sits in the 10–30 ms
+/// de-click band: tight enough to track a fast cut, slow enough to be inaudible.
+/// Tunable by ear on the live stack (`docs/native-migration-hardware-checklist`).
+const EQ_SMOOTH_SECS: f32 = 0.015;
+
 /// One stateful 3-band EQ chain per (deck, channel). `fundsp` filters are
 /// stateful, so each channel needs its own instance.
 const EQ_CHAINS: usize = DECK_COUNT * CHANNELS as usize;
@@ -178,13 +187,16 @@ pub(crate) struct FrameOut {
 /// samples and reads back the mixed, limited pair.
 pub(crate) struct MixGraph {
     /// Layout: `[deckA_L, deckA_R, deckB_L, deckB_R]`. Boxed trait objects so the
-    /// chain type need not be named; built once, ticked in place on the RT path.
-    /// Rebuilt (off the RT path) by `set_eq` when a band changes — see the note
-    /// there on why that is RT-safe.
+    /// chain type need not be named; **built once and never rebuilt** — each band's
+    /// gain is an audio-rate input driven by `eq_gains` (below), so `set_eq` only
+    /// stores a new target and the filter keeps its delay-line state.
     eq: Vec<Box<dyn AudioUnit>>,
-    /// Per-deck EQ knob values in `[0, 1]`, `[low, mid, high]`. Default flat
-    /// (0.5). Kept so `set_eq` can rebuild a deck's chain from the full triple.
-    eq_values: [[f32; 3]; DECK_COUNT],
+    /// Per-deck EQ band gains (LINEAR amplitude), `[low, mid, high]`, default 1.0
+    /// (flat). One `Shared` triple PER DECK, read by BOTH the deck's L and R
+    /// chains so they stay coefficient-identical. `set_eq` stores the target here
+    /// (a lock-free atomic) and each chain's `follow()` glides toward it on the RT
+    /// tick — no rebuild, no state reset (so no click), smoothed (so no zipper).
+    eq_gains: [[Shared; 3]; DECK_COUNT],
     /// Per-deck Color FX insert (ADR-0008), placed post-EQ / pre-fader. At the
     /// effect's rest position it is a bit-exact dry passthrough. Rebuilt /
     /// reconfigured off the RT path by `set_fx` / `set_fx_amount`; `mix_frame`
@@ -238,16 +250,23 @@ fn eq_value_to_gain(value: f32) -> f32 {
     10f32.powf(eq_value_to_db(value) / 20.0)
 }
 
-/// Build one (deck, channel) EQ chain from a deck's three band knob values.
-/// `lowshelf` 250 Hz → `bell` (peaking) 1000 Hz Q 0.7 → `highshelf` 2500 Hz, each
-/// with its band's curve gain. Allocates — call OFF the RT path only.
-fn build_eq_chain(eq_values: [f32; 3]) -> Box<dyn AudioUnit> {
-    let low_gain = eq_value_to_gain(eq_values[0]);
-    let mid_gain = eq_value_to_gain(eq_values[1]);
-    let high_gain = eq_value_to_gain(eq_values[2]);
-    let node = lowshelf_hz(EQ_LOW_HZ, EQ_SHELF_Q, low_gain)
-        >> bell_hz(EQ_MID_HZ, EQ_MID_Q, mid_gain)
-        >> highshelf_hz(EQ_HIGH_HZ, EQ_SHELF_Q, high_gain);
+/// Build one (deck, channel) EQ chain reading a deck's three band-gain `Shared`s.
+/// `lowshelf` 250 Hz → `bell` (peaking) 1000 Hz Q 0.7 → `highshelf` 2500 Hz. Each
+/// band uses fundsp's settable-INPUT form (input 0 = audio, 1 = centre Hz, 2 = Q,
+/// 3 = linear gain): the centre/Q are constants and the gain is the band's
+/// `Shared`, one-pole-smoothed by `follow()`. So a `set_eq` (storing a new gain in
+/// the `Shared`) glides the coefficients instead of stepping them (no zipper) while
+/// the SVF keeps its delay-line state (no rebuild/reset → no click). The SVF math
+/// is identical to the fixed `*_hz` forms, so the settled curve still matches Web
+/// Audio. Allocates — call OFF the RT path only.
+fn build_eq_chain(gains: &[Shared; 3]) -> Box<dyn AudioUnit> {
+    let low = (pass() | dc((EQ_LOW_HZ, EQ_SHELF_Q)) | (var(&gains[0]) >> follow(EQ_SMOOTH_SECS)))
+        >> lowshelf();
+    let mid = (pass() | dc((EQ_MID_HZ, EQ_MID_Q)) | (var(&gains[1]) >> follow(EQ_SMOOTH_SECS)))
+        >> bell();
+    let high = (pass() | dc((EQ_HIGH_HZ, EQ_SHELF_Q)) | (var(&gains[2]) >> follow(EQ_SMOOTH_SECS)))
+        >> highshelf();
+    let node = low >> mid >> high;
     let mut boxed: Box<dyn AudioUnit> = Box::new(node);
     boxed.set_sample_rate(SAMPLE_RATE as f64);
     boxed.reset();
@@ -258,14 +277,21 @@ impl MixGraph {
     /// Build the graph off-thread. EQ defaults flat (every band at 0.5 → unity);
     /// volume defaults 1.0; crossfade centred.
     pub(crate) fn new() -> Self {
-        let eq_values = [[EQ_FLAT; 3]; DECK_COUNT];
+        // One linear-gain Shared per band per deck, seeded flat (1.0 = unity).
+        let eq_gains: [[Shared; 3]; DECK_COUNT] =
+            std::array::from_fn(|_| [shared(1.0), shared(1.0), shared(1.0)]);
+        // Both channels of a deck read that deck's gain triple, so L and R stay
+        // coefficient-identical. No warm-up is needed: `follow()` snaps to its
+        // first input on its first tick (its `reset()` leaves the one-pole coeff
+        // at 1.0 for sample 0), so each chain is flat from the first rendered
+        // sample.
         let eq = (0..EQ_CHAINS)
-            .map(|chain| build_eq_chain(eq_values[chain / CHANNELS as usize]))
+            .map(|chain| build_eq_chain(&eq_gains[chain / CHANNELS as usize]))
             .collect();
 
         let mut graph = MixGraph {
             eq,
-            eq_values,
+            eq_gains,
             fx: std::array::from_fn(|_| FxInsert::new(SAMPLE_RATE as f32)),
             volumes: [1.0; DECK_COUNT],
             trims: [1.0; DECK_COUNT],
@@ -330,31 +356,21 @@ impl MixGraph {
         self.cue_mix = position.clamp(0.0, 1.0);
     }
 
-    /// Set a deck's EQ band knob value in `[0, 1]` and **rebuild that deck's two
-    /// EQ chains off the RT path**.
+    /// Set a deck's EQ band knob value in `[0, 1]` by storing the band's smoothed
+    /// target gain — **no rebuild, no state reset**.
     ///
-    /// Rebuilding (rather than mutating settable-coefficient filters in place) is
-    /// the simple, RT-safe choice HERE because `set_eq` takes `&mut self`: by
-    /// Rust's ownership rules a `set_eq` call and a `render`/`mix_frame` call can
-    /// never overlap, so the allocation in `build_eq_chain` cannot land on the RT
-    /// thread. `render` itself only ticks the already-built fixed nodes — no
-    /// alloc, no lock, no syscall.
-    ///
-    /// When the device wrapper later owns the `Engine` in its audio callback, a
-    /// control change cannot be a `&mut Engine` from another thread; it would be
-    /// delivered over a wait-free device-command channel and either (a) the
-    /// freshly-built chain handed across (built non-RT, swapped in by the
-    /// callback, old one freed non-RT), or (b) the gain driven through a
-    /// `shared()`/`var` into fundsp's settable `lowshelf()`/`bell()`/`highshelf()`
-    /// (gain as an audio-rate input) so no rebuild is needed at all. Either keeps
-    /// the alloc off the RT thread; this slice uses the rebuild because the core
-    /// API is single-`&mut self`.
+    /// This is option (b) the old rebuild path foreshadowed: the gain is driven
+    /// through a `shared()`/`var` into fundsp's settable `lowshelf()`/`bell()`/
+    /// `highshelf()` (gain as an audio-rate input), so a knob move is a single
+    /// lock-free atomic store, not a `Box::new` + `reset()`. The filter keeps its
+    /// delay-line state (no click) and a `follow()` one-pole glides the gain (no
+    /// zipper). `Shared::set_value` takes `&self` and is lock-free, but the RT
+    /// `var` reader and this writer are still mutually excluded by `&mut self` (the
+    /// host drains commands before `render` — see the note in `lib.rs`); the
+    /// `eq_gains` `Shared`s are simply the wait-free hand-off the device wrapper
+    /// needs. `mix_frame` only ticks the pre-built chain — no alloc, ever.
     pub(crate) fn set_eq(&mut self, deck: usize, band: usize, value: f32) {
-        self.eq_values[deck][band] = value;
-        let base = deck * CHANNELS as usize;
-        for ch in 0..CHANNELS as usize {
-            self.eq[base + ch] = build_eq_chain(self.eq_values[deck]);
-        }
+        self.eq_gains[deck][band].set_value(eq_value_to_gain(value));
     }
 
     /// Switch a deck's Color FX effect, rebuilding the effect's nodes **off the RT

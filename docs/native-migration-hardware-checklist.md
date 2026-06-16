@@ -20,6 +20,11 @@ Run the native stack with `just tauri-dev` (Tauri app + sidecars; needs
 - [ ] Channel meters, master meter, and limiter-GR readout move with audio.
 - [ ] EQ kills, volume, crossfade, and the six Color FX audibly match the Web
       Audio build (the parity oracle: same gestures, `just dev-frontend`).
+- [ ] EQ sweeps are click-free: dragging any band — or a fast FLX4 EQ-knob CC
+      sweep — glides smoothly, no zipper/crackle. The band gain is `follow()`-
+      smoothed in the Rust engine (`graph.rs` `EQ_SMOOTH_SECS`, ~15 ms) instead of
+      rebuilding+resetting the filter per knob tick. Confirm the feel is tight
+      enough for hard kills; retune `EQ_SMOOTH_SECS` by ear if it smears.
 - [ ] Trim (gain staging) and the on-air gate behave: off-air mutes the master
       feed but the channel meter stays live.
 - [ ] Selecting / clearing an effect (FX-none) engages / removes it.
