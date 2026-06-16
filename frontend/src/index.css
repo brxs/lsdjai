@@ -24,7 +24,10 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  padding: var(--space-3);
+  /* Extra top inset clears the frameless window's overlaid macOS title bar so
+     the status bar sits below the traffic-light buttons (titleBarStyle Overlay);
+     the strip above stays the native draggable title bar. */
+  padding: var(--titlebar-inset) var(--space-3) var(--space-3);
   overflow: hidden;
 }
 

@@ -74,6 +74,11 @@
   --space-5: 1.3rem;
   --space-6: 2rem;
 
+  /* Top inset clearing the frameless window's macOS title bar (titleBarStyle
+     Overlay): the content sits below the traffic-light buttons, which float in
+     the draggable strip above. The standard macOS title bar is ~28px. */
+  --titlebar-inset: 1.75rem;
+
   /* Typography: fully monospaced — Space Mono is the instrument typeface.
      It runs wide and tall, so the type scale is a touch tighter than v2. */
   --font-ui: 'Space Mono', ui-monospace, 'SF Mono', Menlo, monospace;

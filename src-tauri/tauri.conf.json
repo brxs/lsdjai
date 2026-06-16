@@ -13,7 +13,10 @@
         "label": "main",
         "title": "SlipMate",
         "width": 1280,
-        "height": 800
+        "height": 800,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "backgroundColor": "#050507"
       }
     ],
     "security": {
