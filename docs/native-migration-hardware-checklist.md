@@ -4,7 +4,7 @@ Behaviour the automated suite (cargo / vitest / pytest) cannot reach: the live
 Tauri webview, real audio devices, the FLX4, the model sidecars, and packaging.
 Per [`CLAUDE.md`](../CLAUDE.md), a human ticks these before the work is "done".
 
-Run the native stack with `just tauri-dev-native` (Tauri app + sidecars; needs
+Run the native stack with `just tauri-dev` (Tauri app + sidecars; needs
 `just setup` for backend deps + model weights).
 
 ## Part 2 — MIDI (`tauri-plugin-midi`)
@@ -122,7 +122,7 @@ status arrives as `sidecar://status` events (`useDeck` selects this with
     - [ ] Style sampling (`/api/deck/{id}/style-sample`) — NOT yet wired in native
           (the gen server has no deck workers); follow-up: route the embed to the
           sidecar (`embed_sample` over `FRAME_CONTROL`, which `worker.py` handles).
-    - [ ] Dev: `just tauri-dev-native` launches the gen server + sidecars (the
+    - [ ] Dev: `just tauri-dev` launches the gen server + sidecars (the
           default `uv run` uses the backend dir as CWD; override with
           `SLIPMATE_GENERATION_CMD` / `SLIPMATE_SIDECAR_CMD`).
   - [ ] Remove the now-inert browser cue UI (phones picker / `cueStream`).

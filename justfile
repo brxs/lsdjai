@@ -59,18 +59,15 @@ setup-sa3:
 build:
     cd frontend && npm run build
 
-# Native shell (Phase 2): run the Tauri app in dev. Builds the frontend first
-# (tauri.conf.json's beforeBuildCommand), embeds frontend/dist, and starts the
-# Rust audio engine's cpal device. Sidecars are OFF here (set SLIPMATE_SIDECARS=1
-# or use `tauri-dev-native`). Needs cargo-tauri (`cargo install tauri-cli@^2`).
+# Native shell: run the full native app in dev — the Rust audio engine (cpal) +
+# the per-deck Python inference sidecars + the sa3 generation server. Builds the
+# frontend first (tauri.conf.json's beforeBuildCommand) and embeds frontend/dist.
+# Needs cargo-tauri (`cargo install tauri-cli@^2`) and the backend deps + model
+# weights (`just setup`). The default `uv run` sidecar/generation commands use the
+# backend project dir; override with SLIPMATE_SIDECAR_CMD / SLIPMATE_GENERATION_CMD
+# (e.g. the packaged binaries). For UI-only iteration without inference, use
+# `just dev-frontend` (the browser/Web Audio path).
 tauri-dev:
-    cd src-tauri && cargo tauri dev
-
-# Native shell with the Python inference sidecars (part 4): the Rust shell spawns
-# `uv run python -m slipmate.sidecar` per deck and streams PCM over loopback TCP
-# into the engine. Needs the backend deps + model weights (`just setup`). Override
-# the launch command with SLIPMATE_SIDECAR_CMD (e.g. the packaged binary).
-tauri-dev-native:
     cd src-tauri && SLIPMATE_SIDECARS=1 cargo tauri dev
 
 # Freeze the Python inference sidecar into a ONEDIR binary for bundling

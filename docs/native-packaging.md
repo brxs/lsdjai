@@ -36,7 +36,7 @@ shell at the freeze directly instead of bundling:
 
 ```sh
 SLIPMATE_SIDECAR_CMD="$PWD/src-tauri/sidecar-dist/slipmate_infer/slipmate_infer" \
-  just tauri-dev-native
+  just tauri-dev
 ```
 
 `src-tauri/src/sidecar.rs` (`sidecar_command`) reads `SLIPMATE_SIDECAR_CMD`;

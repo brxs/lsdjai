@@ -419,6 +419,12 @@ export function useDeck(deckId: DeckId): DeckControls {
     // the model PCM back over a Tauri Channel so the TS beat/loudness/band analysis
     // (ADR-0017: stays in TypeScript) gets the same input it had over the socket.
     if (isTauri()) {
+      // The engine + sidecar IPC is available immediately — there is no socket
+      // handshake to wait for, so the deck is "open" (operable) at once. Without
+      // this the connection stays 'connecting' forever (the browser path sets it
+      // on socket.onopen). The sidecar's `ready`/`model_loading` status events then
+      // fill in the model + switch state.
+      dispatch({ type: 'socket_open' })
       const unsubscribeStatus = subscribeSidecarStatus(deckId, (status) => {
         if (status.event === 'model_loading' || status.event === 'worker_died') {
           channelRef.current?.reset()
