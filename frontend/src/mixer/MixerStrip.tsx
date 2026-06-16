@@ -4,14 +4,11 @@ import { useTranslation } from 'react-i18next'
 import { EQ_BANDS, type EqBand } from '../audio/eq'
 import type { DeckId } from '../audio/types'
 import { useAudioEngine } from '../audio/engineContext'
-import { listCueJackOutputs } from '../audio/cueStream'
 import { TRIM_RANGE_DB } from '../audio/master'
-import { listAudioOutputs, type AudioOutputDevice } from '../audio/outputs'
 import { useControlBus } from '../control/busContext'
 import { Button } from '../ui/Button'
 import { Knob } from '../ui/Knob'
 import { LevelMeter } from '../ui/LevelMeter'
-import { Select } from '../ui/Select'
 import { PhaseMeter } from '../ui/PhaseMeter'
 import { Slider } from '../ui/Slider'
 import { Stat } from '../ui/Stat'
@@ -39,9 +36,6 @@ type MixerStripProps = {
   onCrossfadeChange: (position: number) => void
   cueMix: number
   onCueMixChange: (position: number) => void
-  cueDevice: AudioOutputDevice | null
-  /** Rejects when the device can't take the feed (e.g. unplugged). */
-  onCueDeviceChange: (device: AudioOutputDevice | null) => Promise<void>
   /** Beat-phase offset between the decks (M20), null while either
    * clock is unconfident — the meter blanks. */
   getPhaseOffset: () => number | null
@@ -72,8 +66,6 @@ export function MixerStrip({
   onCrossfadeChange,
   cueMix,
   onCueMixChange,
-  cueDevice,
-  onCueDeviceChange,
   getPhaseOffset,
 }: MixerStripProps) {
   const { t } = useTranslation()
@@ -82,9 +74,6 @@ export function MixerStrip({
   const [busy, setBusy] = useState(false)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [error, setError] = useState<string | null>(null)
-  // null = not scanned yet; the saved device still shows as an option.
-  const [cueOutputs, setCueOutputs] = useState<AudioOutputDevice[] | null>(null)
-  const [phonesError, setPhonesError] = useState<string | null>(null)
   // The limiter's gain reduction, polled gently — it is a health
   // readout, not a meter.
   const [gainReduction, setGainReduction] = useState(0)
@@ -95,39 +84,6 @@ export function MixerStrip({
     )
     return () => clearInterval(ticker)
   }, [engine])
-
-  async function scanCueOutputs() {
-    try {
-      // Browser sinks plus the backend's phones jacks (ADR-0007) — the
-      // jack entries route through /ws/cue instead of an audio element.
-      const [browserOutputs, jackOutputs] = await Promise.all([
-        listAudioOutputs(),
-        listCueJackOutputs(),
-      ])
-      setCueOutputs([
-        ...browserOutputs,
-        ...jackOutputs.map(({ name }) => ({
-          deviceId: name,
-          label: t('mixer.phonesJack', { name }),
-          backend: true,
-        })),
-      ])
-      setPhonesError(null)
-    } catch (cause) {
-      setPhonesError(cause instanceof Error ? cause.message : String(cause))
-    }
-  }
-
-  function pickCueDevice(label: string) {
-    const device =
-      cueOutputs?.find((output) => output.label === label) ??
-      (cueDevice?.label === label ? cueDevice : null)
-    onCueDeviceChange(device).then(
-      () => setPhonesError(null),
-      (cause: unknown) =>
-        setPhonesError(cause instanceof Error ? cause.message : String(cause)),
-    )
-  }
 
   useEffect(() => {
     if (!recording) return
@@ -261,28 +217,6 @@ export function MixerStrip({
           value={cueMix}
           onChange={onCueMixChange}
         />
-        <div className="mixer__phones-device">
-          <Select
-            label={t('mixer.phonesOutput')}
-            value={cueDevice?.label ?? t('mixer.phonesOff')}
-            options={[
-              t('mixer.phonesOff'),
-              ...(cueOutputs?.map((output) => output.label) ??
-                (cueDevice ? [cueDevice.label] : [])),
-            ]}
-            onChange={pickCueDevice}
-          />
-          {!cueOutputs && (
-            <Button onClick={() => void scanCueOutputs()}>
-              {t('mixer.phonesScan')}
-            </Button>
-          )}
-          {phonesError && (
-            <span className="mixer__error" role="alert">
-              {t('mixer.phonesError', { message: phonesError })}
-            </span>
-          )}
-        </div>
       </div>
 
       <div className="mixer__master">

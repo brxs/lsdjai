@@ -142,15 +142,6 @@ export type AudioEngine = {
   setCrossfade: (position: number) => void
   /** Cue/master blend for the headphone feed: 0 = cue only, 1 = master. */
   setCueMix: (position: number) => void
-  /** Route the cue feed to an output device; null switches it off. */
-  setCueDevice: (deviceId: string | null) => Promise<void>
-  /** Tap the blended headphone feed as interleaved stereo float32
-   * batches — the backend cue sink's wire format (ADR-0007). Starting a
-   * new capture replaces a running one. */
-  startCueCapture: (
-    onChunk: (samples: Float32Array<ArrayBuffer>) => void,
-  ) => Promise<void>
-  stopCueCapture: () => void
   /** Master-bus RMS level, 0..~1 (what the speakers get). */
   getMasterLevel: () => number
   /** The limiter's current gain reduction in dB (≤ 0); 0 when idle. */

@@ -224,10 +224,11 @@ describe('createNativeEngine — graceful native stubs', () => {
     expect(blob.type).toBe('audio/wav')
   })
 
-  it('cue + resume resolve without throwing', async () => {
+  it('resume resolves without throwing and cue-mix goes to the engine', async () => {
     const engine = createNativeEngine()
     await expect(engine.resume()).resolves.toBeUndefined()
-    await expect(engine.setCueDevice('x')).resolves.toBeUndefined()
-    await expect(engine.startCueCapture(() => {})).resolves.toBeUndefined()
+    calls.length = 0
+    engine.setCueMix(0.3)
+    expect(calls).toContainEqual({ cmd: 'set_cue_mix', args: { position: 0.3 } })
   })
 })

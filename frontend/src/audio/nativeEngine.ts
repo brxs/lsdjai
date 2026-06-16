@@ -20,10 +20,11 @@
  *   feed in `useDeck` still drives the TS beat/loudness analysis (ADR-0017).
  * - `getTrackPeaks` is computed in TS from the decoded channels this adapter
  *   keeps per deck (sync + exact at any bucket count) — no IPC for the overview.
- * - Cue (`setCue`/`setCueMix`/`setCueDevice`/`startCueCapture`) is a documented
- *   stub until the native cue routing (part 5); `setBeatPeriod` (synced dub echo)
- *   and master recording are documented follow-ups; `nudgeTrackPhase` is a no-op
- *   (the never-a-click stepped bend lands with the Phase 3 varispeed work). */
+ * - Cue routing is native: the engine derives the headphone feed and routes it
+ *   to the output device's channels 3/4, so the webview only sends the live
+ *   controls (`setCue`/`setCueMix`). `setBeatPeriod` (synced dub echo) and master
+ *   recording are documented follow-ups; `nudgeTrackPhase` is a no-op (the
+ *   never-a-click stepped bend lands with the Phase 3 varispeed work). */
 
 import type { EqBand } from './eq'
 import {
@@ -373,12 +374,6 @@ export function createNativeEngine(): AudioEngine {
     resume: () => Promise.resolve(),
     setCrossfade: (position) => send('set_crossfade', { position }),
     setCueMix: (position) => send('set_cue_mix', { position }),
-    // Device selection / the cue-tap capture stream is the FLX4 phones jack on the
-    // native multichannel device (engine routes the cue to channels 3/4), so the
-    // webview no longer picks a second sink — these are no-ops in the native shell.
-    setCueDevice: () => Promise.resolve(),
-    startCueCapture: () => Promise.resolve(),
-    stopCueCapture: () => {},
     getMasterLevel: () => snapshot?.health.masterPeak ?? 0,
     getMasterGainReduction: () => snapshot?.health.masterGainReductionDb ?? 0,
     // The engine taps the master bus on its render thread; stop returns a WAV.

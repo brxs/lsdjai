@@ -2,11 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { INITIAL_CROSSFADE, INITIAL_CUE_MIX, type DeckId } from './audio/types'
-import { startCueStream } from './audio/cueStream'
 import { uploadStyleSample } from './audio/styleSample'
 import { useAudioEngine } from './audio/engineContext'
 import { FX_KINDS } from './audio/fx'
-import type { AudioOutputDevice } from './audio/outputs'
 import { applyAppIntent } from './control/appIntents'
 import { useControlBus } from './control/busContext'
 import {
@@ -49,9 +47,6 @@ function App() {
   const [cueMix, setCueMix] = useState(
     () => loadAppSettings().cueMix ?? INITIAL_CUE_MIX,
   )
-  const [cueDevice, setCueDevice] = useState<AudioOutputDevice | null>(
-    () => loadAppSettings().cueDevice ?? null,
-  )
   // The beat view's home (M22): centre stacked, top bar, or off.
   const [beatView, setBeatView] = useState<BeatViewLayout>(
     () => loadAppSettings().beatView ?? 'center',
@@ -75,31 +70,12 @@ function App() {
     updateAppSettings({ accent: value })
   }, [])
 
-  // A live backend cue stream's stop function (ADR-0007); null while the
-  // cue rides a browser sink or is off. The token guards the async hops:
-  // only the latest routing attempt may install its stream — a stale one
-  // stops itself instead of overwriting a newer pick.
-  const cueStreamStop = useRef<(() => void) | null>(null)
-  const cueRouteToken = useRef(0)
-
-  // Hand the restored mix positions and cue device to the engine once —
-  // it holds them until the bus is built on first play. Later moves go
-  // through the handlers, so this deliberately ignores state updates.
-  // A vanished cue device fails silently here; re-picking recovers.
+  // Hand the restored mix positions to the engine once — it holds them
+  // until the bus is built on first play. Later moves go through the
+  // handlers, so this deliberately ignores state updates.
   useEffect(() => {
     engine.setCrossfade(crossfade)
     engine.setCueMix(cueMix)
-    if (cueDevice?.backend) {
-      const token = ++cueRouteToken.current
-      void startCueStream(engine, cueDevice.deviceId)
-        .then((stop) => {
-          if (token === cueRouteToken.current) cueStreamStop.current = stop
-          else stop()
-        })
-        .catch(() => {})
-    } else if (cueDevice) {
-      void engine.setCueDevice(cueDevice.deviceId).catch(() => {})
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine])
 
@@ -125,41 +101,6 @@ function App() {
       engine.setCueMix(position)
       setCueMix(position)
       updateAppSettings({ cueMix: position })
-    },
-    [engine],
-  )
-
-  const handleCueDevice = useCallback(
-    async (device: AudioOutputDevice | null) => {
-      const token = ++cueRouteToken.current
-      // The previous stream stops eagerly — the backend sink takes one
-      // client, so a jack-to-jack switch must free it first.
-      cueStreamStop.current?.()
-      cueStreamStop.current = null
-      if (device?.backend) {
-        await engine.setCueDevice(null)
-        let stop: () => void
-        try {
-          stop = await startCueStream(engine, device.deviceId)
-        } catch (cause) {
-          // The old route is already torn down, so show reality (Off) —
-          // but don't persist it: a reload restores the last good route.
-          if (token === cueRouteToken.current) setCueDevice(null)
-          throw cause
-        }
-        if (token !== cueRouteToken.current) {
-          stop()
-          return
-        }
-        cueStreamStop.current = stop
-      } else {
-        await engine.setCueDevice(device?.deviceId ?? null)
-        if (token !== cueRouteToken.current) return
-      }
-      // State and persistence reflect only routes that actually took:
-      // a failed pick must not survive a reload.
-      setCueDevice(device)
-      updateAppSettings({ cueDevice: device })
     },
     [engine],
   )
@@ -506,8 +447,6 @@ function App() {
             onCrossfadeChange={handleCrossfade}
             cueMix={cueMix}
             onCueMixChange={handleCueMix}
-            cueDevice={cueDevice}
-            onCueDeviceChange={handleCueDevice}
             getPhaseOffset={getPhaseOffset}
           />
         </div>

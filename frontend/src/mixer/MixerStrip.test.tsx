@@ -14,18 +14,6 @@ import { createControlBus, type ControlBus } from '../control/bus'
 import { ControlBusProvider } from '../control/ControlBusProvider'
 import { MixerStrip, type ChannelControls } from './MixerStrip'
 
-vi.mock('../audio/outputs', () => ({
-  listAudioOutputs: vi.fn(async () => [
-    { deviceId: 'flx4', label: 'DDJ-FLX4 (2b73:0045)' },
-    { deviceId: 'mac', label: 'MacBook Pro Speakers' },
-    { deviceId: 'bt', label: 'WH-1000XM4' },
-  ]),
-}))
-
-vi.mock('../audio/cueStream', () => ({
-  listCueJackOutputs: vi.fn(async () => [{ name: 'DDJ-FLX4' }]),
-}))
-
 function makeEngine(overrides: Partial<AudioEngine> = {}): AudioEngine {
   return {
     getContextTime: vi.fn(() => 0),
@@ -33,9 +21,6 @@ function makeEngine(overrides: Partial<AudioEngine> = {}): AudioEngine {
     resume: vi.fn(async () => {}),
     setCrossfade: vi.fn(),
     setCueMix: vi.fn(),
-    setCueDevice: vi.fn(async () => {}),
-    startCueCapture: vi.fn(async () => {}),
-    stopCueCapture: vi.fn(),
     startRecording: vi.fn(async () => {}),
     stopRecording: vi.fn(async () => new Blob(['x'], { type: 'audio/wav' })),
     getMasterLevel: vi.fn(() => 0),
@@ -63,9 +48,7 @@ function makeChannel(overrides: Partial<ChannelControls> = {}): ChannelControls 
 type MixerOverrides = {
   channels?: Record<'a' | 'b', ChannelControls>
   bus?: ControlBus
-  cueDevice?: { deviceId: string; label: string } | null
   onCueMixChange?: (position: number) => void
-  onCueDeviceChange?: (device: { deviceId: string; label: string } | null) => Promise<void>
 }
 
 function renderMixer(engine: AudioEngine, overrides: MixerOverrides = {}) {
@@ -78,9 +61,7 @@ function renderMixer(engine: AudioEngine, overrides: MixerOverrides = {}) {
           onCrossfadeChange={() => {}}
           cueMix={0.5}
           onCueMixChange={overrides.onCueMixChange ?? (() => {})}
-          cueDevice={overrides.cueDevice ?? null}
-        getPhaseOffset={() => null}
-        onCueDeviceChange={overrides.onCueDeviceChange ?? (async () => {})}
+          getPhaseOffset={() => null}
         />
       </ControlBusProvider>
     </AudioEngineProvider>,
@@ -185,71 +166,6 @@ describe('MixerStrip headphone cue', () => {
     renderMixer(makeEngine(), { onCueMixChange })
     fireEvent.change(screen.getByLabelText('Cue mix'), { target: { value: '0.2' } })
     expect(onCueMixChange).toHaveBeenCalledWith(0.2)
-  })
-
-  it('scans for outputs and hands the picked device up', async () => {
-    const onCueDeviceChange = vi.fn(async () => {})
-    renderMixer(makeEngine(), { onCueDeviceChange })
-
-    fireEvent.click(screen.getByRole('button', { name: 'Find devices' }))
-    const select = screen.getByLabelText('Phones out')
-    await waitFor(() => expect(select).toContainHTML('WH-1000XM4'))
-    expect(select).toContainHTML('MacBook Pro Speakers')
-    // Every output is offered, the FLX4 included: with a macOS speaker
-    // remap (Audio MIDI Setup) its stereo sink can be the phones jack.
-    expect(select).toContainHTML('DDJ-FLX4')
-
-    fireEvent.change(select, { target: { value: 'WH-1000XM4' } })
-    expect(onCueDeviceChange).toHaveBeenCalledWith({
-      deviceId: 'bt',
-      label: 'WH-1000XM4',
-    })
-  })
-
-  it('offers the backend phones jack and hands it up flagged', async () => {
-    const onCueDeviceChange = vi.fn(async () => {})
-    renderMixer(makeEngine(), { onCueDeviceChange })
-
-    fireEvent.click(screen.getByRole('button', { name: 'Find devices' }))
-    const select = screen.getByLabelText('Phones out')
-    await waitFor(() => expect(select).toContainHTML('DDJ-FLX4 — phones jack'))
-
-    fireEvent.change(select, { target: { value: 'DDJ-FLX4 — phones jack' } })
-    expect(onCueDeviceChange).toHaveBeenCalledWith({
-      deviceId: 'DDJ-FLX4',
-      label: 'DDJ-FLX4 — phones jack',
-      backend: true,
-    })
-  })
-
-  it('keeps the saved device pickable without a scan, and can switch off', () => {
-    const onCueDeviceChange = vi.fn(async () => {})
-    renderMixer(makeEngine(), {
-      cueDevice: { deviceId: 'flx4', label: 'DDJ-FLX4' },
-      onCueDeviceChange,
-    })
-
-    const select = screen.getByLabelText('Phones out')
-    expect(select).toHaveValue('DDJ-FLX4')
-    fireEvent.change(select, { target: { value: 'Off' } })
-    expect(onCueDeviceChange).toHaveBeenCalledWith(null)
-  })
-
-  it('surfaces a failing cue output instead of swallowing it', async () => {
-    const onCueDeviceChange = vi.fn(async () => {
-      throw new Error('sink gone')
-    })
-    renderMixer(makeEngine(), {
-      cueDevice: { deviceId: 'flx4', label: 'DDJ-FLX4' },
-      onCueDeviceChange,
-    })
-
-    fireEvent.change(screen.getByLabelText('Phones out'), {
-      target: { value: 'DDJ-FLX4' },
-    })
-    await waitFor(() =>
-      expect(screen.getByRole('alert')).toHaveTextContent('sink gone'),
-    )
   })
 
   it('moves a channel trim manually and re-engages auto', () => {

@@ -6,7 +6,6 @@ import { EQ_BANDS, type EqBand } from './audio/eq'
 import { FX_KINDS, type FxKind } from './audio/fx'
 import { LOOP_LENGTH_OPTIONS } from './audio/loops'
 import { TRIM_RANGE_DB } from './audio/master'
-import type { AudioOutputDevice } from './audio/outputs'
 import type { PadPoint } from './deck/padWeights'
 import { clamp01, isPoint, parsePreset, type StylePreset } from './presets'
 
@@ -34,7 +33,6 @@ export type AccentTheme = 'lime' | 'violet' | 'cyan'
 export type AppSettings = {
   crossfade: number
   cueMix: number
-  cueDevice: AudioOutputDevice | null
   beatView: BeatViewLayout
   accent: AccentTheme
 }
@@ -164,20 +162,6 @@ export function loadAppSettings(): Partial<AppSettings> {
     stored.accent === 'cyan'
   ) {
     settings.accent = stored.accent
-  }
-  const cueDevice = stored.cueDevice
-  if (cueDevice === null) {
-    settings.cueDevice = null
-  } else if (
-    cueDevice &&
-    typeof cueDevice.deviceId === 'string' &&
-    typeof cueDevice.label === 'string'
-  ) {
-    settings.cueDevice = {
-      deviceId: cueDevice.deviceId,
-      label: cueDevice.label,
-      ...(cueDevice.backend === true ? { backend: true } : {}),
-    }
   }
   return settings
 }
