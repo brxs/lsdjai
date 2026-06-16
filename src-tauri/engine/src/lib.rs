@@ -639,6 +639,18 @@ impl Engine {
         matches!(self.decks[deck_index], Some(DeckSource::Realtime(_)))
     }
 
+    /// Play/stop the live (Realtime) deck stream: gate whether `render` drains
+    /// the deck's ring. `deck_stop` passes `false` so the held prebuffer stops
+    /// sounding immediately (instead of playing out then underrunning); `deck_play`
+    /// passes `true` to resume. A no-op for a Playback deck (a loaded track has its
+    /// own transport) or an uncreated deck.
+    pub fn set_deck_playing(&mut self, deck_index: usize, playing: bool) {
+        if let Some(DeckSource::Realtime(ring)) = self.decks.get_mut(deck_index).and_then(Option::as_mut)
+        {
+            ring.set_playing(playing);
+        }
+    }
+
     /// The active Playback source for a deck, or `None` if the deck is Realtime /
     /// uncreated. Shared accessor for the track control methods.
     ///

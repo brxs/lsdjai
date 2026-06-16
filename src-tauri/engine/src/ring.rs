@@ -44,6 +44,10 @@ pub(crate) fn new_deck_ring(
             deck,
             consumer,
             primed: false,
+            // Starts playing: a freshly created deck drains its ring as soon as
+            // the sidecar feeds it (the worker only feeds once told to play), and
+            // deck_stop/deck_play toggle it from there.
+            playing: true,
             telemetry,
             history: PlayedHistory::new(),
         },
@@ -188,6 +192,13 @@ pub(crate) struct RingConsumer {
     /// Set once the ring first reaches the prebuffer high-water mark. Before
     /// that, shortfalls are the expected initial fill, not underruns.
     primed: bool,
+    /// Whether the deck is playing. `deck_stop` clears it; `deck_play` sets it.
+    /// When stopped the render loop must NOT drain this ring — the sidecar has
+    /// stopped generating, but the ring still holds the prebuffer lead (~1.5 s),
+    /// so a blind drain would keep the stopped deck audible and then underrun the
+    /// moment it empties. Holding the buffer instead makes stop silent and
+    /// immediate and lets play resume seamlessly from where the stream paused.
+    playing: bool,
     telemetry: Arc<Telemetry>,
     /// Recently-played stereo frames, retained for freeze-pad / style-sample
     /// capture (M13/M15, ADR-0009). `pop_frame` writes every consumed frame here;
@@ -223,7 +234,9 @@ impl RingConsumer {
 
         if self.primed {
             self.telemetry.record_fill(self.deck, filled / SAMPLES_PER_FRAME);
-            if filled < need {
+            // Only a *playing* deck can underrun: a stopped deck is intentionally
+            // not drained, so a short ring is the held buffer, not a starvation.
+            if self.playing && filled < need {
                 self.telemetry.note_underrun();
             }
         }
@@ -240,7 +253,10 @@ impl RingConsumer {
     /// listener was never fed.
     #[inline]
     pub(crate) fn pop_frame(&mut self) -> (f32, f32) {
-        if self.consumer.slots() >= SAMPLES_PER_FRAME {
+        // A stopped deck holds its ring: do not drain (so play resumes seamlessly)
+        // and do not advance the played history (silence the listener was not fed
+        // must never enter a capture window — ADR-0009).
+        if self.playing && self.consumer.slots() >= SAMPLES_PER_FRAME {
             let l = self.consumer.pop().unwrap_or(0.0);
             let r = self.consumer.pop().unwrap_or(0.0);
             self.history.push(l, r);
@@ -268,6 +284,13 @@ impl RingConsumer {
     pub(crate) fn rearm_prebuffer(&mut self) {
         self.primed = false;
         self.history.clear();
+    }
+
+    /// Set the play/stop gate (see the `playing` field). `deck_stop` → `false`
+    /// (the render loop stops draining this ring), `deck_play` → `true` (drain
+    /// resumes). Cheap enough to call from the render thread's command drain.
+    pub(crate) fn set_playing(&mut self, playing: bool) {
+        self.playing = playing;
     }
 }
 
@@ -345,5 +368,72 @@ mod history_tests {
         assert_eq!(history.frames, 0);
         let (left, right) = history.capture_recent(100);
         assert!(left.is_empty() && right.is_empty(), "no history after clear");
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// The native-stop fix: a stopped deck HOLDS its ring — `pop_frame` is silent
+    /// and does not drain, and a primed-but-stopped short ring counts NO underrun.
+    /// Resuming drains again from where it paused.
+    #[test]
+    fn a_stopped_ring_neither_drains_nor_underruns() {
+        let telemetry = Arc::new(Telemetry::new());
+        let (mut producer, mut consumer) = new_deck_ring(0, telemetry.clone());
+
+        // Fill past the prebuffer high-water with a constant 0.5 so the ring primes.
+        let frames = PREBUFFER_FRAMES + 100;
+        let pcm = vec![0.5f32; frames * SAMPLES_PER_FRAME];
+        assert_eq!(producer.post_pcm(&pcm), pcm.len(), "the ring accepts the fill");
+
+        // Prime + drain one frame while playing (the default).
+        consumer.account_block(64);
+        assert!(telemetry.primed(0), "the ring primes past the high-water");
+        assert_eq!(consumer.pop_frame(), (0.5, 0.5), "a playing ring drains audio");
+        let held = consumer.filled_samples();
+
+        // Stop: pop is silent and the fill is HELD (not drained).
+        consumer.set_playing(false);
+        assert_eq!(consumer.pop_frame(), (0.0, 0.0), "a stopped ring is silent");
+        assert_eq!(
+            consumer.filled_samples(),
+            held,
+            "a stopped ring is held, not drained",
+        );
+
+        // A block that the held ring cannot satisfy must NOT count an underrun
+        // while stopped (the deck is intentionally not consuming).
+        let before = telemetry.underruns();
+        consumer.account_block(frames + 1000);
+        assert_eq!(
+            telemetry.underruns(),
+            before,
+            "a stopped deck must not count underruns",
+        );
+
+        // Resume: the drain works again, seamlessly from the held buffer.
+        consumer.set_playing(true);
+        assert_eq!(consumer.pop_frame(), (0.5, 0.5), "play resumes the drain");
+    }
+
+    /// Guard the converse so the suppression above is not blanket: a PLAYING primed
+    /// ring that cannot satisfy a block still counts an underrun.
+    #[test]
+    fn a_playing_primed_short_ring_still_underruns() {
+        let telemetry = Arc::new(Telemetry::new());
+        let (mut producer, mut consumer) = new_deck_ring(0, telemetry.clone());
+        let frames = PREBUFFER_FRAMES + 10;
+        producer.post_pcm(&vec![0.25f32; frames * SAMPLES_PER_FRAME]);
+        consumer.account_block(64); // primes (need ≪ filled)
+        assert!(telemetry.primed(0));
+        let before = telemetry.underruns();
+        consumer.account_block(frames + 5000); // need ≫ filled, still playing
+        assert!(
+            telemetry.underruns() > before,
+            "a playing short ring underruns",
+        );
     }
 }

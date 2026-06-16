@@ -502,15 +502,30 @@ pub struct PromptEntryArg {
 }
 
 #[tauri::command]
-pub fn deck_play(state: tauri::State<'_, Sidecars>, deck: usize) {
+pub fn deck_play(
+    state: tauri::State<'_, Sidecars>,
+    engine: tauri::State<'_, Host>,
+    deck: usize,
+) {
     if valid_deck(deck) {
+        // Open the engine gate first, so the sidecar's PCM drains the moment it
+        // arrives, then tell the worker to start generating.
+        engine.set_deck_playing(deck, true);
         state.send(deck, &json!({ "type": "play" }).to_string());
     }
 }
 
 #[tauri::command]
-pub fn deck_stop(state: tauri::State<'_, Sidecars>, deck: usize) {
+pub fn deck_stop(
+    state: tauri::State<'_, Sidecars>,
+    engine: tauri::State<'_, Host>,
+    deck: usize,
+) {
     if valid_deck(deck) {
+        // Silence the deck immediately (stop draining the held buffer), then tell
+        // the worker to stop generating. Without the engine gate the buffered ~1.5 s
+        // would keep playing and then underrun (the native stop bug).
+        engine.set_deck_playing(deck, false);
         state.send(deck, &json!({ "type": "stop" }).to_string());
     }
 }

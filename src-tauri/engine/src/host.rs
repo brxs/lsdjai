@@ -183,6 +183,9 @@ enum Command {
     ClearFx(usize),
     SetTrim(usize, f32),
     SetOnAir(usize, bool),
+    /// Play/stop the live Realtime deck stream (gate the ring drain). `deck_stop`
+    /// → `false`, `deck_play` → `true`.
+    SetDeckPlaying(usize, bool),
     SetCue(usize, bool),
     SetCueMix(f32),
     LoadTrack(usize, Vec<f32>),
@@ -449,6 +452,11 @@ impl Host {
         self.send(Command::SetOnAir(deck, on));
     }
 
+    /// Gate the live Realtime deck stream (the `deck_play`/`deck_stop` path).
+    pub fn set_deck_playing(&self, deck: usize, playing: bool) {
+        self.send(Command::SetDeckPlaying(deck, playing));
+    }
+
     pub fn set_cue(&self, deck: usize, on: bool) {
         self.send(Command::SetCue(deck, on));
     }
@@ -701,6 +709,7 @@ impl RenderLoop {
             Command::ClearFx(d) => self.engine.clear_fx(d),
             Command::SetTrim(d, db) => self.engine.set_trim(d, db),
             Command::SetOnAir(d, on) => self.engine.set_on_air(d, on),
+            Command::SetDeckPlaying(d, playing) => self.engine.set_deck_playing(d, playing),
             Command::SetCue(d, on) => self.engine.set_cue(d, on),
             Command::SetCueMix(p) => self.engine.set_cue_mix(p),
             Command::LoadTrack(d, samples) => self.engine.load_track(d, samples),
