@@ -60,6 +60,24 @@ pub fn clamp_rate(rate: f64) -> f64 {
     rate.clamp(1.0 - TRACK_RATE_RANGE, 1.0 + TRACK_RATE_RANGE)
 }
 
+// --- Phase-nudge (platter bend) tuning, mirroring `bendPlan` in `track.ts` ---
+//
+// A jog-while-playing nudge (M20, ADR-0014) slips the playhead by a small amount
+// via a *stepped rate bend* — a click-free catch-up, never a position jump. The
+// backlog is consumed by briefly playing faster (push ahead) or slower (drag
+// back) so the playhead only ever advances forward; only its phase moves.
+//
+/// Gentlest bend for a single tick (the bent rate is `rate * (1 ± fraction)`).
+const NUDGE_BEND_FRACTION: f64 = 0.05;
+/// Steepest bend a backlog may demand (beyond this the queue caps instead).
+const MAX_BEND_FRACTION: f64 = 0.5;
+/// Slip beyond what the gentlest bend clears in this time bends steeper, so a
+/// platter spin answers in bounded time rather than grinding for seconds.
+const BEND_CATCH_UP_SECONDS: f64 = 0.25;
+/// The deepest slip backlog worth keeping (`MAX_PENDING_SLIP_SECONDS` = 1 s in
+/// `track.ts`): a platter is a phase tool, not a seek.
+const MAX_PENDING_SLIP_FRAMES: f64 = crate::SAMPLE_RATE as f64;
+
 /// Clamp a seek target (in frames) into `[0, duration]` (`clampOffset` in
 /// `track.ts`; garbage seeks to the top).
 fn clamp_offset(frames: f64, duration_frames: u64) -> f64 {
@@ -194,6 +212,11 @@ pub struct BufferSource {
     /// Varispeed rate (ADR-0014); the playhead advances by this per output
     /// sample. Default 1.0.
     rate: f64,
+    /// Pending phase-nudge backlog in frames (the platter bend, M20). Positive
+    /// pushes the playhead ahead, negative drags it back; capped at
+    /// [`MAX_PENDING_SLIP_FRAMES`]. Consumed as a per-sample rate bend in
+    /// [`BufferSource::pop_frame`] — click-free, never a jump. Default 0.
+    pending_slip: f64,
     /// The active loop region in frames (ADR-0015), or `None` for linear.
     loop_region: Option<LoopRegion>,
 }
@@ -218,6 +241,7 @@ impl BufferSource {
             playing: false,
             ended: false,
             rate: 1.0,
+            pending_slip: 0.0,
             loop_region: None,
         }
     }
@@ -237,9 +261,11 @@ impl BufferSource {
     }
 
     /// Park the playhead where it is (`pauseTrack`). Pausing mid-loop parks inside
-    /// the region because the playhead already folds there.
+    /// the region because the playhead already folds there. Drops any pending
+    /// phase bend — the platter gesture ends with the transport.
     pub fn pause(&mut self) {
         self.playing = false;
+        self.pending_slip = 0.0;
     }
 
     /// Jump the playhead to `frames` (clamped into the track) and **exit any
@@ -252,6 +278,9 @@ impl BufferSource {
         // A seek re-arms a parked-at-end deck: the playhead is now valid, so the
         // next render advances from here rather than staying parked.
         self.ended = false;
+        // A jump invalidates any in-flight phase bend (it was relative to the old
+        // position).
+        self.pending_slip = 0.0;
     }
 
     /// Set the varispeed rate, clamped to the ±8 % envelope (ADR-0014). Non-RT;
@@ -259,6 +288,47 @@ impl BufferSource {
     /// envelope at the boundary.
     pub fn set_rate(&mut self, rate: f64) {
         self.rate = clamp_rate(rate);
+    }
+
+    /// Slip the playhead by `frames` of phase via a stepped rate bend (the
+    /// platter-drag metaphor, M20/ADR-0014) — the jog-while-playing nudge. Adds
+    /// to a capped backlog ([`MAX_PENDING_SLIP_FRAMES`]) consumed click-free in
+    /// [`pop_frame`](Self::pop_frame); positive pushes ahead, negative drags back.
+    /// Playing only — a paused platter is a fine seek, not a bend (handled by the
+    /// caller). Non-RT.
+    pub fn nudge_phase(&mut self, frames: f64) {
+        if !self.playing || !frames.is_finite() {
+            return;
+        }
+        self.pending_slip =
+            (self.pending_slip + frames).clamp(-MAX_PENDING_SLIP_FRAMES, MAX_PENDING_SLIP_FRAMES);
+    }
+
+    /// The extra per-sample advance for an in-progress phase bend, decrementing
+    /// the backlog by what it consumes. Mirrors `bendPlan` in `track.ts`: the bend
+    /// fraction ramps from [`NUDGE_BEND_FRACTION`] up to [`MAX_BEND_FRACTION`] as
+    /// the backlog grows, so a spin catches up in bounded time. The bent advance
+    /// `rate * (1 ± fraction)` stays positive (fraction ≤ 0.5), so the playhead
+    /// only ever moves forward — a "back" nudge just advances slower, dropping
+    /// phase. Click-free: a rate change, never a jump.
+    fn consume_slip(&mut self) -> f64 {
+        if self.pending_slip == 0.0 {
+            return 0.0;
+        }
+        let direction = if self.pending_slip >= 0.0 { 1.0 } else { -1.0 };
+        let slip_seconds = self.pending_slip.abs() / crate::SAMPLE_RATE as f64;
+        let fraction = (slip_seconds / (self.rate * BEND_CATCH_UP_SECONDS))
+            .clamp(NUDGE_BEND_FRACTION, MAX_BEND_FRACTION);
+        let extra = direction * self.rate * fraction;
+        // Never overshoot the remaining backlog (extra shares its sign).
+        if extra.abs() >= self.pending_slip.abs() {
+            let remaining = self.pending_slip;
+            self.pending_slip = 0.0;
+            remaining
+        } else {
+            self.pending_slip -= extra;
+            extra
+        }
     }
 
     /// Set the loop region (ADR-0015/0016), running the pure [`plan_loop_set`]
@@ -363,8 +433,9 @@ impl BufferSource {
 
         let frame = self.sample_at(self.playhead);
 
-        // Advance by the rate, then fold (loop) or detect the natural end.
-        let next = self.playhead + self.rate;
+        // Advance by the rate plus any in-flight phase bend, then fold (loop) or
+        // detect the natural end. The bend only changes how fast we move forward.
+        let next = self.playhead + self.rate + self.consume_slip();
         match self.loop_region {
             Some(region) => {
                 self.playhead = fold_into_loop(next, region);
@@ -759,5 +830,101 @@ mod tests {
         assert_eq!(clamp_rate(-1.0), 1.0);
         assert_eq!(clamp_rate(f64::NAN), 1.0);
         assert_eq!(clamp_rate(0.5), 1.0 - TRACK_RATE_RANGE);
+    }
+
+    /// (T11) Phase nudge (the jog-while-playing platter bend, M20): slips the
+    /// playhead by the requested amount via a rate bend, NEVER a jump. A forward
+    /// nudge leaves the playhead exactly that far ahead of an un-nudged twin and a
+    /// backward nudge symmetrically behind; the per-sample advance stays bounded
+    /// (no click) and the backlog drains.
+    #[test]
+    fn phase_nudge_slips_the_playhead_without_a_jump() {
+        for &slip in &[480.0f64, -480.0] {
+            let mut base = BufferSource::new(ramp_buffer(60_000));
+            let mut bent = BufferSource::new(ramp_buffer(60_000));
+            base.play();
+            bent.play();
+            for _ in 0..1_000 {
+                base.pop_frame();
+                bent.pop_frame();
+            }
+
+            bent.nudge_phase(slip);
+
+            // Settle the bend (the gentlest 5 % bend clears 480 frames in ~9600
+            // samples); track the largest per-sample step to prove no jump.
+            let mut prev = bent.playhead;
+            let mut max_step = 0.0f64;
+            for _ in 0..20_000 {
+                base.pop_frame();
+                bent.pop_frame();
+                max_step = max_step.max((bent.playhead - prev).abs());
+                prev = bent.playhead;
+            }
+
+            // The bent twin sits `slip` frames from the un-nudged one.
+            assert!(
+                (bent.playhead - base.playhead - slip).abs() < 1e-3,
+                "slip {slip}: expected a {slip}-frame offset, got {}",
+                bent.playhead - base.playhead
+            );
+            // No click: the playhead only ever advances forward, by at most the
+            // steepest-bend rate (1 + MAX_BEND_FRACTION) — never a position jump.
+            assert!(
+                max_step > 0.0 && max_step <= 1.0 + MAX_BEND_FRACTION + 1e-9,
+                "slip {slip}: a bend must glide, not jump — max step {max_step}"
+            );
+            // The backlog is fully consumed once settled.
+            assert_eq!(bent.pending_slip, 0.0, "slip {slip}: backlog drained");
+        }
+    }
+
+    /// (T12) A paused deck banks no phase slip — the caller routes a paused jog to
+    /// a fine seek, so `nudge_phase` ignores it and playback stays verbatim.
+    #[test]
+    fn phase_nudge_is_a_no_op_while_paused() {
+        let mut src = BufferSource::new(ramp_buffer(1_000));
+        src.nudge_phase(480.0);
+        assert_eq!(src.pending_slip, 0.0, "a paused nudge banks nothing");
+        src.play();
+        for f in 0..200 {
+            let (l, _r) = src.pop_frame();
+            assert_eq!(l.to_bits(), (f as f32).to_bits(), "frame {f} verbatim — no banked slip");
+        }
+    }
+
+    /// (T13) The backlog caps at one second (`MAX_PENDING_SLIP_FRAMES`): a platter
+    /// is a phase tool, not a seek — a hard spin does not pile up minutes of bend.
+    #[test]
+    fn phase_nudge_caps_the_backlog() {
+        let mut src = BufferSource::new(ramp_buffer(60_000));
+        src.play();
+        for _ in 0..100 {
+            src.nudge_phase(48_000.0); // each well past the 1 s cap
+        }
+        assert_eq!(src.pending_slip, MAX_PENDING_SLIP_FRAMES, "backlog caps at 1 s");
+    }
+
+    /// (T14) A seek cancels an in-flight bend: the jump invalidates a slip that was
+    /// relative to the old position, so playback resumes verbatim from the target.
+    #[test]
+    fn seek_cancels_a_pending_phase_bend() {
+        let mut src = BufferSource::new(ramp_buffer(60_000));
+        src.play();
+        for _ in 0..500 {
+            src.pop_frame();
+        }
+        src.nudge_phase(480.0);
+        assert!(src.pending_slip > 0.0, "the nudge banked a slip");
+        src.seek(500.0);
+        assert_eq!(src.pending_slip, 0.0, "a seek cancels the in-flight bend");
+        let first = src.pop_frame().0 as f64;
+        let second = src.pop_frame().0 as f64;
+        assert!((first - 500.0).abs() < 1e-4, "seek landed at 500, got {first}");
+        assert!(
+            (second - first - 1.0).abs() < 1e-4,
+            "verbatim advance after seek, got step {}",
+            second - first
+        );
     }
 }

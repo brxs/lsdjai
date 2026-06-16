@@ -194,6 +194,7 @@ enum Command {
     PauseTrack(usize),
     SeekTrack(usize, f64),
     SetTrackRate(usize, f64),
+    NudgeTrackPhase(usize, f64),
     SetTrackLoop(usize, u64, u64),
     ClearTrackLoop(usize),
     CaptureLoop(usize, usize, f64),
@@ -492,6 +493,10 @@ impl Host {
         self.send(Command::SetTrackRate(deck, rate));
     }
 
+    pub fn nudge_track_phase(&self, deck: usize, frames: f64) {
+        self.send(Command::NudgeTrackPhase(deck, frames));
+    }
+
     pub fn set_track_loop(&self, deck: usize, start: u64, end: u64) {
         self.send(Command::SetTrackLoop(deck, start, end));
     }
@@ -718,6 +723,7 @@ impl RenderLoop {
             Command::PauseTrack(d) => self.engine.pause_track(d),
             Command::SeekTrack(d, f) => self.engine.seek_track(d, f),
             Command::SetTrackRate(d, r) => self.engine.set_track_rate(d, r),
+            Command::NudgeTrackPhase(d, f) => self.engine.nudge_track_phase(d, f),
             Command::SetTrackLoop(d, s, e) => self.engine.set_track_loop(d, s, e),
             Command::ClearTrackLoop(d) => self.engine.clear_track_loop(d),
             Command::CaptureLoop(d, slot, secs) => {

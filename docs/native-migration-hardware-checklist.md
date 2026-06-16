@@ -38,8 +38,11 @@ Run the native stack with `just tauri-dev` (Tauri app + sidecars; needs
 - [ ] Freeze pads, generated pads (one-shots + loops), and style-sample capture.
 - [ ] Master recording works: record the master bus, stop, and the downloaded
       WAV plays back the set (16-bit PCM, capped at 30 min).
+- [ ] Jog the wheel while a track plays: the playhead phase-bends to catch up
+      (push ahead / drag back for beatmatching) with no click — the engine's
+      `nudge_track_phase` rate bend, not a seek. Paused, a jog is a fine seek.
 - [ ] Known gaps (documented stubs, not bugs): synced dub echo (`setBeatPeriod`)
-      and the jog-wheel phase nudge show their stub behaviour.
+      shows its stub behaviour.
 
 ## Part 4 — Inference sidecars
 

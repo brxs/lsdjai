@@ -238,6 +238,7 @@ pub fn run() {
             commands::pause_track,
             commands::seek_track,
             commands::set_track_rate,
+            commands::nudge_track_phase,
             commands::set_track_loop,
             commands::clear_track_loop,
             commands::capture_loop,

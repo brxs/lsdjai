@@ -22,9 +22,9 @@
  *   keeps per deck (sync + exact at any bucket count) — no IPC for the overview.
  * - Cue routing is native: the engine derives the headphone feed and routes it
  *   to the output device's channels 3/4, so the webview only sends the live
- *   controls (`setCue`/`setCueMix`). `setBeatPeriod` (synced dub echo) and master
- *   recording are documented follow-ups; `nudgeTrackPhase` is a no-op (the
- *   never-a-click stepped bend lands with the Phase 3 varispeed work). */
+ *   controls (`setCue`/`setCueMix`). `setBeatPeriod` (synced dub echo) is a
+ *   documented follow-up; `nudgeTrackPhase` (the jog-while-playing platter bend)
+ *   is wired to the engine's `nudge_track_phase` rate bend. */
 
 import type { EqBand } from './eq'
 import {
@@ -390,9 +390,10 @@ export function createNativeEngine(): AudioEngine {
       clearTrackLoop: () => send('clear_track_loop', { deck }),
       getTrackStatus: () => deckTrackStatus(deck),
       setTrackRate: (rate) => send('set_track_rate', { deck, rate }),
-      // Platter-drag phase nudge (the never-a-click stepped bend) is a Phase 3
-      // follow-up alongside varispeed/keylock.
-      nudgeTrackPhase: () => {},
+      // Platter-drag phase nudge (the never-a-click stepped bend): the engine
+      // slips the playhead via a rate bend, so the seconds delta crosses as
+      // frames like every other transport command.
+      nudgeTrackPhase: (seconds) => send('nudge_track_phase', { deck, frames: seconds * SAMPLE_RATE }),
       getTrackPeaks: (buckets) => {
         const track = decoded[deck]
         if (!track || buckets <= 0) return null

@@ -437,6 +437,18 @@ impl Engine {
         }
     }
 
+    /// Phase-nudge the track by `frames` (the jog-while-playing platter bend,
+    /// M20): a click-free rate bend, not a seek. A no-op off Playback or when the
+    /// deck is paused (the caller routes a paused jog to a fine seek instead).
+    ///
+    /// # Panics
+    /// Panics if `deck_index >= DECK_COUNT`.
+    pub fn nudge_track_phase(&mut self, deck_index: usize, frames: f64) {
+        if let Some(track) = self.track_mut(deck_index) {
+            track.nudge_phase(frames);
+        }
+    }
+
     /// Set the track loop region in frames (ADR-0015/0016). Runs the pure
     /// `plan_loop_set` decision; a region that cannot loop is refused. A no-op off
     /// Playback.

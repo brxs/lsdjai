@@ -458,6 +458,13 @@ pub fn set_track_rate(state: tauri::State<'_, Host>, deck: usize, rate: f64) {
 }
 
 #[tauri::command]
+pub fn nudge_track_phase(state: tauri::State<'_, Host>, deck: usize, frames: f64) {
+    if valid_deck(deck) {
+        state.nudge_track_phase(deck, frames);
+    }
+}
+
+#[tauri::command]
 pub fn set_track_loop(state: tauri::State<'_, Host>, deck: usize, start: u64, end: u64) {
     if valid_deck(deck) {
         state.set_track_loop(deck, start, end);

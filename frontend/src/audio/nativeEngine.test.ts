@@ -131,11 +131,13 @@ describe('createNativeEngine — control contract', () => {
     calls.length = 0
     ch.seekTrack(2)
     ch.setTrackLoop(1, 1.5)
+    ch.nudgeTrackPhase(0.01) // the jog-while-playing platter bend
     expect(calls).toContainEqual({ cmd: 'seek_track', args: { deck: 0, frames: 2 * SAMPLE_RATE } })
     expect(calls).toContainEqual({
       cmd: 'set_track_loop',
       args: { deck: 0, start: 1 * SAMPLE_RATE, end: Math.round(1.5 * SAMPLE_RATE) },
     })
+    expect(calls).toContainEqual({ cmd: 'nudge_track_phase', args: { deck: 0, frames: 0.01 * SAMPLE_RATE } })
   })
 
   it('setCrossfade goes to the engine', async () => {
