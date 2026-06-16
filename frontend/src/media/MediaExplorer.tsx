@@ -120,10 +120,18 @@ export function MediaExplorer({
     ready.length === 0 ? null : ready[Math.min(highlight, ready.length - 1)].id
 
   async function loadTrackItem(deck: DeckId, wav: ArrayBuffer, title: string) {
-    // decodeAudioData detaches the buffer it is given — hand over a
-    // copy so the item can be loaded again (or onto the other deck).
-    const loaded = await onLoadTrack(deck, wav.slice(0), title)
-    if (!loaded) setGenerateError(t('media.undecodable', { title }))
+    setGenerateError(null)
+    try {
+      // decodeAudioData detaches the buffer it is given — hand over a
+      // copy so the item can be loaded again (or onto the other deck).
+      const loaded = await onLoadTrack(deck, wav.slice(0), title)
+      if (!loaded) setGenerateError(t('media.undecodable', { title }))
+    } catch (error) {
+      // The click is fire-and-forget (`void loadTrackItem`), so a rejected
+      // decode/IPC load would otherwise vanish and look like nothing happened.
+      // Surface it, like loadFolderFile does.
+      setGenerateError(error instanceof Error ? error.message : String(error))
+    }
   }
 
   async function loadFolderFile(deck: DeckId, file: FolderFile) {
