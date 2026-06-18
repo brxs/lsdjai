@@ -72,9 +72,10 @@ export type LoopState = {
 
 export type GenerateEngine = 'sfx' | 'music' | 'magenta'
 
-/** The backend caps prompts at 500 chars; the input stops short of it so
- * the BPM stamp (", NNN BPM") can never push a legal prompt over the cap. */
-export const GENERATE_PROMPT_MAX_LENGTH = 500 - ', 999 BPM'.length
+/** The backend caps prompts at a generous safety ceiling (sa3.MAX_PROMPT_LENGTH); the
+ * input stops short of it so the BPM stamp (", NNN BPM") can never push a legal prompt
+ * over the cap. High enough to hold a large structured/JSON prompt — not a UX limit. */
+export const GENERATE_PROMPT_MAX_LENGTH = 32000 - ', 999 BPM'.length
 
 /** A deck's source (M19, ADR-0013): the live Magenta stream, or one
  * decoded track. Loading decides the mode — there is no toggle. */

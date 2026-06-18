@@ -40,6 +40,7 @@ use tauri::Manager;
 mod commands;
 mod generation;
 mod sidecar;
+mod songs;
 
 /// The default per-deck model the sidecars load (mirrors `controller.py`
 /// `DEFAULT_MODEL`).
@@ -252,6 +253,9 @@ pub fn run() {
         // Native file/folder picker for the media browser's folder tab (WKWebView
         // has no File System Access API).
         .plugin(tauri_plugin_dialog::init())
+        // Reveal the generated-songs folder in Finder (open_songs_folder); the
+        // webview can't download, so songs are written to disk and opened natively.
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Start the audio host (engine + render thread + device), then spawn
             // the per-deck inference sidecars fed by the deck handles. Everything
@@ -265,6 +269,17 @@ pub fn run() {
             // The sa3/Magenta generation server (gap 2): the gen-only FastAPI on a
             // loopback port the webview fetches; gated behind SLIPMATE_SIDECARS.
             let generation_server = generation::GenerationServer::start();
+            // The generated-songs library: a fixed folder under the user's Documents
+            // (override never reaches it from the webview) plus a JSON registry the
+            // take list restores from. Auto-save / list / load / delete all go
+            // through it. Fall back to a relative path only if Documents can't be
+            // resolved (effectively never on macOS) so the app still runs.
+            let songs_dir = app
+                .path()
+                .document_dir()
+                .map(|d| d.join("SlipMate").join("generated_songs"))
+                .unwrap_or_else(|_| std::path::PathBuf::from("SlipMate/generated_songs"));
+            app.manage(songs::SongLibrary::new(songs_dir));
             app.manage(host);
             app.manage(audio_state);
             app.manage(sidecars);
@@ -291,6 +306,11 @@ pub fn run() {
             commands::stop_recording,
             commands::list_audio_files,
             commands::read_audio_file,
+            commands::list_generated_songs,
+            commands::save_generated_song,
+            commands::read_generated_song,
+            commands::delete_generated_song,
+            commands::open_songs_folder,
             commands::load_track,
             commands::unload_track,
             commands::play_track,

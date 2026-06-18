@@ -47,10 +47,24 @@
   gap: var(--space-2);
 }
 
+/* A utility action (Open songs folder) on its own line above the compose form, so it
+   isn't mistaken for part of the prompt/title inputs. */
+.media__generate-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .media__generate-row {
   display: flex;
   align-items: flex-end;
   gap: var(--space-2);
+}
+
+/* The Title field is a short name, so cap its width and let the prompt take the rest
+   (the inner .ui-field is flex:1 and fills this). */
+.media__title-field {
+  display: flex;
+  flex: 0 1 11rem;
 }
 
 .media__folder-row {
@@ -76,6 +90,8 @@
 .media__item {
   display: flex;
   align-items: center;
+  /* The expanded full prompt wraps onto its own full-width line below the row. */
+  flex-wrap: wrap;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-s);
@@ -89,12 +105,27 @@
 .media__name {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
   font: 400 var(--text-m) var(--font-ui);
   color: var(--color-text);
   text-align: left;
+}
+
+/* The compact part: the prompt (or filename) truncates here so the #id tag beside it
+   stays visible however long the prompt is. */
+.media__name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The session id (#3): never shrinks, so two takes of one prompt stay tellable apart. */
+.media__name-tag {
+  flex: none;
+  color: var(--color-text-muted);
 }
 
 .media__name--button {
@@ -102,6 +133,17 @@
   border: none;
   padding: 0;
   cursor: pointer;
+}
+
+/* The 🔍-expanded full prompt: its own full-width line below the row. */
+.media__prompt {
+  flex-basis: 100%;
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  font: 400 var(--text-s) var(--font-mono);
+  color: var(--color-text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .media__meta {

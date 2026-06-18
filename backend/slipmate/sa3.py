@@ -25,7 +25,13 @@ MAX_SECONDS = 32.0
 # Stability's published ceiling for the medium DiT (6:20).
 TRACK_MAX_SECONDS = 380.0
 MAX_SECONDS_FOR = {"sfx": MAX_SECONDS, "music": MAX_SECONDS, "track": TRACK_MAX_SECONDS}
-MAX_PROMPT_LENGTH = 500
+# A safety ceiling, not a UX limit: the prompt is passed to the sa3_mlx CLI as a
+# single argv (see `generate`), so an unbounded prompt would blow the OS arg-length
+# limit, and it guards the loopback endpoint against a pathological body. Set generous
+# enough to hold a large structured/JSON prompt (a pasted song spec runs ~8 KB) with
+# headroom, while staying far below the OS argv limit. The model's text encoder
+# truncates beyond its own window anyway.
+MAX_PROMPT_LENGTH = 32000
 
 # Measured small-DiT generation is ~1.5 s; the margin covers a cold
 # filesystem cache and slower machines, not a first-ever weight download

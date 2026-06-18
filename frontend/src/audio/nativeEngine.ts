@@ -50,6 +50,13 @@ function tauriGlobal(): TauriGlobal | null {
   return g.__TAURI__ ?? null
 }
 
+/** Whether the native (Tauri) IPC bridge is present. False in a plain browser (dev
+ * without the shell), where native-only actions like writing a song to disk can't
+ * run — callers skip them rather than surfacing an avoidable error. */
+export function isTauri(): boolean {
+  return tauriGlobal() !== null
+}
+
 let apiBaseUrlPromise: Promise<string> | null = null
 
 /** Base URL for the backend `/api/*` generation endpoints (sa3/Magenta pad+track

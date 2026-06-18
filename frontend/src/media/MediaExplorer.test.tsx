@@ -43,11 +43,12 @@ function stubFetch(response: Partial<Response> = {}) {
   return fetchMock
 }
 
-async function composeTrack(title: string) {
+// Sets the Title field too (to the same string) so the take's name and #id label are
+// deterministic rather than a random title — most assertions key off the label.
+async function composeTrack(name: string) {
   fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
-  fireEvent.change(screen.getByLabelText('Track prompt'), {
-    target: { value: title },
-  })
+  fireEvent.change(screen.getByLabelText('Title'), { target: { value: name } })
+  fireEvent.change(screen.getByLabelText('Track prompt'), { target: { value: name } })
   await act(async () => {
     fireEvent.click(screen.getByRole('button', { name: 'Compose' }))
   })
@@ -158,12 +159,7 @@ describe('MediaExplorer', () => {
     const bus = createControlBus()
     renderExplorer({ onLoadTrack }, [], bus)
     await composeTrack('first')
-    fireEvent.change(screen.getByLabelText('Track prompt'), {
-      target: { value: 'second' },
-    })
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Compose' }))
-    })
+    await composeTrack('second')
 
     act(() => bus.publish({ kind: 'browse_scroll', steps: 1 }))
     await act(async () => {
@@ -203,18 +199,266 @@ describe('MediaExplorer', () => {
     ).toBe(true)
   })
 
-  it('saves a generated take as a WAV download', async () => {
+  it('auto-saves a composed take to the songs folder via the Rust shell', async () => {
     stubFetch()
-    const createObjectURL = vi.fn(() => 'blob:fake')
-    vi.stubGlobal('URL', {
-      ...URL,
-      createObjectURL,
-      revokeObjectURL: vi.fn(),
+    const calls: { cmd: string; args: unknown }[] = []
+    const invoke = vi.fn(async (cmd: string, args?: unknown) => {
+      calls.push({ cmd, args })
+      if (cmd === 'list_generated_songs') return []
+      if (cmd === 'save_generated_song') {
+        return { file: 'keeper #1.wav', title: 'keeper #1', prompt: 'keeper', model: 'track' }
+      }
+      return undefined
     })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
     await composeTrack('keeper')
-    fireEvent.click(screen.getByRole('button', { name: 'Save keeper #1' }))
-    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob))
+    // The composed take is persisted without a second click — no download button.
+    expect(screen.queryByRole('button', { name: 'Save keeper #1' })).toBeNull()
+    const saveCall = calls.find((c) => c.cmd === 'save_generated_song')
+    expect(saveCall).toBeDefined()
+    // The payload frames [u32 LE meta-JSON length][meta JSON][WAV bytes].
+    const payload = saveCall!.args as Uint8Array
+    const metaLen = new DataView(
+      payload.buffer,
+      payload.byteOffset,
+      payload.byteLength,
+    ).getUint32(0, true)
+    const meta = JSON.parse(new TextDecoder().decode(payload.subarray(4, 4 + metaLen)))
+    expect(meta).toEqual({ title: 'keeper', prompt: 'keeper', model: 'track' })
+  })
+
+  it('does not attempt a save outside the native shell', async () => {
+    stubFetch()
+    // No __TAURI__: a plain browser has no disk to write through, so auto-save is
+    // skipped silently rather than surfacing an avoidable error.
+    renderExplorer()
+    await composeTrack('keeper')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('opens the songs folder through the Rust shell', async () => {
+    const calls: string[] = []
+    const invoke = vi.fn(async (cmd: string) => {
+      calls.push(cmd)
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Open songs folder' }))
+    })
+    expect(calls).toContain('open_songs_folder')
+  })
+
+  it('restores takes from the registry on startup, tagging hand-added files as imported', async () => {
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'list_generated_songs') {
+        return [
+          {
+            file: 'late night dub.wav',
+            title: 'late night dub',
+            prompt: 'late night dub',
+            model: 'track',
+          },
+          { file: 'mixtape.wav', title: 'mixtape', prompt: null, model: null },
+        ]
+      }
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    // The composed take comes back as its title + a kept-visible #id tag…
+    expect(await screen.findByText('late night dub')).toBeInTheDocument()
+    expect(screen.getByText('#1')).toBeInTheDocument()
+    // …and the hand-added one is marked Imported (no model).
+    expect(screen.getByText('mixtape')).toBeInTheDocument()
+    expect(
+      screen.getAllByText('Imported').some((el) => el.classList.contains('media__meta')),
+    ).toBe(true)
+  })
+
+  it('loads a restored take by reading its bytes from disk', async () => {
+    const wav = new ArrayBuffer(8)
+    const calls: { cmd: string; args: unknown }[] = []
+    const invoke = vi.fn(async (cmd: string, args?: unknown) => {
+      calls.push({ cmd, args })
+      if (cmd === 'list_generated_songs') {
+        return [{ file: 'keeper #1.wav', title: 'keeper', prompt: 'keeper', model: 'track' }]
+      }
+      if (cmd === 'read_generated_song') return wav
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    const onLoadTrack = vi.fn(async () => true)
+    renderExplorer({ onLoadTrack })
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    const loadButton = await screen.findByRole('button', {
+      name: 'Load keeper #1 to deck A',
+    })
+    await act(async () => {
+      fireEvent.click(loadButton)
+    })
+    // A restored take carries no in-memory bytes, so the scoped read fetches them.
+    const readCall = calls.find((c) => c.cmd === 'read_generated_song')
+    expect(readCall?.args).toEqual({ name: 'keeper #1.wav' })
+    expect(onLoadTrack).toHaveBeenCalledWith('a', expect.any(ArrayBuffer), 'keeper #1')
+  })
+
+  it('deletes a take via ✕, moving the file to the Trash and pruning the registry', async () => {
+    const calls: { cmd: string; args: unknown }[] = []
+    const invoke = vi.fn(async (cmd: string, args?: unknown) => {
+      calls.push({ cmd, args })
+      if (cmd === 'list_generated_songs') {
+        return [{ file: 'keeper #1.wav', title: 'keeper', prompt: 'keeper', model: 'track' }]
+      }
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    const removeButton = await screen.findByRole('button', { name: 'Remove keeper #1' })
+    await act(async () => {
+      fireEvent.click(removeButton)
+    })
+    expect(screen.queryByRole('button', { name: 'Remove keeper #1' })).toBeNull()
+    const deleteCall = calls.find((c) => c.cmd === 'delete_generated_song')
+    expect(deleteCall?.args).toEqual({ name: 'keeper #1.wav' })
+  })
+
+  it('keeps the row and surfaces an error when a delete fails', async () => {
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'list_generated_songs') {
+        return [{ file: 'keeper #1.wav', title: 'keeper', prompt: 'keeper', model: 'track' }]
+      }
+      if (cmd === 'delete_generated_song') throw new Error('Trash is unavailable')
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    const removeButton = await screen.findByRole('button', { name: 'Remove keeper #1' })
+    await act(async () => {
+      fireEvent.click(removeButton)
+    })
+    // The disk delete failed, so the row stays (matching disk) and the error shows —
+    // it must not vanish and then reappear on the next launch's scan.
+    expect(screen.getByRole('button', { name: 'Remove keeper #1' })).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('delete keeper')
+    expect(screen.getByRole('alert')).toHaveTextContent('Trash is unavailable')
+  })
+
+  it('reveals the full prompt behind the 🔍 button and toggles it off', async () => {
+    const prompt = 'deep rolling dub techno with tape hiss and a long modular intro'
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'list_generated_songs') {
+        return [{ file: 'dub.wav', title: 'Dub Reverie', prompt, model: 'magenta' }]
+      }
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    const lupe = await screen.findByRole('button', {
+      name: 'Show the full prompt for Dub Reverie #1',
+    })
+    // The full prompt block isn't rendered until asked (the row only shows the title).
+    expect(document.querySelector('.media__prompt')).toBeNull()
+    fireEvent.click(lupe)
+    expect(document.querySelector('.media__prompt')).toHaveTextContent(prompt)
+    // Clicking again collapses it.
+    fireEvent.click(lupe)
+    expect(document.querySelector('.media__prompt')).toBeNull()
+  })
+
+  it('pretty-prints a JSON prompt in the 🔍 inspector', async () => {
+    const minified = '{"title":"X","bpm":120}'
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'list_generated_songs') {
+        return [{ file: 'x.wav', title: 'My Take', prompt: minified, model: 'magenta' }]
+      }
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    const lupe = await screen.findByRole('button', {
+      name: 'Show the full prompt for My Take #1',
+    })
+    fireEvent.click(lupe)
+    // The inspector shows the prompt re-indented, not the minified original.
+    const expected = JSON.stringify(JSON.parse(minified), null, 2)
+    expect(document.querySelector('.media__prompt')?.textContent).toBe(expected)
+  })
+
+  it('uses the Title field for the name and filename, independent of the prompt', async () => {
+    stubFetch()
+    const calls: { cmd: string; args: unknown }[] = []
+    const invoke = vi.fn(async (cmd: string, args?: unknown) => {
+      calls.push({ cmd, args })
+      if (cmd === 'list_generated_songs') return []
+      if (cmd === 'save_generated_song') {
+        return { file: 'Porcelain Halo.wav', title: 'Porcelain Halo', prompt: '{"a":1}', model: 'track' }
+      }
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Porcelain Halo' } })
+    fireEvent.change(screen.getByLabelText('Track prompt'), { target: { value: '{"a":1}' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Compose' }))
+    })
+    // The row shows the title, not the (JSON) prompt.
+    expect(screen.getByText('Porcelain Halo')).toBeInTheDocument()
+    // Saved metadata keeps the title and the prompt separate.
+    const saveCall = calls.find((c) => c.cmd === 'save_generated_song')
+    const payload = saveCall!.args as Uint8Array
+    const metaLen = new DataView(
+      payload.buffer,
+      payload.byteOffset,
+      payload.byteLength,
+    ).getUint32(0, true)
+    const meta = JSON.parse(new TextDecoder().decode(payload.subarray(4, 4 + metaLen)))
+    expect(meta).toEqual({ title: 'Porcelain Halo', prompt: '{"a":1}', model: 'track' })
+  })
+
+  it('falls back to a random title when the Title field is blank', async () => {
+    stubFetch()
+    const calls: { cmd: string; args: unknown }[] = []
+    const invoke = vi.fn(async (cmd: string, args?: unknown) => {
+      calls.push({ cmd, args })
+      if (cmd === 'list_generated_songs') return []
+      if (cmd === 'save_generated_song') {
+        return { file: 'x.wav', title: 'x', prompt: 'x', model: 'track' }
+      }
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    // Title left blank — only a prompt is given.
+    fireEvent.change(screen.getByLabelText('Track prompt'), {
+      target: { value: 'rolling sub bass' },
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Compose' }))
+    })
+    const saveCall = calls.find((c) => c.cmd === 'save_generated_song')
+    const payload = saveCall!.args as Uint8Array
+    const metaLen = new DataView(
+      payload.buffer,
+      payload.byteOffset,
+      payload.byteLength,
+    ).getUint32(0, true)
+    const meta = JSON.parse(new TextDecoder().decode(payload.subarray(4, 4 + metaLen)))
+    // A non-empty title was generated, distinct from the prompt that was sent.
+    expect(meta.title).toBeTruthy()
+    expect(meta.title).not.toBe('rolling sub bass')
+    expect(meta.prompt).toBe('rolling sub bass')
   })
 
   it('cycles the visible tab on a hardware rotary press', () => {

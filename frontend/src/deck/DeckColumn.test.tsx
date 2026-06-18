@@ -8,6 +8,7 @@ import { ControlBusProvider } from '../control/ControlBusProvider'
 import { loadDeckSettings, updateDeckSettings } from '../persistence'
 import { DeckColumn } from './DeckColumn'
 import { initialDeckState, type DeckState } from './deckState'
+import { GENERATE_PROMPT_MAX_LENGTH } from './useDeck'
 import type { DeckMode, LoopState, TrackState } from './useDeck'
 
 const noop = () => {}
@@ -1124,11 +1125,11 @@ describe('DeckColumn', () => {
 
   it('caps the prompt input short of the backend limit, sparing the BPM stamp', () => {
     generateRow()
-    // 500 (the backend cap) minus room for ", NNN BPM" — so a prompt the
-    // input accepted can never bounce off the backend once stamped.
+    // The backend ceiling minus room for ", NNN BPM" — so a prompt the input
+    // accepted can never bounce off the backend once stamped.
     expect(screen.getByLabelText('Generate prompt')).toHaveAttribute(
       'maxlength',
-      '491',
+      String(GENERATE_PROMPT_MAX_LENGTH),
     )
   })
 

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { DeckId } from '../audio/types'
-import { getApiBaseUrl, invoke } from '../audio/nativeEngine'
+import { getApiBaseUrl, invoke, isTauri } from '../audio/nativeEngine'
 import { useControlBus } from '../control/busContext'
 import { CrateBrowser } from '../crates/CrateBrowser'
 import type { StylePreset } from '../presets'
@@ -10,19 +10,42 @@ import { Button } from '../ui/Button'
 import { Panel } from '../ui/Panel'
 import { Select } from '../ui/Select'
 import { TextField } from '../ui/TextField'
+import { randomSongTitle } from './songTitle'
 import './media.css'
 
 type MediaTab = 'crates' | 'generate' | 'folder'
 type TrackEngine = 'sfx' | 'music' | 'track' | 'magenta'
 
+// One row of the on-disk song registry (Rust `songs::SongEntry`, camelCase): a file
+// in the songs folder with the provenance the filesystem can't carry.
+type SongEntry = {
+  file: string
+  title: string
+  prompt: string | null
+  model: string | null
+}
+
 type GeneratedTrack =
-  | { id: number; state: 'pending'; title: string; engine: TrackEngine }
+  | { id: number; state: 'pending'; title: string; prompt: string; model: TrackEngine }
   | {
       id: number
       state: 'ready'
+      // The full display label (prompt + session id for a composed take, or the
+      // filename stem for a file found in the folder).
       title: string
-      engine: TrackEngine
-      wav: ArrayBuffer
+      // The full prompt that composed the take, shown by the 🔍 button (prompts are
+      // now uncapped, so the row only shows a compact form). null for a file found in
+      // the folder that SlipMate didn't generate.
+      prompt: string | null
+      // The engine that composed the take, or null for a file found in the songs
+      // folder that SlipMate didn't generate ("model as option").
+      model: TrackEngine | null
+      // The filename on disk (the registry identity). null only outside Tauri, where
+      // nothing was persisted and the take lives solely in `wav`.
+      file: string | null
+      // Bytes held only for a take composed THIS session; a restored take reads them
+      // from disk on demand (a full render is 100 MB+ — don't hold them all).
+      wav?: ArrayBuffer
     }
 
 // A browsable file: just the name. `read_audio_file` re-derives the path from the
@@ -40,26 +63,49 @@ const ENGINE_LENGTHS: Record<TrackEngine, number[]> = {
   magenta: [30, 60, 120, 180],
 }
 const ENGINES = Object.keys(ENGINE_LENGTHS) as TrackEngine[]
-// Tracks carry no BPM stamp, so the full backend prompt cap applies.
-const TRACK_PROMPT_MAX_LENGTH = 500
 
 function formatLength(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
-/** Same prompt, different roll of the dice: the session-unique short
- * id keeps siblings tellable apart, on the row and on the deck. */
-function displayName(track: GeneratedTrack): string {
-  return `${track.title} #${track.id}`
+/** A registry `model` string back into a known engine, or null ("none") for a file
+ * the app didn't generate — so an unknown/absent value renders as "Imported". */
+function asTrackEngine(model: string | null): TrackEngine | null {
+  return model && (ENGINES as string[]).includes(model) ? (model as TrackEngine) : null
 }
 
-function saveWav(track: GeneratedTrack & { state: 'ready' }) {
-  const url = URL.createObjectURL(new Blob([track.wav], { type: 'audio/wav' }))
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = `${displayName(track).replace(/[/\\:]/g, '-')}.wav`
-  anchor.click()
-  setTimeout(() => URL.revokeObjectURL(url), 0)
+/** Pretty-print a prompt when it's JSON so the inspector is readable (a pasted spec is
+ * often minified or awkwardly wrapped); otherwise show it verbatim. */
+function prettyPrompt(prompt: string): string {
+  try {
+    return JSON.stringify(JSON.parse(prompt), null, 2)
+  } catch {
+    return prompt
+  }
+}
+
+/** The take's label for the row, the deck, and aria: the title plus a session-unique
+ * #id for a composed take (so same-title siblings stay tellable apart), or just the
+ * name for an imported file (no prompt). */
+function trackLabel(track: GeneratedTrack): string {
+  return track.prompt != null ? `${track.title} #${track.id}` : track.title
+}
+
+/** What the webview sends with a freshly composed take (Rust `songs::NewSong`). */
+type NewSong = { title: string; prompt: string; model: TrackEngine }
+
+/** Persist a ready take to ~/Documents/SlipMate/generated_songs through the Rust shell
+ * and return its registry entry. Frame [u32 LE meta-JSON length][meta JSON utf-8]
+ * [WAV bytes] as one binary payload — the same binary-IPC shape the engine's
+ * load/embed commands use (a JSON args map would be megabytes of text for a multi-MB
+ * WAV). The old `<a download>` is gone: it silently no-ops in WKWebView. */
+function saveGeneratedSong(meta: NewSong, wav: ArrayBuffer): Promise<SongEntry> {
+  const metaBytes = new TextEncoder().encode(JSON.stringify(meta))
+  const payload = new Uint8Array(4 + metaBytes.length + wav.byteLength)
+  new DataView(payload.buffer).setUint32(0, metaBytes.length, true)
+  payload.set(metaBytes, 4)
+  payload.set(new Uint8Array(wav), 4 + metaBytes.length)
+  return invoke<SongEntry>('save_generated_song', payload)
 }
 
 type MediaExplorerProps = {
@@ -91,10 +137,16 @@ export function MediaExplorer({
   const { t } = useTranslation()
   const [tab, setTab] = useState<MediaTab>('crates')
   const [tracks, setTracks] = useState<GeneratedTrack[]>([])
+  // The take name (and on-disk filename), decoupled from the prompt. Blank → a random
+  // song title at compose time, so a long/JSON prompt never becomes the name.
+  const [title, setTitle] = useState('')
   const [prompt, setPrompt] = useState('')
   const [engine, setEngine] = useState<TrackEngine>('track')
   const [seconds, setSeconds] = useState(120)
   const [generateError, setGenerateError] = useState<string | null>(null)
+  // Auto-save runs after a take is composed; its failure is separate from a
+  // generation failure (the take is already playable from memory).
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [folderName, setFolderName] = useState<string | null>(null)
   // The native picker's absolute folder path; `read_audio_file` scopes reads to it.
   const [folderPath, setFolderPath] = useState<string | null>(null)
@@ -104,6 +156,8 @@ export function MediaExplorer({
   // keeps its own inside CrateBrowser (mounted only while visible, so
   // exactly one list answers the hardware at a time).
   const [highlight, setHighlight] = useState(0)
+  // The take whose full prompt the 🔍 button has expanded, or null. One at a time.
+  const [expandedId, setExpandedId] = useState<number | null>(null)
   // A ref, not state: two composes batched into one render (Enter +
   // click) must not mint the same id.
   const nextIdRef = useRef(1)
@@ -115,18 +169,53 @@ export function MediaExplorer({
   const highlightedReadyId =
     ready.length === 0 ? null : ready[Math.min(highlight, ready.length - 1)].id
 
-  async function loadTrackItem(deck: DeckId, wav: ArrayBuffer, title: string) {
+  async function loadGeneratedTrack(
+    deck: DeckId,
+    track: GeneratedTrack & { state: 'ready' },
+  ) {
     setGenerateError(null)
     try {
-      // decodeAudioData detaches the buffer it is given — hand over a
-      // copy so the item can be loaded again (or onto the other deck).
-      const loaded = await onLoadTrack(deck, wav.slice(0), title)
-      if (!loaded) setGenerateError(t('media.undecodable', { title }))
+      // In memory for a take composed this session; otherwise read the bytes back
+      // from disk (scoped to the songs folder by the Rust shell).
+      const label = trackLabel(track)
+      let wav = track.wav
+      if (!wav) {
+        if (!track.file) throw new Error(t('media.undecodable', { title: label }))
+        wav = await invoke<ArrayBuffer>('read_generated_song', { name: track.file })
+      }
+      // decodeAudioData detaches the buffer it is given — hand over a copy so the
+      // take can be loaded again (or onto the other deck).
+      const loaded = await onLoadTrack(deck, wav.slice(0), label)
+      if (!loaded) setGenerateError(t('media.undecodable', { title: label }))
     } catch (error) {
-      // The click is fire-and-forget (`void loadTrackItem`), so a rejected
-      // decode/IPC load would otherwise vanish and look like nothing happened.
-      // Surface it, like loadFolderFile does.
+      // The click is fire-and-forget (`void loadGeneratedTrack`), so a rejected
+      // read/decode/load would otherwise vanish and look like nothing happened.
       setGenerateError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const dropTrack = (id: number) =>
+    setTracks((current) => current.filter((entry) => entry.id !== id))
+
+  async function removeTrack(track: GeneratedTrack & { state: 'ready' }) {
+    // An in-memory-only take (no file, or no native shell) just leaves the list. A
+    // persisted one is removed only AFTER the file is moved to the Trash and the
+    // registry pruned — so a failed delete keeps the row, matching what's on disk
+    // rather than vanishing and then reappearing on the next launch's scan.
+    if (!isTauri() || !track.file) {
+      dropTrack(track.id)
+      return
+    }
+    try {
+      await invoke('delete_generated_song', { name: track.file })
+      dropTrack(track.id)
+    } catch (error) {
+      setSaveError(
+        t('media.generate.deleteFailed', {
+          title: track.title,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      )
     }
   }
 
@@ -144,6 +233,45 @@ export function MediaExplorer({
       setFolderError(error instanceof Error ? error.message : String(error))
     }
   }
+
+  // Restore the take list from the on-disk registry at startup, reconciled against
+  // the folder by the Rust shell (files added by hand appear with no model; deleted
+  // files drop out). Tauri only — a plain browser has nothing persisted. Restored
+  // takes carry no in-memory `wav`; their bytes load from disk on demand.
+  useEffect(() => {
+    if (!isTauri()) return
+    let live = true
+    void (async () => {
+      try {
+        const entries = (await invoke<SongEntry[]>('list_generated_songs')) ?? []
+        if (!live) return
+        const restored: GeneratedTrack[] = entries.map((entry) => ({
+          id: nextIdRef.current++,
+          state: 'ready',
+          title: entry.title,
+          prompt: entry.prompt,
+          model: asTrackEngine(entry.model),
+          file: entry.file,
+        }))
+        const restoredFiles = new Set(entries.map((entry) => entry.file))
+        // Keep any take composed before this resolved (not in the registry read).
+        setTracks((current) => [
+          ...restored,
+          ...current.filter(
+            (track) =>
+              track.state !== 'ready' ||
+              track.file == null ||
+              !restoredFiles.has(track.file),
+          ),
+        ])
+      } catch {
+        // A failed scan just means no restored list; composing still works.
+      }
+    })()
+    return () => {
+      live = false
+    }
+  }, [])
 
   const bus = useControlBus()
   useEffect(() =>
@@ -168,8 +296,7 @@ export function MediaExplorer({
         const index = Math.min(highlight, count - 1)
         if (index < 0) return
         if (tab === 'generate') {
-          const track = ready[index]
-          void loadTrackItem(intent.deck, track.wav, displayName(track))
+          void loadGeneratedTrack(intent.deck, ready[index])
         } else {
           void loadFolderFile(intent.deck, files[index])
         }
@@ -178,14 +305,19 @@ export function MediaExplorer({
   )
 
   function generateTrack() {
-    const trimmed = prompt.trim()
-    if (!trimmed) return
+    const trimmedPrompt = prompt.trim()
+    if (!trimmedPrompt) return
     const id = nextIdRef.current++
     const requestEngine = engine
+    // The name (and on-disk filename) come from the Title field, NOT the prompt — a
+    // blank title gets a random song title so a long/JSON prompt never becomes the
+    // name. The row appends a session-unique #id to tell same-title siblings apart.
+    const songTitle = title.trim() || randomSongTitle()
     setGenerateError(null)
+    setSaveError(null)
     setTracks((current) => [
       ...current,
-      { id, state: 'pending', title: trimmed, engine: requestEngine },
+      { id, state: 'pending', title: songTitle, prompt: trimmedPrompt, model: requestEngine },
     ])
     void (async () => {
       try {
@@ -197,8 +329,8 @@ export function MediaExplorer({
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(
               requestEngine === 'magenta'
-                ? { prompt: trimmed, seconds }
-                : { prompt: trimmed, seconds, kind: requestEngine },
+                ? { prompt: trimmedPrompt, seconds }
+                : { prompt: trimmedPrompt, seconds, kind: requestEngine },
             ),
           },
         )
@@ -213,10 +345,45 @@ export function MediaExplorer({
         setTracks((current) =>
           current.map((track) =>
             track.id === id
-              ? { id, state: 'ready', title: trimmed, engine: requestEngine, wav }
+              ? {
+                  id,
+                  state: 'ready',
+                  title: songTitle,
+                  prompt: trimmedPrompt,
+                  model: requestEngine,
+                  file: null,
+                  wav,
+                }
               : track,
           ),
         )
+        // Auto-persist to the songs folder so a take is never lost to a webview that
+        // can't download. Skipped in a plain browser (no shell to write through); a
+        // native write failure is surfaced but leaves the in-memory take playable.
+        // On success, stamp the take with its on-disk filename so it survives a
+        // restart and can be reloaded/deleted.
+        if (isTauri()) {
+          try {
+            const entry = await saveGeneratedSong(
+              { title: songTitle, prompt: trimmedPrompt, model: requestEngine },
+              wav,
+            )
+            setTracks((current) =>
+              current.map((track) =>
+                track.id === id && track.state === 'ready'
+                  ? { ...track, file: entry.file }
+                  : track,
+              ),
+            )
+          } catch (error) {
+            setSaveError(
+              t('media.generate.saveFailed', {
+                title: songTitle,
+                message: error instanceof Error ? error.message : String(error),
+              }),
+            )
+          }
+        }
       } catch (error) {
         setTracks((current) => current.filter((track) => track.id !== id))
         setGenerateError(error instanceof Error ? error.message : String(error))
@@ -240,6 +407,21 @@ export function MediaExplorer({
       setHighlight(0)
     } catch (error) {
       setFolderError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function openSongsFolder() {
+    setSaveError(null)
+    // The Rust shell owns the folder path and reveals it in Finder (the webview
+    // can't), so the webview just asks — no path crosses the boundary.
+    try {
+      await invoke('open_songs_folder')
+    } catch (error) {
+      setSaveError(
+        t('media.generate.openFolderFailed', {
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      )
     }
   }
 
@@ -297,11 +479,26 @@ export function MediaExplorer({
 
       {tab === 'generate' && (
         <div className="media__generate">
+          <div className="media__generate-toolbar">
+            <Button onClick={() => void openSongsFolder()}>
+              {t('media.generate.openFolder')}
+            </Button>
+          </div>
           <div className="media__generate-row">
+            <div className="media__title-field">
+              <TextField
+                label={t('media.generate.title')}
+                value={title}
+                placeholder={t('media.generate.titlePlaceholder')}
+                onChange={(event) => setTitle(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') generateTrack()
+                }}
+              />
+            </div>
             <TextField
               label={t('media.generate.prompt')}
               value={prompt}
-              maxLength={TRACK_PROMPT_MAX_LENGTH}
               onChange={(event) => setPrompt(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') generateTrack()
@@ -340,56 +537,80 @@ export function MediaExplorer({
             <p className="media__empty">{t('media.generate.empty')}</p>
           ) : (
             <ul className="media__list">
-              {tracks.map((track) => (
-                <li
-                  key={track.id}
-                  className={`media__item${
-                    track.id === highlightedReadyId
-                      ? ' media__item--highlighted'
-                      : ''
-                  }`}
-                >
-                  <span className="media__name">
-                    {track.state === 'pending'
-                      ? t('media.generate.pending', { title: displayName(track) })
-                      : displayName(track)}
-                  </span>
-                  <span className="media__meta">
-                    {t(`media.generate.engines.${track.engine}`)}
-                  </span>
-                  {track.state === 'ready' && (
-                    <Button
-                      aria-label={t('media.save', { name: displayName(track) })}
-                      onClick={() => saveWav(track)}
-                    >
-                      {t('media.saveShort')}
-                    </Button>
-                  )}
-                  {track.state === 'ready' &&
-                    loadButtons(
-                      (deck) =>
-                        void loadTrackItem(deck, track.wav, displayName(track)),
-                      displayName(track),
+              {tracks.map((track) => {
+                // Composed takes (those carrying a prompt) get a #id to tell same-title
+                // siblings apart; an imported file shows just its name. The title
+                // ellipsises in the row; the tag never shrinks.
+                const composed = track.prompt != null
+                const rowLabel = trackLabel(track)
+                return (
+                  <li
+                    key={track.id}
+                    className={`media__item${
+                      track.id === highlightedReadyId
+                        ? ' media__item--highlighted'
+                        : ''
+                    }`}
+                  >
+                    <span className="media__name">
+                      <span className="media__name-text">
+                        {track.state === 'pending'
+                          ? t('media.generate.pending', { title: track.title })
+                          : track.title}
+                      </span>
+                      {track.state === 'ready' && composed && (
+                        <span className="media__name-tag">{`#${track.id}`}</span>
+                      )}
+                    </span>
+                    <span className="media__meta">
+                      {track.model == null
+                        ? t('media.generate.imported')
+                        : t(`media.generate.engines.${track.model}`)}
+                    </span>
+                    {track.state === 'ready' &&
+                      loadButtons(
+                        (deck) => void loadGeneratedTrack(deck, track),
+                        rowLabel,
+                      )}
+                    {track.state === 'ready' && track.prompt != null && (
+                      <Button
+                        aria-label={t('media.generate.inspect', { name: rowLabel })}
+                        lit={expandedId === track.id}
+                        onClick={() =>
+                          setExpandedId((current) =>
+                            current === track.id ? null : track.id,
+                          )
+                        }
+                      >
+                        🔍
+                      </Button>
                     )}
-                  {track.state === 'ready' && (
-                    <Button
-                      aria-label={t('media.remove', { name: displayName(track) })}
-                      onClick={() =>
-                        setTracks((current) =>
-                          current.filter((entry) => entry.id !== track.id),
-                        )
-                      }
-                    >
-                      ✕
-                    </Button>
-                  )}
-                </li>
-              ))}
+                    {track.state === 'ready' && (
+                      <Button
+                        aria-label={t('media.remove', { name: rowLabel })}
+                        onClick={() => void removeTrack(track)}
+                      >
+                        ✕
+                      </Button>
+                    )}
+                    {track.state === 'ready' &&
+                      track.prompt != null &&
+                      expandedId === track.id && (
+                        <p className="media__prompt">{prettyPrompt(track.prompt)}</p>
+                      )}
+                  </li>
+                )
+              })}
             </ul>
           )}
           {generateError && (
             <p className="media__error" role="alert">
               {t('media.generate.failed', { message: generateError })}
+            </p>
+          )}
+          {saveError && (
+            <p className="media__error" role="alert">
+              {saveError}
             </p>
           )}
         </div>
@@ -427,7 +648,7 @@ export function MediaExplorer({
                     aria-current={index === Math.min(highlight, files.length - 1)}
                     onClick={() => setHighlight(index)}
                   >
-                    {file.name}
+                    <span className="media__name-text">{file.name}</span>
                   </button>
                   {loadButtons((deck) => void loadFolderFile(deck, file), file.name)}
                 </li>

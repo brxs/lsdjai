@@ -10,7 +10,7 @@ import queue
 import pytest
 from fastapi.testclient import TestClient
 
-from slipmate import controller
+from slipmate import controller, sa3
 
 
 class FakeProcess:
@@ -88,7 +88,7 @@ def test_generate_returns_wav_and_strips_the_prompt(client, monkeypatch):
         generate_request(prompt=""),
         generate_request(prompt="   "),
         generate_request(prompt=7),
-        generate_request(prompt="x" * 501),
+        generate_request(prompt="x" * (sa3.MAX_PROMPT_LENGTH + 1)),
         generate_request(kind="banger"),
         generate_request(kind=None),
         generate_request(seconds=0.1),
@@ -281,7 +281,7 @@ def test_render_start_failure_discards_the_worker(client, render_worker):
     "body",
     [
         {"prompt": "", "seconds": 2.0},
-        {"prompt": "x" * 501, "seconds": 2.0},
+        {"prompt": "x" * (sa3.MAX_PROMPT_LENGTH + 1), "seconds": 2.0},
         {"prompt": "x", "seconds": 0.1},
         {"prompt": "x", "seconds": 181.0},
         {"prompt": "x", "seconds": True},

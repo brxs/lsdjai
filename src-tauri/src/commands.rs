@@ -28,8 +28,10 @@ use slipmate_engine::{
 };
 
 use tauri::ipc::{Channel, InvokeResponseBody};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::sidecar::{PcmTaps, Sidecars};
+use crate::songs::{NewSong, SongEntry, SongLibrary};
 
 /// Reject a deck index outside `[0, DECK_COUNT)`. A bad index from the webview is
 /// a no-op (the command returns without touching the engine), never a panic.
@@ -400,6 +402,78 @@ pub async fn read_audio_file(dir: String, name: String) -> Result<tauri::ipc::Re
     }
     let bytes = std::fs::read(&target).map_err(|e| format!("cannot read file: {e}"))?;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// The generated-songs take list, reconciled against the folder (the [`SongLibrary`]
+/// owns the registry + scan). The webview calls this at startup to restore the list.
+/// `async` keeps the directory scan + registry rewrite off the main thread, like the
+/// sibling `read_generated_song` / `save_generated_song`.
+#[tauri::command]
+pub async fn list_generated_songs(
+    library: tauri::State<'_, SongLibrary>,
+) -> Result<Vec<SongEntry>, String> {
+    library.list()
+}
+
+/// Persist a freshly composed take and return its registry entry (the webview keeps
+/// the filename to reload / delete the take later). Invoked over binary IPC with a
+/// payload of `[u32 LE meta-JSON byte-length][meta JSON utf-8][WAV bytes]` — a song
+/// WAV is many MB (a full render is 100 MB+), so a JSON args map would be megabytes of
+/// text (mirrors `load_track` / `deck_embed_sample`). The meta carries the title,
+/// prompt, and model; the title is untrusted and sanitised to one filename component
+/// inside [`SongLibrary::record`]. `async` keeps the write off the main thread — a big
+/// WAV would otherwise stall the UI, like the read in [`read_audio_file`].
+#[tauri::command]
+pub async fn save_generated_song(
+    library: tauri::State<'_, SongLibrary>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<SongEntry, String> {
+    let payload = raw_payload(&request)?;
+    let meta_len = read_u32_le(payload, 0).ok_or("save payload too short")? as usize;
+    let meta_end = 4 + meta_len;
+    let meta_bytes = payload.get(4..meta_end).ok_or("save payload meta truncated")?;
+    let meta: NewSong =
+        serde_json::from_slice(meta_bytes).map_err(|e| format!("bad song metadata: {e}"))?;
+    library.record(meta, &payload[meta_end..])
+}
+
+/// Read one persisted song's bytes back, scoped to the songs folder (the webview
+/// supplies only the plain filename). Returns the bytes as binary — a track is many MB
+/// (`ipc::Response`). `async` keeps the read off the main thread, like
+/// [`read_audio_file`].
+#[tauri::command]
+pub async fn read_generated_song(
+    library: tauri::State<'_, SongLibrary>,
+    name: String,
+) -> Result<tauri::ipc::Response, String> {
+    library.read(&name).map(tauri::ipc::Response::new)
+}
+
+/// Delete a persisted song: move it to the OS Trash (recoverable) and drop it from the
+/// registry, so the take list and the folder stay in sync without a restart. `async`
+/// keeps the trash + registry I/O off the main thread, like the sibling commands.
+#[tauri::command]
+pub async fn delete_generated_song(
+    library: tauri::State<'_, SongLibrary>,
+    name: String,
+) -> Result<(), String> {
+    library.remove(&name)
+}
+
+/// Open the generated-songs folder in the OS file manager so the user can copy songs
+/// out. Creates it first, so the button opens a real folder even before the first
+/// save. The opener plugin is driven from Rust (not the webview), so no opener
+/// capability is granted to the untrusted webview.
+#[tauri::command]
+pub fn open_songs_folder(
+    library: tauri::State<'_, SongLibrary>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let dir = library.dir();
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create songs folder: {e}"))?;
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("cannot open songs folder: {e}"))
 }
 
 /// Load a decoded track onto a deck, switching it to Playback. The payload is a

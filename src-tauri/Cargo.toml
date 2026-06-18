@@ -39,6 +39,13 @@ tauri-plugin-midi = "0.2"
 # natively. First-party Tauri plugin; the directory listing + file reads are our
 # own commands (no fs plugin / scope needed).
 tauri-plugin-dialog = "2"
+# Reveal the generated-songs folder in Finder (the "Open songs folder" button —
+# WKWebView can't download). First-party Tauri plugin; called only from Rust
+# (open_songs_folder), so the webview needs no opener capability.
+tauri-plugin-opener = "2"
+# Move a deleted song to the OS Trash (recoverable) instead of an unrecoverable
+# unlink, for the take list's ✕ (delete_generated_song). Reputable, cross-platform.
+trash = "5"
 # The audio engine as a workspace member (the cpal device + RT-safe mix core).
 slipmate-engine = { path = "engine" }
 serde = { version = "1", features = ["derive"] }

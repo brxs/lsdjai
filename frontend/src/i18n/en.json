@@ -42,10 +42,10 @@
     "loadTo": "Load {{name}} to deck {{deck}}",
     "highlight": "Select {{name}}",
     "remove": "Remove {{name}}",
-    "save": "Save {{name}}",
-    "saveShort": "Save",
     "undecodable": "{{title}} could not be decoded",
     "generate": {
+      "title": "Title",
+      "titlePlaceholder": "Random if blank",
       "prompt": "Track prompt",
       "engine": "Engine",
       "engines": {
@@ -56,8 +56,14 @@
       },
       "length": "Length",
       "action": "Compose",
+      "openFolder": "Open songs folder",
+      "imported": "Imported",
+      "inspect": "Show the full prompt for {{name}}",
       "pending": "{{title}} — composing…",
       "failed": "Track generation failed: {{message}}",
+      "saveFailed": "Couldn't save {{title}} to the songs folder: {{message}}",
+      "openFolderFailed": "Couldn't open the songs folder: {{message}}",
+      "deleteFailed": "Couldn't delete {{title}}: {{message}}",
       "empty": "No tracks yet — compose one from a prompt."
     },
     "folder": {
