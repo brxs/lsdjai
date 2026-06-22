@@ -24,10 +24,10 @@ def _eprint(*args):
 def main() -> int:
     # numba (pulled in transitively via librosa) needs a writable cache dir;
     # the frozen bundle dir is read-only / signed, so redirect it to temp.
-    os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/slipmate_numba_cache")
+    os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/lsdj_numba_cache")
 
     # The backend source is NOT bundled into this spike (we must not touch
-    # backend/). When frozen, slipmate.engine is collected as a hidden import;
+    # backend/). When frozen, lsdj.engine is collected as a hidden import;
     # when run from source, fall back to the repo's backend dir on sys.path.
     if not getattr(sys, "frozen", False):
         repo_backend = os.path.abspath(
@@ -40,14 +40,14 @@ def main() -> int:
     _eprint(f"[freeze_test] MAGENTA_HOME={os.environ.get('MAGENTA_HOME')}")
     _eprint(f"[freeze_test] sys.executable={sys.executable}")
 
-    from slipmate.engine import (
+    from lsdj.engine import (
         CHANNELS,
         CHUNK_SECONDS,
         SAMPLE_RATE,
         DeckEngine,
     )
 
-    model = os.environ.get("SLIPMATE_MODEL", "mrt2_small")
+    model = os.environ.get("LSDJ_MODEL", "mrt2_small")
 
     t0 = time.perf_counter()
     engine = DeckEngine(model=model)

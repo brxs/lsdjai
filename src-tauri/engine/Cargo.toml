@@ -1,15 +1,15 @@
 [package]
-name = "slipmate-engine"
+name = "lsdj-engine"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "SlipMate native audio engine: RT-safe two-deck cpal/fundsp mix (Phase 1, ADR-0017/0019)."
+description = "LSDJai native audio engine: RT-safe two-deck cpal/fundsp mix (Phase 1, ADR-0017/0019)."
 
 # The audio engine as a LIBRARY crate so the RT-safe core (Engine::render) is
 # testable headless in CI (cargo test, no device). The cpal device path is a
 # thin wrapper exercised by the device_run binary and on real hardware.
 [lib]
-name = "slipmate_engine"
+name = "lsdj_engine"
 path = "src/lib.rs"
 
 # A standalone binary that drives the library against a real output device for

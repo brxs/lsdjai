@@ -27,7 +27,7 @@ export type DeckSettings = {
  * or off. */
 export type BeatViewLayout = 'center' | 'vertical' | 'top' | 'off'
 
-/** User-selectable master accent (SlipMate). Default is 'lime'. */
+/** User-selectable master accent (LSDJai). Default is 'lime'. */
 export type AccentTheme = 'lime' | 'violet' | 'cyan'
 
 export type AppSettings = {
@@ -40,7 +40,7 @@ export type AppSettings = {
   outputDevice: string
 }
 
-const STORAGE_KEY = 'slipmate:v1'
+const STORAGE_KEY = 'lsdj:v1'
 
 type Persisted = {
   decks?: Partial<Record<DeckId, Partial<DeckSettings>>>

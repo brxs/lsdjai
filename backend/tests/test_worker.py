@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from slipmate.worker import run_deck_worker
+from lsdj.worker import run_deck_worker
 
 FAKE_PCM = b"\x00" * 64
 

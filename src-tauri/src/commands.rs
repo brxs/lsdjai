@@ -22,8 +22,8 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use slipmate_engine::host::{Health, Host};
-use slipmate_engine::{
+use lsdj_engine::host::{Health, Host};
+use lsdj_engine::{
     EqBand, FxKind, LoopRegion, LoopSlotStatus, TrackStatus, DECK_COUNT, LOOP_SLOT_COUNT,
 };
 

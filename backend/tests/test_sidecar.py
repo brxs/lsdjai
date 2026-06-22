@@ -9,7 +9,7 @@ import struct
 import threading
 import time
 
-from slipmate.sidecar import (
+from lsdj.sidecar import (
     FRAME_CONTROL,
     FRAME_EMBED,
     FRAME_PCM,
@@ -162,7 +162,7 @@ def test_sidecar_main_argument_parsing(monkeypatch):
         captured["deck"] = deck
         captured["model"] = model
 
-    import slipmate.sidecar as sidecar_mod
+    import lsdj.sidecar as sidecar_mod
 
     monkeypatch.setattr(sidecar_mod.socket, "create_connection", fake_create_connection)
     # RecordingSock has no setsockopt; give it a no-op.

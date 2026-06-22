@@ -1,8 +1,14 @@
 <p align="center">
-  <img src="docs/img/slipmate-demo.gif" alt="SlipMate — generative DJ" width="640">
+  <img src="docs/img/lsdj-mark.svg" alt="LSDJai" width="128">
 </p>
 
-<p align="center"><strong>Your generative DJ mate</strong> — a DJ instrument for real-time AI music.</p>
+<h1 align="center">LSDJai</h1>
+
+<p align="center"><strong>Latent Space Disc Jockey</strong> — a DJ instrument for real-time AI music.</p>
+
+<p align="center">
+  <img src="docs/img/lsdj-demo.gif" alt="LSDJai — latent space disc jockey" width="640">
+</p>
 
 <p align="center">
   <a href="https://buymeacoffee.com/brxs"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy me a coffee" height="42"></a>
@@ -23,7 +29,7 @@ pads and finished tracks come from Stable Audio 3. See
 - ~13 GB disk for model weights (downloaded on first setup: Magenta
   ~4.5 GB for both deck models, Stable Audio 3 ~8 GB including the
   medium track model)
-- macOS 11+ — SlipMate ships as a native app (Tauri + a Rust audio engine +
+- macOS 11+ — LSDJai ships as a native app (Tauri + a Rust audio engine +
   Python inference sidecars; run with `just tauri-dev`, build with
   `just tauri-build`)
 - Optional: a Pioneer DDJ-FLX4 for hardware control and its headphone jack

@@ -4,7 +4,7 @@
 //! `DeckProcess`), connected over **loopback TCP** — the transport Spike A chose
 //! (`docs/spike-rust-audio.md`; `127.0.0.1`, `TCP_NODELAY`, beat UDS on every
 //! percentile under inference load). The sidecar runs the unchanged
-//! `run_deck_worker` generation loop (`backend/slipmate/worker.py`) with its
+//! `run_deck_worker` generation loop (`backend/lsdj/worker.py`) with its
 //! queues bridged to the socket.
 //!
 //! # Wire protocol
@@ -40,7 +40,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use slipmate_engine::DeckHandle;
+use lsdj_engine::DeckHandle;
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 /// Per-deck analysis taps: a webview [`Channel`] each deck's realtime PCM is teed
@@ -279,7 +279,7 @@ fn start_reader(
     let stop_for_reader = stop.clone();
     let deck_label = deck_id.to_string();
     let reader = thread::Builder::new()
-        .name(format!("slipmate-sidecar-{deck_id}"))
+        .name(format!("lsdj-sidecar-{deck_id}"))
         .spawn(move || {
             // Bound the accept so a sidecar that never connects cannot hang the
             // thread forever; poll the listener until the deadline OR until `stop`
@@ -289,7 +289,7 @@ fn start_reader(
             let stream = match accept_with_timeout(&listener, &stop_for_reader, ACCEPT_TIMEOUT) {
                 Some(s) => s,
                 None => {
-                    eprintln!("slipmate-sidecar-{deck_label}: sidecar never connected");
+                    eprintln!("lsdj-sidecar-{deck_label}: sidecar never connected");
                     return ReaderExit { handle, on_status };
                 }
             };
@@ -299,7 +299,7 @@ fn start_reader(
                     *control_for_reader.lock().unwrap_or_else(|p| p.into_inner()) = Some(writer)
                 }
                 Err(e) => {
-                    eprintln!("slipmate-sidecar-{deck_label}: cannot split socket: {e}");
+                    eprintln!("lsdj-sidecar-{deck_label}: cannot split socket: {e}");
                     return ReaderExit { handle, on_status };
                 }
             }
@@ -312,7 +312,7 @@ fn start_reader(
             }
             ReaderExit { handle, on_status }
         })
-        .expect("failed to spawn slipmate sidecar reader thread");
+        .expect("failed to spawn lsdj sidecar reader thread");
     ReaderParts {
         control,
         child: Arc::new(Mutex::new(Some(child))),
@@ -326,7 +326,7 @@ impl Sidecar {
     /// reporting status through `on_status`. Binds a loopback listener, launches
     /// the Python sidecar pointed at the bound port, accepts its connection, and
     /// starts the reader thread. The spawn command is [`sidecar_command`]
-    /// (overridable via `SLIPMATE_SIDECAR_CMD` for dev vs. the packaged binary).
+    /// (overridable via `LSDJ_SIDECAR_CMD` for dev vs. the packaged binary).
     ///
     /// Errors if the listener cannot bind or the process cannot launch — the
     /// caller logs and leaves that deck without a sidecar (the engine still runs,
@@ -431,7 +431,7 @@ impl Sidecar {
         let mut guard = self.control.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(stream) = guard.as_mut() {
             if let Err(e) = write_frame(stream, FRAME_CONTROL, json.as_bytes()) {
-                eprintln!("slipmate-sidecar-{}: control write failed: {e}", self.deck_id);
+                eprintln!("lsdj-sidecar-{}: control write failed: {e}", self.deck_id);
                 *guard = None;
             }
         }
@@ -448,7 +448,7 @@ impl Sidecar {
         let mut guard = self.control.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(stream) = guard.as_mut() {
             if let Err(e) = write_frame(stream, FRAME_EMBED, &payload) {
-                eprintln!("slipmate-sidecar-{}: embed write failed: {e}", self.deck_id);
+                eprintln!("lsdj-sidecar-{}: embed write failed: {e}", self.deck_id);
                 *guard = None;
             }
         }
@@ -563,19 +563,19 @@ fn accept_with_timeout(
 }
 
 /// Build the command that launches the Python sidecar for a deck, pointed at the
-/// loopback `port`. Overridable via `SLIPMATE_SIDECAR_CMD` (whitespace-split) so
-/// dev (`uv run python -m slipmate.sidecar`) and the packaged PyInstaller binary
+/// loopback `port`. Overridable via `LSDJ_SIDECAR_CMD` (whitespace-split) so
+/// dev (`uv run python -m lsdj.sidecar`) and the packaged PyInstaller binary
 /// (part 6) differ without a recompile; arguments `--deck`/`--model`/`--port`
 /// are always appended.
 pub fn sidecar_command(deck_id: &str, model: &str, port: u16) -> io::Result<Command> {
-    let overridden = std::env::var("SLIPMATE_SIDECAR_CMD");
+    let overridden = std::env::var("LSDJ_SIDECAR_CMD");
     let spec = overridden
         .clone()
-        .unwrap_or_else(|_| "uv run python -m slipmate.sidecar".to_string());
+        .unwrap_or_else(|_| "uv run python -m lsdj.sidecar".to_string());
     let mut parts = spec.split_whitespace();
     let program = parts
         .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty SLIPMATE_SIDECAR_CMD"))?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty LSDJ_SIDECAR_CMD"))?;
     let mut cmd = Command::new(program);
     cmd.args(parts);
     cmd.args([
@@ -588,7 +588,7 @@ pub fn sidecar_command(deck_id: &str, model: &str, port: u16) -> io::Result<Comm
     ]);
     if overridden.is_err() {
         // The default `uv run` needs the backend project dir as its CWD; a packaged
-        // build sets SLIPMATE_SIDECAR_CMD (the frozen binary) and controls CWD.
+        // build sets LSDJ_SIDECAR_CMD (the frozen binary) and controls CWD.
         cmd.current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend"));
     }
     Ok(cmd)
@@ -597,7 +597,7 @@ pub fn sidecar_command(deck_id: &str, model: &str, port: u16) -> io::Result<Comm
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slipmate_engine::Engine;
+    use lsdj_engine::Engine;
     use std::net::TcpStream;
 
     #[test]
@@ -691,7 +691,7 @@ mod tests {
     /// In-process model switch: `restart` respawns the sidecar with a new model,
     /// reusing the deck's permanent ring producer, and suppresses a false
     /// `worker_died` across the deliberate switch. Wires a minimal stdlib-only
-    /// Python stand-in (no models) via `SLIPMATE_SIDECAR_CMD`.
+    /// Python stand-in (no models) via `LSDJ_SIDECAR_CMD`.
     #[test]
     fn restart_switches_model_without_a_worker_died() {
         // A stand-in sidecar: connect to --port, announce ready with --model, then
@@ -709,11 +709,11 @@ while s.recv(4096):
     pass
 "#;
         let path =
-            std::env::temp_dir().join(format!("slipmate_fake_sidecar_{}.py", std::process::id()));
+            std::env::temp_dir().join(format!("lsdj_fake_sidecar_{}.py", std::process::id()));
         std::fs::write(&path, script).unwrap();
-        // SAFETY-ish: no other test reads SLIPMATE_SIDECAR_CMD or calls
+        // SAFETY-ish: no other test reads LSDJ_SIDECAR_CMD or calls
         // Sidecar::spawn, so this process-global is uncontended; removed at the end.
-        std::env::set_var("SLIPMATE_SIDECAR_CMD", format!("python3 {}", path.display()));
+        std::env::set_var("LSDJ_SIDECAR_CMD", format!("python3 {}", path.display()));
 
         let mut engine = Engine::new();
         let handle = engine.create_deck(0);
@@ -763,7 +763,7 @@ while s.recv(4096):
         drop(log);
 
         drop(sidecar);
-        std::env::remove_var("SLIPMATE_SIDECAR_CMD");
+        std::env::remove_var("LSDJ_SIDECAR_CMD");
         let _ = std::fs::remove_file(&path);
     }
 }

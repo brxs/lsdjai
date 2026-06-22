@@ -1,4 +1,4 @@
-//! `device_run` — drive the SlipMate engine library against a real output
+//! `device_run` — drive the LSDJai engine library against a real output
 //! device for N seconds with synthetic per-deck producers. This is the
 //! production replacement for the Spike A `rt_engine`: same behaviour (two decks,
 //! per-deck rings, RT-safe callback, FTZ/DAZ, `assert_no_alloc`), now built ON
@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use slipmate_engine::device::{run_stream, DeviceError};
-use slipmate_engine::{DeckHandle, Engine, CHANNELS, SAMPLE_RATE};
+use lsdj_engine::device::{run_stream, DeviceError};
+use lsdj_engine::{DeckHandle, Engine, CHANNELS, SAMPLE_RATE};
 
 // Register the allocator guard so `assert_no_alloc` in the device callback is
 // armed. `warn_release` (set in Cargo.toml) makes a callback alloc WARN, never

@@ -1,11 +1,12 @@
 {
   "app": {
-    "title": "SlipMate",
+    "title": "LSDJai",
     "brand": {
-      "slip": "Slip",
-      "mate": "Mate"
+      "ls": "LS",
+      "dj": "DJ",
+      "ai": "ai"
     },
-    "tagline": "Generative DJ",
+    "tagline": "Latent Space Disc Jockey",
     "ramWarning": "Selected models need roughly {{combined}} GB on a {{total}} GB machine — real-time playback may struggle."
   },
   "accent": {

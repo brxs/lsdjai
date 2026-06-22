@@ -16,7 +16,7 @@ sidecar that runs Metal inference, with the 4.3 GB weights kept external?
 
 ## Result (independently reproduced)
 
-- **PASS.** `dist/slipmate_infer/slipmate_infer` (`frozen=True`) loads the model in
+- **PASS.** `dist/lsdj_infer/lsdj_infer` (`frozen=True`) loads the model in
   ~1.5 s and generates a 1.0 s chunk in **0.33 s** (~3× realtime, full Metal speed,
   identical to native); 384000 bytes of valid interleaved-stereo f32, peak 0.333 —
   byte-identical to the unfrozen baseline. Re-run wall 2.13 s.
@@ -24,16 +24,16 @@ sidecar that runs Metal inference, with the 4.3 GB weights kept external?
 
 ## The recipe (`build.sh`)
 
-`pyinstaller --onedir --name slipmate_infer --paths backend --paths
-magenta_rt/_vendor/sequence-layers --hidden-import slipmate.engine
---collect-submodules slipmate --collect-all mlx --collect-all mlx_metal
+`pyinstaller --onedir --name lsdj_infer --paths backend --paths
+magenta_rt/_vendor/sequence-layers --hidden-import lsdj.engine
+--collect-submodules lsdj --collect-all mlx --collect-all mlx_metal
 --collect-submodules magenta_rt --collect-submodules sequence_layers
 --collect-submodules ai_edge_litert --collect-binaries ai_edge_litert
 --copy-metadata magenta_rt freeze_test.py`, **plus the metallib fix**. Built and
 ran on the first iteration. Two non-obvious load-bearing facts:
 
-- `slipmate.engine` stays in `backend/` (never copied/modified) — reached via
-  `--paths backend` + `--hidden-import slipmate.engine`.
+- `lsdj.engine` stays in `backend/` (never copied/modified) — reached via
+  `--paths backend` + `--hidden-import lsdj.engine`.
 - `sequence_layers` is vendored at `magenta_rt/_vendor/sequence-layers/` (a hyphen
   dir injected onto `sys.path` by a runtime `_vendor_hook`); PyInstaller can't
   follow that, so `--paths` points straight at it.
@@ -65,7 +65,7 @@ needed (PyInstaller adhoc-signs the binary).
    `cp -R` reproduces 22.9 s; the next run is 1.18 s). The codesign + notarization
    ADR-0018 already plans pre-validates the bundle and removes the stall.
 5. **sa3 is frozen-safe** (untested, per recon): it spawns its own external-venv
-   subprocess (`backend/slipmate/sa3.py`), decoupled from this freeze.
+   subprocess (`backend/lsdj/sa3.py`), decoupled from this freeze.
 
 ## Verdict
 

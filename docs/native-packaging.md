@@ -1,6 +1,6 @@
 # Native packaging (Phase 2 part 6)
 
-How SlipMate ships as a signed, notarized macOS `.app`/`.dmg` with the Python
+How LSDJai ships as a signed, notarized macOS `.app`/`.dmg` with the Python
 inference sidecar bundled and the model weights kept external. This is **build
 engineering** — the research risk was retired by Spike B
 ([`docs/spike-packaging.md`](spike-packaging.md), the PyInstaller MLX freeze) and
@@ -13,11 +13,11 @@ is a [checklist](native-migration-hardware-checklist.md) item.
 
 ```sh
 just setup                 # backend .venv with pyinstaller + inference deps
-just freeze-sidecar        # → src-tauri/sidecar-dist/slipmate_infer/ (~931 MB)
+just freeze-sidecar        # → src-tauri/sidecar-dist/lsdj_infer/ (~931 MB)
 ```
 
 `scripts/freeze-sidecar.sh` is the production form of the Spike B recipe; the only
-change is the entry point (`backend/slipmate/sidecar.py`). ONEDIR (onefile is
+change is the entry point (`backend/lsdj/sidecar.py`). ONEDIR (onefile is
 unworkable at this size); the metallib is copied next to the exe (the Spike B
 "wall"). The 4.3 GB weights are **not** frozen — they stay external (§4).
 
@@ -28,20 +28,20 @@ Add the frozen ONEDIR as a Tauri **resource** (a directory, not a single
 
 ```jsonc
 // src-tauri/tauri.conf.json → "bundle"
-"resources": { "sidecar-dist/slipmate_infer": "slipmate_infer" }
+"resources": { "sidecar-dist/lsdj_infer": "lsdj_infer" }
 ```
 
 At runtime the shell resolves the bundled binary and spawns it. In dev, point the
 shell at the freeze directly instead of bundling:
 
 ```sh
-SLIPMATE_SIDECAR_CMD="$PWD/src-tauri/sidecar-dist/slipmate_infer/slipmate_infer" \
+LSDJ_SIDECAR_CMD="$PWD/src-tauri/sidecar-dist/lsdj_infer/lsdj_infer" \
   just tauri-dev
 ```
 
-`src-tauri/src/sidecar.rs` (`sidecar_command`) reads `SLIPMATE_SIDECAR_CMD`;
+`src-tauri/src/sidecar.rs` (`sidecar_command`) reads `LSDJ_SIDECAR_CMD`;
 packaging sets it to the resolved resource path (or the app resolves
-`resource_dir()/slipmate_infer/slipmate_infer`). The committed config does **not**
+`resource_dir()/lsdj_infer/lsdj_infer`). The committed config does **not**
 declare the resource, so a UI-only `tauri build` (no freeze) still succeeds — add
 the `resources` entry above once the freeze exists.
 

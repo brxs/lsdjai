@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "SlipMate",
+  "productName": "LSDJai",
   "version": "0.1.0",
-  "identifier": "com.slipmate.app",
+  "identifier": "com.lsdj.app",
   "build": {
     "frontendDist": "../frontend/dist"
   },
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "SlipMate",
+        "title": "LSDJai",
         "width": 1280,
         "height": 800,
         "titleBarStyle": "Overlay",

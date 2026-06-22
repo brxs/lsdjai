@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "slipmate-midi-spike",
+  "productName": "lsdj-midi-spike",
   "version": "0.0.0",
-  "identifier": "com.slipmate.midi-spike",
+  "identifier": "com.lsdj.midi-spike",
   "build": {
     "frontendDist": "../dist"
   },
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "SlipMate — MIDI Spike (DDJ-FLX4)",
+        "title": "LSDJai — MIDI Spike (DDJ-FLX4)",
         "width": 900,
         "height": 760
       }
