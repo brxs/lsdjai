@@ -469,7 +469,7 @@ impl Host {
         match producer.push(command) {
             Ok(()) => true,
             Err(_) => {
-                eprintln!("slipmate-host: command queue full — dropping a control command");
+                eprintln!("lsdj-host: command queue full — dropping a control command");
                 false
             }
         }
@@ -717,7 +717,7 @@ fn spawn_render_thread(
     recorder: Arc<Recorder>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
-        .name("slipmate-render".into())
+        .name("lsdj-render".into())
         .spawn(move || {
             let telemetry = engine.telemetry();
             let mut loop_state = RenderLoop {
@@ -741,7 +741,7 @@ fn spawn_render_thread(
                 }
             }
         })
-        .expect("failed to spawn slipmate render thread")
+        .expect("failed to spawn lsdj render thread")
 }
 
 /// The render thread's owned state and per-iteration logic, factored out so the

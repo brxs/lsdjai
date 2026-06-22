@@ -1,5 +1,5 @@
 /** The controller registry (issue #30): the one place that knows which
- * controllers SlipMate supports. Binding (midi.ts) matches a connected MIDI
+ * controllers LSDJai supports. Binding (midi.ts) matches a connected MIDI
  * port's name against these drivers in order — first match wins. Adding a
  * controller is a new driver module plus one line here; nothing else in the
  * control layer, audio engine, or UI changes. */

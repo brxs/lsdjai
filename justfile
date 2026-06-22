@@ -1,4 +1,4 @@
-# SlipMate task runner — `just` lists recipes, `just <recipe>` runs one.
+# LSDJai task runner — `just` lists recipes, `just <recipe>` runs one.
 
 default:
     @just --list
@@ -31,7 +31,7 @@ setup-sa3:
       checkout="$HOME/Repos/stable-audio-3"
       git clone https://github.com/Stability-AI/stable-audio-3 "$checkout"
       # The CLI vocabulary the backend speaks is measured at this commit
-      # (backend/slipmate/sa3.py); a fresh clone honours the pin.
+      # (backend/lsdj/sa3.py); a fresh clone honours the pin.
       git -C "$checkout" checkout bccf5b7
     fi
     mlx="$checkout/optimized/mlx"
@@ -40,7 +40,7 @@ setup-sa3:
     fi
     # The warm-ups exist to download weights; once stamped, repeat
     # setups skip the three model loads (rm the stamp to re-warm).
-    stamp="$mlx/.slipmate-warmed"
+    stamp="$mlx/.lsdj-warmed"
     if [ -f "$stamp" ]; then
       echo "sa3 weights already warmed ($stamp)"
       exit 0
@@ -67,10 +67,10 @@ build:
 # that hook from the repo root and a fresh dist is required or the decks hang in
 # 'Connecting'. Needs cargo-tauri (`cargo install tauri-cli@^2`) and the backend
 # deps + model weights (`just setup`). The default `uv run` sidecar/generation
-# commands use the backend project dir; override with SLIPMATE_SIDECAR_CMD /
-# SLIPMATE_GENERATION_CMD (e.g. the packaged binaries).
+# commands use the backend project dir; override with LSDJ_SIDECAR_CMD /
+# LSDJ_GENERATION_CMD (e.g. the packaged binaries).
 tauri-dev: build
-    cd src-tauri && SLIPMATE_SIDECARS=1 cargo tauri dev
+    cd src-tauri && LSDJ_SIDECARS=1 cargo tauri dev
 
 # Freeze the Python inference sidecar into a ONEDIR binary for bundling
 # (src-tauri/sidecar-dist/). The production form of Spike B; see

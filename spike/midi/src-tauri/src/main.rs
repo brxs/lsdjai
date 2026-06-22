@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    slipmate_midi_spike_lib::run()
+    lsdj_midi_spike_lib::run()
 }

@@ -6,7 +6,7 @@
 
 ## Context
 
-SlipMate is a generative DJ instrument. We want an external AI agent
+LSDJai is a generative DJ instrument. We want an external AI agent
 (Claude Desktop / Claude Code) to act as a co-DJ: generate audio *and* drive
 the decks, mixer, and FX live — alongside the human at the hardware and the
 on-screen UI. MCP is the protocol those clients speak.
@@ -14,7 +14,7 @@ on-screen UI. MCP is the protocol those clients speak.
 Two facts about the current architecture force the decision:
 
 1. **Interface state is fragmented and mostly held in the React frontend.** The
-   Rust audio engine (`slipmate-engine`) is authoritative only for the audio
+   Rust audio engine (`lsdj-engine`) is authoritative only for the audio
    itself — playback transport, loop regions, buffers, meters — plus the
    filesystem library. Everything semantic lives in React
    (`useDeck`/`deckReducer`/`App.tsx`): realtime-deck prompt/style/model/playing,
@@ -26,7 +26,7 @@ Two facts about the current architecture force the decision:
    crossfader is, which track is loaded, or what prompt a deck is on.
 2. **The only external-reachable control today is generation.** The Python
    FastAPI controller (`controller.py`) is on a loopback port (`generation.rs`).
-   The engine `Host` (`slipmate-engine::host::Host`) is reachable only via Tauri
+   The engine `Host` (`lsdj-engine::host::Host`) is reachable only via Tauri
    `invoke` from the webview, validated/clamped at the `commands.rs` trust
    boundary. No external process can drive the decks/mixer/FX.
 
@@ -68,7 +68,7 @@ webview re-renders from the snapshot.
   loop-slot labels — **and** the view state that is React-local today (active
   browser tab, scroll/highlight, expanded row, in-progress form fields, the
   loaded-but-not-confirmed selection).
-- **Layering.** The real-time audio core (`slipmate-engine`, headless/RT-safe)
+- **Layering.** The real-time audio core (`lsdj-engine`, headless/RT-safe)
   keeps owning the audio params it already does (gains, EQ coefficients,
   crossfade, loop regions, buffers) inside the mix graph and stays out of the
   cpal callback path; the store holds the *semantic / identity / view* state
@@ -93,7 +93,7 @@ webview re-renders from the snapshot.
   and surfaced for the client config; the server runs only while the app runs;
   the store's validation stays the authoritative guard regardless of caller.
 - **Dependency.** The official Rust MCP SDK (`rmcp`,
-  modelcontextprotocol/rust-sdk), pinned, gated behind a `SLIPMATE_SIDECARS`-
+  modelcontextprotocol/rust-sdk), pinned, gated behind a `LSDJ_SIDECARS`-
   style flag.
 
 This supersedes **ADR-0015 on the location of hot-cue state** (cue points move

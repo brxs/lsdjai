@@ -15,7 +15,7 @@ trust them over re-reading unless something looks off.
 ## Objective
 
 Prove a Rust engine (`cpal` + `rtrb` + `fundsp`) can drive **two decks** of real
-SlipMate 48 kHz/stereo PCM glitch-free, reach **stated** parity with the Web
+LSDJai 48 kHz/stereo PCM glitch-free, reach **stated** parity with the Web
 Audio engine on the load-bearing nodes, and choose the PCM transport — or surface
 exactly where it can't.
 
@@ -78,7 +78,7 @@ Bit-crusher kernel: `levels = 2^(bits-1)`; on `counter==0` quantize
 **Player ring** (`frontend/public/player-worklet.js`): capacity 30 s (L22),
 prebuffer 1.5 s (L23), stats every 1 s (L24).
 
-**Wire format** (`backend/slipmate/worker.py`, `controller.py`): **interleaved
+**Wire format** (`backend/lsdj/worker.py`, `controller.py`): **interleaved
 stereo float32 little-endian, 48 kHz**, ~1.0 s chunks; frame = `4 * 2` bytes;
 whole stereo frames only. Worker paces to stay **3.0 s ahead** of playback
 (`worker.py:24`). Control messages: `play/stop/restart/set_prompt/set_style/

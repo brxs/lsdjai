@@ -1,22 +1,22 @@
 [package]
-name = "slipmate-app"
+name = "lsdj-app"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "SlipMate native shell: the Tauri v2 app hosting the React UI and the Rust audio engine (Phase 2, ADR-0017/0018)."
+description = "LSDJai native shell: the Tauri v2 app hosting the React UI and the Rust audio engine (Phase 2, ADR-0017/0018)."
 
 # Tauri v2 keeps the app logic in a lib so the same crate can be reused on
 # mobile and driven by an integration harness; `main.rs` is a thin entry point.
 [lib]
-name = "slipmate_app_lib"
+name = "lsdj_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "slipmate-app"
+name = "lsdj-app"
 path = "src/main.rs"
 
 # The cargo WORKSPACE. The app is the root package; the audio engine is a member
-# library crate so it stays headless-testable (`cargo test -p slipmate-engine`)
+# library crate so it stays headless-testable (`cargo test -p lsdj-engine`)
 # without a window. One lockfile lives at the workspace root.
 [workspace]
 members = ["engine"]
@@ -47,7 +47,7 @@ tauri-plugin-opener = "2"
 # unlink, for the take list's ✕ (delete_generated_song). Reputable, cross-platform.
 trash = "5"
 # The audio engine as a workspace member (the cpal device + RT-safe mix core).
-slipmate-engine = { path = "engine" }
+lsdj-engine = { path = "engine" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

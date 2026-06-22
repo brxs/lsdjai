@@ -21,7 +21,7 @@ function downloadCrates(presets: StylePreset[]) {
   )
   const anchor = document.createElement('a')
   anchor.href = url
-  anchor.download = 'slipmate-crates.json'
+  anchor.download = 'lsdj-crates.json'
   anchor.click()
   setTimeout(() => URL.revokeObjectURL(url), 0)
 }

@@ -101,7 +101,7 @@ describe('preset storage', () => {
 
   it('drops malformed stored entries instead of crashing', () => {
     localStorage.setItem(
-      'slipmate:v1',
+      'lsdj:v1',
       JSON.stringify({ presets: [FUNK, { name: 'broken' }] }),
     )
     expect(loadPresets().map((preset) => preset.name)).toEqual(['Warm funk'])

@@ -2296,6 +2296,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
 
 [[package]]
+name = "lsdj-app"
+version = "0.1.0"
+dependencies = [
+ "lsdj-engine",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-midi",
+ "tauri-plugin-opener",
+ "trash",
+]
+
+[[package]]
+name = "lsdj-engine"
+version = "0.1.0"
+dependencies = [
+ "assert_no_alloc",
+ "cpal",
+ "fundsp",
+ "rtrb",
+]
+
+[[package]]
 name = "mach2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3721,31 +3746,6 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
-
-[[package]]
-name = "slipmate-app"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "slipmate-engine",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-midi",
- "tauri-plugin-opener",
- "trash",
-]
-
-[[package]]
-name = "slipmate-engine"
-version = "0.1.0"
-dependencies = [
- "assert_no_alloc",
- "cpal",
- "fundsp",
- "rtrb",
-]
 
 [[package]]
 name = "smallvec"

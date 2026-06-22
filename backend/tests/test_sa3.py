@@ -10,7 +10,7 @@ import pathlib
 
 import pytest
 
-from slipmate import sa3
+from lsdj import sa3
 
 FAKE_WAV = b"RIFFfakewavdata"
 

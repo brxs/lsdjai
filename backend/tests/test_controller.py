@@ -10,7 +10,7 @@ import queue
 import pytest
 from fastapi.testclient import TestClient
 
-from slipmate import controller, sa3
+from lsdj import controller, sa3
 
 
 class FakeProcess:

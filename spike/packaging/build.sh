@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Spike B: freeze the SlipMate MLX inference path into a launchable sidecar.
+# Spike B: freeze the LSDJai MLX inference path into a launchable sidecar.
 #
 # ONEDIR build (payload is hundreds of MB — onefile would be unworkable).
 # Iterate by adding --collect-all / --copy-metadata / --hidden-import only as
@@ -12,7 +12,7 @@ VENV="$REPO/backend/.venv"
 SP="$VENV/lib/python3.13/site-packages"
 PYI="$VENV/bin/pyinstaller"
 
-# The backend source (slipmate.engine) — imported, never copied/modified.
+# The backend source (lsdj.engine) — imported, never copied/modified.
 BACKEND="$REPO/backend"
 # sequence_layers is vendored under magenta_rt with a hyphen dir and injected
 # onto sys.path at runtime; point PyInstaller's analysis at it directly so the
@@ -25,12 +25,12 @@ rm -rf build dist freeze_test.spec
 "$PYI" \
   --noconfirm \
   --onedir \
-  --name slipmate_infer \
+  --name lsdj_infer \
   --console \
   --paths "$BACKEND" \
   --paths "$SEQLAYERS_DIR" \
-  --hidden-import slipmate.engine \
-  --collect-submodules slipmate \
+  --hidden-import lsdj.engine \
+  --collect-submodules lsdj \
   --collect-all mlx \
   --collect-all mlx_metal \
   --collect-submodules magenta_rt \
@@ -46,7 +46,7 @@ rm -rf build dist freeze_test.spec
 # places it there, but PyInstaller can also resolve the lib next to the exe via
 # @rpath; copy the metallib + dylibs alongside the binary as a belt-and-braces
 # fix so resolution succeeds regardless of which path MLX takes.
-DIST_BIN_DIR="$HERE/dist/slipmate_infer"
+DIST_BIN_DIR="$HERE/dist/lsdj_infer"
 MLX_LIB="$SP/mlx/lib"
 for f in mlx.metallib libmlx.dylib libjaccl.dylib; do
   if [ -f "$MLX_LIB/$f" ] && [ ! -f "$DIST_BIN_DIR/$f" ]; then

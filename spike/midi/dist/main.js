@@ -1,4 +1,4 @@
-// SlipMate MIDI Spike C harness.
+// LSDJai MIDI Spike C harness.
 //
 // All MIDI here is the plain WebMIDI API. In a Tauri build, tauri-plugin-midi
 // injects a polyfill at webview startup that provides navigator.requestMIDIAccess

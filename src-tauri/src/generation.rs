@@ -8,7 +8,7 @@
 //! static mount — and the webview fetches it via `getApiBaseUrl()`.
 //!
 //! Mirrors the sidecar's spawn/supervise/Drop-kill pattern. Gated behind the same
-//! `SLIPMATE_SIDECARS` migration flag; a failed/disabled spawn just leaves
+//! `LSDJ_SIDECARS` migration flag; a failed/disabled spawn just leaves
 //! generation unreachable (the UI already surfaces those as fetch errors), with
 //! `port() == None`.
 
@@ -28,11 +28,11 @@ pub struct GenerationServer {
 }
 
 impl GenerationServer {
-    /// Spawn the generation server (gated behind `SLIPMATE_SIDECARS`). Never fails
+    /// Spawn the generation server (gated behind `LSDJ_SIDECARS`). Never fails
     /// the app: a disabled or failed spawn yields `port() == None` and generation
     /// is simply unreachable until enabled.
     pub fn start() -> GenerationServer {
-        if std::env::var("SLIPMATE_SIDECARS").is_err() {
+        if std::env::var("LSDJ_SIDECARS").is_err() {
             return GenerationServer {
                 port: None,
                 child: Mutex::new(None),
@@ -40,14 +40,14 @@ impl GenerationServer {
         }
         match Self::spawn() {
             Ok((port, child)) => {
-                println!("slipmate-app: generation server on 127.0.0.1:{port}");
+                println!("lsdj-app: generation server on 127.0.0.1:{port}");
                 GenerationServer {
                     port: Some(port),
                     child: Mutex::new(Some(child)),
                 }
             }
             Err(e) => {
-                eprintln!("slipmate-app: generation server spawn failed: {e}");
+                eprintln!("lsdj-app: generation server spawn failed: {e}");
                 GenerationServer {
                     port: None,
                     child: Mutex::new(None),
@@ -112,24 +112,24 @@ impl Drop for GenerationServer {
 }
 
 /// Build the command that launches the FastAPI generation server. Overridable
-/// via `SLIPMATE_GENERATION_CMD` (default `uv run python -m slipmate.controller`)
+/// via `LSDJ_GENERATION_CMD` (default `uv run python -m lsdj.controller`)
 /// so dev vs. the packaged binary differ without a recompile, like
-/// `SLIPMATE_SIDECAR_CMD`; `--port` is always appended.
+/// `LSDJ_SIDECAR_CMD`; `--port` is always appended.
 pub fn generation_command(port: u16) -> io::Result<Command> {
-    let overridden = std::env::var("SLIPMATE_GENERATION_CMD");
+    let overridden = std::env::var("LSDJ_GENERATION_CMD");
     let spec = overridden
         .clone()
-        .unwrap_or_else(|_| "uv run python -m slipmate.controller".to_string());
+        .unwrap_or_else(|_| "uv run python -m lsdj.controller".to_string());
     let mut parts = spec.split_whitespace();
     let program = parts.next().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "empty SLIPMATE_GENERATION_CMD")
+        io::Error::new(io::ErrorKind::InvalidInput, "empty LSDJ_GENERATION_CMD")
     })?;
     let mut cmd = Command::new(program);
     cmd.args(parts);
     cmd.args(["--port", &port.to_string()]);
     if overridden.is_err() {
         // The default `uv run` needs the backend project dir as its CWD; a packaged
-        // build sets SLIPMATE_GENERATION_CMD (the frozen binary) and controls CWD.
+        // build sets LSDJ_GENERATION_CMD (the frozen binary) and controls CWD.
         cmd.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend"));
     }
     Ok(cmd)
@@ -141,18 +141,18 @@ mod tests {
 
     #[test]
     fn generation_command_appends_the_flags() {
-        // SAFETY-ish: no other test reads SLIPMATE_GENERATION_CMD; cleared after.
-        std::env::set_var("SLIPMATE_GENERATION_CMD", "echo hi");
+        // SAFETY-ish: no other test reads LSDJ_GENERATION_CMD; cleared after.
+        std::env::set_var("LSDJ_GENERATION_CMD", "echo hi");
         let cmd = generation_command(5123).unwrap();
         let argv: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         assert_eq!(cmd.get_program().to_string_lossy(), "echo");
         assert_eq!(argv, ["hi", "--port", "5123"]);
-        std::env::remove_var("SLIPMATE_GENERATION_CMD");
+        std::env::remove_var("LSDJ_GENERATION_CMD");
     }
 
     #[test]
     fn disabled_without_the_env_flag() {
-        std::env::remove_var("SLIPMATE_SIDECARS");
+        std::env::remove_var("LSDJ_SIDECARS");
         let server = GenerationServer::start();
         assert_eq!(server.port(), None);
     }

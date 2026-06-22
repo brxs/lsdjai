@@ -46,7 +46,7 @@ Run the native stack with `just tauri-dev` (Tauri app + sidecars; needs
 
 ## Part 4 — Inference sidecars
 
-- [ ] `SLIPMATE_SIDECARS=1`: each deck spawns `python -m slipmate.sidecar`; the
+- [ ] `LSDJ_SIDECARS=1`: each deck spawns `python -m lsdj.sidecar`; the
       Rust log shows the loopback port and the sidecar connecting.
 - [ ] Audio generates: PCM streams sidecar → engine → speakers, no underruns
       (watch `engine_snapshot` deck-ring fill / underruns).
@@ -84,11 +84,11 @@ thread's producers). A device with < 4 channels shows "no cue" — master only.
 
 ## Part 6 — Packaging (`docs/native-packaging.md`)
 
-- [ ] `just freeze-sidecar` produces `src-tauri/sidecar-dist/slipmate_infer/`
-      (~931 MB) and the frozen binary runs: `slipmate_infer --deck a --model
+- [ ] `just freeze-sidecar` produces `src-tauri/sidecar-dist/lsdj_infer/`
+      (~931 MB) and the frozen binary runs: `lsdj_infer --deck a --model
       mrt2_small --port <n>` connects to a listener and streams a chunk.
 - [ ] The frozen sidecar is added as a Tauri `resources` entry and the packaged
-      app spawns it (SLIPMATE_SIDECAR_CMD / resolved resource path).
+      app spawns it (LSDJ_SIDECAR_CMD / resolved resource path).
 - [ ] `just tauri-build` with the `APPLE_*` env set produces a signed, notarized,
       stapled `.app` + `.dmg` (entitlements applied; the sidecar tree signed).
 - [ ] First launch on a clean Mac: Gatekeeper passes (no "unidentified
@@ -133,7 +133,7 @@ status arrives as `sidecar://status` events (`useDeck` selects this with
   - [x] The sa3 pad/track HTTP generation path (`/api/render`, `/api/generate`)
         rehosted for the native app. — done: the Rust shell spawns the FastAPI
         controller (generation-only by construction — it spawns no deck workers)
-        on a loopback port via `python -m slipmate.controller --port N`
+        on a loopback port via `python -m lsdj.controller --port N`
         (`generation.rs`), the
         webview fetches it via `getApiBaseUrl()` (CORS on; CSP left null/permissive
         — tightening is a security follow-up). On the live stack, verify:
@@ -149,7 +149,7 @@ status arrives as `sidecar://status` events (`useDeck` selects this with
           sample deck A's tail, drop it on a deck B pad, hear B adopt the style.
     - [ ] Dev: `just tauri-dev` launches the gen server + sidecars (the
           default `uv run` uses the backend dir as CWD; override with
-          `SLIPMATE_GENERATION_CMD` / `SLIPMATE_SIDECAR_CMD`).
+          `LSDJ_GENERATION_CMD` / `LSDJ_SIDECAR_CMD`).
   - [x] Remove the now-inert browser cue UI (phones picker / `cueStream`) — done
         at cutover, and the native Output picker (Part 5) replaces it: a
         `list_output_devices` / `set_output_device` dropdown in the mixer's Phones

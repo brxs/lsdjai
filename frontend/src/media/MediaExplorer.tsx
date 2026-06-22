@@ -35,10 +35,10 @@ type GeneratedTrack =
       title: string
       // The full prompt that composed the take, shown by the 🔍 button (prompts are
       // now uncapped, so the row only shows a compact form). null for a file found in
-      // the folder that SlipMate didn't generate.
+      // the folder that LSDJai didn't generate.
       prompt: string | null
       // The engine that composed the take, or null for a file found in the songs
-      // folder that SlipMate didn't generate ("model as option").
+      // folder that LSDJai didn't generate ("model as option").
       model: TrackEngine | null
       // The filename on disk (the registry identity). null only outside Tauri, where
       // nothing was persisted and the take lives solely in `wav`.
@@ -94,7 +94,7 @@ function trackLabel(track: GeneratedTrack): string {
 /** What the webview sends with a freshly composed take (Rust `songs::NewSong`). */
 type NewSong = { title: string; prompt: string; model: TrackEngine }
 
-/** Persist a ready take to ~/Documents/SlipMate/generated_songs through the Rust shell
+/** Persist a ready take to ~/Documents/LSDJai/generated_songs through the Rust shell
  * and return its registry entry. Frame [u32 LE meta-JSON length][meta JSON utf-8]
  * [WAV bytes] as one binary payload — the same binary-IPC shape the engine's
  * load/embed commands use (a JSON args map would be megabytes of text for a multi-MB

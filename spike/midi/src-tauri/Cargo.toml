@@ -1,14 +1,14 @@
 [package]
-name = "slipmate-midi-spike"
+name = "lsdj-midi-spike"
 version = "0.0.0"
 description = "Spike C — tauri-plugin-midi vs DDJ-FLX4"
-authors = ["SlipMate"]
+authors = ["LSDJai"]
 edition = "2021"
 publish = false
 
 [lib]
 # Tauri v2 keeps the app logic in a lib so it can be reused on mobile.
-name = "slipmate_midi_spike_lib"
+name = "lsdj_midi_spike_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

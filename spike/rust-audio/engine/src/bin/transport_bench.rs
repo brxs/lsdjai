@@ -301,7 +301,7 @@ fn run_tcp(pacing: Arc<Pacing>, total_chunks: u64) -> Stats {
 
 fn run_uds(pacing: Arc<Pacing>, total_chunks: u64) -> Stats {
     let dir = env::temp_dir();
-    let path = dir.join(format!("slipmate_uds_{}.sock", std::process::id()));
+    let path = dir.join(format!("lsdj_uds_{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path).expect("bind uds");
     let path_for_accept = path.clone();

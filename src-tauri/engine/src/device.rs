@@ -223,7 +223,7 @@ pub fn run_host_stream(
         }
     }
 
-    let err_fn = |e| eprintln!("slipmate-engine: stream error: {e}");
+    let err_fn = |e| eprintln!("lsdj-engine: stream error: {e}");
 
     let stream = device
         .build_output_stream(
@@ -319,7 +319,7 @@ pub fn run_stream(mut engine: Engine) -> Result<AudioStream, DeviceError> {
         scratch_reserve(&mut scratch, REQUESTED_BUFFER as usize * 4);
     }
 
-    let err_fn = |e| eprintln!("slipmate-engine: stream error: {e}");
+    let err_fn = |e| eprintln!("lsdj-engine: stream error: {e}");
 
     let stream = device
         .build_output_stream(

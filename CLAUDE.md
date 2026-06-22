@@ -1,6 +1,6 @@
-# SlipMate
+# LSDJai
 
-SlipMate is a generative DJ instrument: two locally-running model decks
+LSDJai (Latent Space Disc Jockey) is a generative DJ instrument: two locally-running model decks
 (Magenta RealTime 2), generated pads and tracks (Stable Audio 3), mixed by a
 native Rust audio engine and playable from a Pioneer DDJ-FLX4. It ships as a
 native Tauri app. See [`README.md`](README.md) for the full overview,
@@ -28,7 +28,7 @@ Underlying tools: uv + pytest + ruff in `backend/`, npm + vitest + eslint in
   EQ → Color FX insert → cue tap → fader/crossfade. The webview
   (`frontend/`, React + Vite) is the UI and talks to the engine over Tauri IPC.
   The Python sidecars run one Magenta RT model worker per deck; the FastAPI
-  controller (`backend/slipmate/`) is a pure generation server (render /
+  controller (`backend/lsdj/`) is a pure generation server (render /
   generate / models) on a loopback port (ADR-0002).
 - `frontend/src/` map: `audio/` (engine-facing state, FX curves in `fx.ts`),
   `control/` (Web MIDI link, FLX4 byte translator, `ControlIntent` bus),
@@ -42,7 +42,7 @@ Underlying tools: uv + pytest + ruff in `backend/`, npm + vitest + eslint in
   pre-fader insert with a bit-exact bypass (ADR-0008).
 - Model weights live outside the repo in `~/Documents/Magenta/magenta-rt-v2`
   (override with `MAGENTA_HOME`); first run needs `uv run mrt models init` +
-  `uv run mrt models download mrt2_small`. Only `backend/slipmate/engine.py`
+  `uv run mrt models download mrt2_small`. Only `backend/lsdj/engine.py`
   may import `magenta_rt` (ADR-0002); measured API facts are in
   `docs/spike-mrt2.md`.
 - Changes that touch hardware behaviour cannot be fully verified by tests:
