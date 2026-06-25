@@ -571,13 +571,12 @@
   cursor: default;
 }
 
+/* The anchor is the dot itself, centred on (x, y) so its strand ends dead on
+ * it; the label hangs below absolutely, out of flow, so it can't shift the
+ * dot off the point. */
 .ui-xypad__target {
   position: absolute;
   transform: translate(-50%, -50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-1);
   pointer-events: none;
 }
 
@@ -588,6 +587,7 @@
 }
 
 .ui-xypad__target-dot {
+  display: block;
   width: var(--space-2);
   height: var(--space-2);
   border-radius: 50%;
@@ -595,6 +595,11 @@
 }
 
 .ui-xypad__target-label {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: var(--space-1);
   font: 500 var(--text-xs) var(--font-ui);
   color: var(--color-text-muted);
   max-width: 8rem;
