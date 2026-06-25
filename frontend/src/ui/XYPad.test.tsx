@@ -1,5 +1,5 @@
-import { render } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 
 import { XYPad, type XYPadTarget } from './XYPad'
 
@@ -63,5 +63,35 @@ describe('XYPad net', () => {
     expect(
       container.querySelector('.ui-xypad__net')?.getAttribute('aria-hidden'),
     ).toBe('true')
+  })
+
+  it('fires onCursorActivate when the blue dot is double-clicked', () => {
+    const onCursorActivate = vi.fn()
+    const { container } = render(
+      <XYPad
+        label="Pad"
+        targets={targets}
+        cursor={centre}
+        onChange={() => {}}
+        onCursorActivate={onCursorActivate}
+      />,
+    )
+    fireEvent.doubleClick(container.querySelector('[data-cursor]')!)
+    expect(onCursorActivate).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores a double-click that is not on the blue dot', () => {
+    const onCursorActivate = vi.fn()
+    const { container } = render(
+      <XYPad
+        label="Pad"
+        targets={targets}
+        cursor={centre}
+        onChange={() => {}}
+        onCursorActivate={onCursorActivate}
+      />,
+    )
+    fireEvent.doubleClick(container.querySelector('.ui-xypad__surface')!)
+    expect(onCursorActivate).not.toHaveBeenCalled()
   })
 })

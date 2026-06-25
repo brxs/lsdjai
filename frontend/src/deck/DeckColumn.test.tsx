@@ -714,6 +714,53 @@ describe('DeckColumn', () => {
     expect(onSetStyle).not.toHaveBeenCalled()
   })
 
+  it('recentres the blue dot onto the dots when double-clicked off-centre', () => {
+    const onSetStyle = vi.fn()
+    const { container } = renderPanel(
+      { connection: 'open' },
+      { onSetStyle: onSetStyle as () => void },
+    )
+    addTarget('funk') // top (0.5, 0.12)
+    addTarget('techno') // bottom (0.5, 0.88) → centroid (0.5, 0.5)
+    // Nudge the cursor off the centre so the double-click recentres it.
+    fireEvent.keyDown(screen.getByLabelText('Style pad'), { key: 'ArrowUp' })
+    onSetStyle.mockClear()
+
+    fireEvent.doubleClick(container.querySelector('[data-cursor]')!)
+
+    // Back on the centroid, the symmetric dots blend evenly.
+    const style = onSetStyle.mock.calls.at(-1)![0]
+    const weightOf = (text: string) =>
+      style.prompts.find((prompt: { text: string }) => prompt.text === text)!
+        .weight
+    expect(weightOf('funk')).toBeCloseTo(0.5)
+    expect(weightOf('techno')).toBeCloseTo(0.5)
+  })
+
+  it('fans the dots out evenly when double-clicked already centred', () => {
+    // Two dots clustered, cursor parked on their centroid → already centred.
+    updateDeckSettings('a', {
+      targets: [
+        { text: 'funk', x: 0.2, y: 0.2 },
+        { text: 'techno', x: 0.4, y: 0.2 },
+      ],
+      cursor: { x: 0.3, y: 0.2 },
+    })
+    const { container } = renderPanel({ connection: 'open' })
+
+    fireEvent.doubleClick(container.querySelector('[data-cursor]')!)
+
+    // The dots jump onto the spawn circle: top and bottom of the pad.
+    expect(
+      container.querySelector('[data-target-id="funk"]')!.getAttribute('style'),
+    ).toContain('top: 12')
+    expect(
+      container
+        .querySelector('[data-target-id="techno"]')!
+        .getAttribute('style'),
+    ).toContain('top: 88')
+  })
+
   it('drops a prompt from the selection when it is removed', () => {
     const onSelectionChange = vi.fn()
     const bus = createControlBus()

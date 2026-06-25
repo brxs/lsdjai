@@ -1,4 +1,10 @@
-import { useId, useRef, type KeyboardEvent, type PointerEvent } from 'react'
+import {
+  useId,
+  useRef,
+  type KeyboardEvent,
+  type MouseEvent,
+  type PointerEvent,
+} from 'react'
 
 import { orderByAngle, strandPath, webPath } from './netGeometry'
 
@@ -20,6 +26,9 @@ type XYPadProps = {
   /** Ids of the targets currently selected on the controller — their strands
    * and dots are highlighted in the net. */
   selectedIds?: ReadonlySet<string>
+  /** Double-clicking the cursor (the blue dot) fires this — the owner decides
+   * what it means (recentre on the dots, or fan them out). */
+  onCursorActivate?: () => void
 }
 
 const KEYBOARD_STEP = 0.05
@@ -42,6 +51,7 @@ export function XYPad({
   onChange,
   onTargetMove,
   selectedIds,
+  onCursorActivate,
 }: XYPadProps) {
   const id = useId()
   const surfaceRef = useRef<HTMLDivElement>(null)
@@ -69,9 +79,11 @@ export function XYPad({
 
   function handlePointerDown(event: PointerEvent<HTMLDivElement>) {
     if (disabled) return
-    const grabbedTarget = (event.target as HTMLElement)
+    const node = event.target as HTMLElement
+    const grabbedTarget = node
       .closest?.('[data-target-id]')
       ?.getAttribute('data-target-id')
+    const onCursor = Boolean(node.closest?.('[data-cursor]'))
     dragRef.current =
       grabbedTarget && onTargetMove
         ? { kind: 'target', id: grabbedTarget }
@@ -79,7 +91,10 @@ export function XYPad({
     // jsdom has no pointer capture; in browsers it keeps the drag alive
     // outside the surface.
     surfaceRef.current?.setPointerCapture?.(event.pointerId)
-    applyDrag(event)
+    // Pressing the blue dot itself grabs it where it sits — no teleport — so a
+    // double-click reads the dot's real position. Empty surface and targets
+    // still place/move on press.
+    if (!onCursor) applyDrag(event)
   }
 
   function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
@@ -89,6 +104,13 @@ export function XYPad({
 
   function handlePointerEnd() {
     dragRef.current = null
+  }
+
+  function handleDoubleClick(event: MouseEvent<HTMLDivElement>) {
+    if (disabled) return
+    if ((event.target as HTMLElement).closest?.('[data-cursor]')) {
+      onCursorActivate?.()
+    }
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -137,6 +159,7 @@ export function XYPad({
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerEnd}
         onPointerCancel={handlePointerEnd}
+        onDoubleClick={handleDoubleClick}
         onKeyDown={handleKeyDown}
       >
         <svg
@@ -172,6 +195,7 @@ export function XYPad({
         <span
           className="ui-xypad__cursor"
           style={{ left: `${cursor.x * 100}%`, top: `${cursor.y * 100}%` }}
+          data-cursor=""
         />
       </div>
     </div>
