@@ -579,11 +579,6 @@
   align-items: center;
   gap: var(--space-1);
   pointer-events: none;
-  /* Jog ticks reposition a dot in steps; a short glide makes the move read
-   * as motion rather than a jump (matches the cursor's feel). */
-  transition:
-    left 0.06s linear,
-    top 0.06s linear;
 }
 
 .ui-xypad__target--draggable {
@@ -616,9 +611,8 @@
   border-radius: 50%;
   background: var(--color-accent);
   pointer-events: none;
-  transition:
-    left 0.05s linear,
-    top 0.05s linear;
+  /* No position easing: the net's strands recompute instantly each render, so
+   * any easing here would let the dot trail its own strands while dragging. */
 }
 
 /* The net: strands from the cursor (hub) to every target, laced by an
@@ -666,8 +660,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ui-xypad__strand,
-  .ui-xypad__target {
+  .ui-xypad__strand {
     transition: none;
   }
 }

@@ -57,4 +57,5 @@ CUE pads show brightness (the dim-vs-bright LED scheme). See the byte map in
 - [ ] The net reads well: strands swirl out of the cursor, the web leans inward,
       selected strands/dots glow. Tune `STRAND_SWIRL` / `WEB_INSET` / the glow in
       `netGeometry.ts` / `ui.css` if it looks off.
-- [ ] Jog moves glide rather than jump; honour reduced-motion if set.
+- [ ] Dots and their strands move in lockstep — no dot trailing its own net —
+      both when dragging with the mouse and when jogging.
