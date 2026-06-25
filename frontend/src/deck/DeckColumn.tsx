@@ -15,6 +15,7 @@ import { TextField } from '../ui/TextField'
 import { TrackOverview, TRACK_OVERVIEW_BUCKETS } from '../ui/TrackOverview'
 import { TransportButton } from '../ui/TransportButton'
 import { XYPad } from '../ui/XYPad'
+import { moveRadial } from '../ui/netGeometry'
 import { isDeckOperable, type ActiveStyle, type DeckState } from './deckState'
 import { TRACK_RATE_RANGE } from '../audio/track'
 import { padWeights, spawnPosition, sweepPosition, type PadPoint } from './padWeights'
@@ -116,6 +117,9 @@ type DeckColumnProps = {
   onRestart: () => void
   /** Reports how many style targets exist (for the pad LED echo). */
   onTargetCount?: (count: number) => void
+  /** Reports which pads are selected in the net (for the pad LED echo),
+   * one boolean per target by pad index. */
+  onSelectionChange?: (selected: boolean[]) => void
   /** Generating off air (M10 deck prep) — surfaced in the status line. */
   primed?: boolean
   /** Color FX insert state and controls (M12). */
@@ -179,6 +183,7 @@ export function DeckColumn({
   onSetModel,
   onRestart,
   onTargetCount,
+  onSelectionChange,
   primed = false,
   fx,
   onSetFx,
@@ -235,6 +240,12 @@ export function DeckColumn({
   }, [targets])
   const [cursor, setCursor] = useState<PadPoint>(
     () => loadDeckSettings(deckId).cursor ?? { x: 0.5, y: 0.5 },
+  )
+  // The net (M??): which prompts the controller has selected, keyed by prompt
+  // text so the set survives a reorder or mid-list removal. Ephemeral — a
+  // controller-side gesture, not part of the saved pad arrangement.
+  const [selected, setSelected] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
   )
   const [targetDraft, setTargetDraft] = useState('')
   // In-place prompt editing: which row is open and its draft text.
@@ -351,9 +362,30 @@ export function DeckColumn({
     setEditing(null)
   }
 
+  // Selection is keyed by prompt text; a removed or renamed prompt (or a
+  // worker-dropped sample) leaves a stray that would re-select a later
+  // same-named prompt. Drop the strays — same render-time pattern as above.
+  if (
+    selected.size > 0 &&
+    [...selected].some((text) => !targets.some((target) => target.text === text))
+  ) {
+    setSelected(
+      new Set(
+        [...selected].filter((text) =>
+          targets.some((target) => target.text === text),
+        ),
+      ),
+    )
+  }
+
   useEffect(() => {
     onTargetCount?.(targets.length)
   }, [targets.length, onTargetCount])
+
+  // Mirror the selection to the controller LEDs, one boolean per pad index.
+  useEffect(() => {
+    onSelectionChange?.(targets.map((target) => selected.has(target.text)))
+  }, [targets, selected, onSelectionChange])
 
   // The worker has no style after a reload, a model switch, or a crash
   // restart — re-apply the pad's arrangement once per such episode, as soon
@@ -483,13 +515,16 @@ export function DeckColumn({
   function applyPreset(preset: StylePreset) {
     setTargets(preset.targets)
     setCursor(preset.cursor)
+    // A preset is a fresh arrangement; start the net with nothing selected.
+    setSelected(new Set())
     sendStyle(preset.targets, preset.cursor)
   }
 
-  // Hardware style intents (ADR-0005) mirror the pointer paths and the
-  // pad's gating: HOT CUE pad N snaps the cursor onto target N (immediate
-  // send, like add/remove), the CFX knob sweeps the cursor with the same
-  // throttle as a drag. Resubscribes per render to read fresh state.
+  // Hardware style intents (ADR-0005) drive the net on a realtime deck: a
+  // HOT CUE pad toggles its prompt's selection, the jog reels the selected
+  // dots in/out about the cursor, and the CFX knob still sweeps the cursor
+  // with the same throttle as a drag. Resubscribes per render to read fresh
+  // state.
   const bus = useControlBus()
   useEffect(() =>
     bus.subscribe((intent) => {
@@ -503,11 +538,29 @@ export function DeckColumn({
       if (mode === 'playback') return
       if (!operable || targets.length === 0) return
       if (intent.kind === 'hot_cue_pad' && intent.deck === deckId) {
+        // Toggle this prompt's net selection (replaces the old cursor-snap);
+        // the jog then moves whatever is selected.
         const target = targets[intent.index]
         if (!target) return
-        const next = { x: target.x, y: target.y }
-        setCursor(next)
-        sendStyle(targets, next)
+        setSelected((previous) => {
+          const next = new Set(previous)
+          if (next.has(target.text)) next.delete(target.text)
+          else next.add(target.text)
+          return next
+        })
+      } else if (intent.kind === 'track_seek' && intent.deck === deckId) {
+        // Jog ticks move every selected dot radially about the cursor:
+        // clockwise (positive steps) pulls inward — closer to the hub, more
+        // weight — counter-clockwise pushes out. No-op with nothing selected,
+        // so the realtime jog stays inert until the user opts in.
+        if (selected.size === 0) return
+        const next = targets.map((target) =>
+          selected.has(target.text)
+            ? { ...target, ...moveRadial(target, cursor, intent.steps) }
+            : target,
+        )
+        setTargets(next)
+        sendStyleThrottled(next, cursor)
       } else if (intent.kind === 'style_sweep' && intent.deck === deckId) {
         const next = sweepPosition(intent.value)
         handleCursor(next.x, next.y)
@@ -734,6 +787,7 @@ export function DeckColumn({
           disabled={!operable || targets.length === 0}
           onChange={handleCursor}
           onTargetMove={handleTargetMove}
+          selectedIds={selected}
         />
 
         {targets.length > 0 && (

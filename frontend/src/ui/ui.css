@@ -579,6 +579,11 @@
   align-items: center;
   gap: var(--space-1);
   pointer-events: none;
+  /* Jog ticks reposition a dot in steps; a short glide makes the move read
+   * as motion rather than a jump (matches the cursor's feel). */
+  transition:
+    left 0.06s linear,
+    top 0.06s linear;
 }
 
 .ui-xypad__target--draggable {
@@ -614,6 +619,57 @@
   transition:
     left 0.05s linear,
     top 0.05s linear;
+}
+
+/* The net: strands from the cursor (hub) to every target, laced by an
+ * inward-bowing web. An inert SVG layer under the dots — see XYPad. */
+.ui-xypad__net {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.ui-xypad__strand {
+  fill: none;
+  stroke: var(--color-border-strong);
+  stroke-width: 0.6;
+  stroke-linecap: round;
+  opacity: 0.5;
+  transition:
+    stroke 0.15s ease,
+    stroke-width 0.15s ease,
+    opacity 0.15s ease;
+}
+
+.ui-xypad__strand--selected {
+  stroke: var(--color-accent);
+  stroke-width: 1.4;
+  opacity: 1;
+  filter: drop-shadow(0 0 1.5px var(--color-accent));
+}
+
+.ui-xypad__web {
+  fill: none;
+  stroke: var(--color-border);
+  stroke-width: 0.4;
+  opacity: 0.35;
+}
+
+.ui-xypad__target-dot--selected {
+  background: var(--color-accent);
+  box-shadow:
+    0 0 0 2px var(--color-accent),
+    0 0 6px 1px var(--color-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-xypad__strand,
+  .ui-xypad__target {
+    transition: none;
+  }
 }
 
 /* ---------- panel chrome ---------- */

@@ -44,6 +44,9 @@ function renderPanel(
         onSetModel={(handlers.onSetModel as (m: string) => void) ?? noop}
         onRestart={handlers.onRestart ?? noop}
         onTargetCount={handlers.onTargetCount as (count: number) => void}
+        onSelectionChange={
+          handlers.onSelectionChange as (selected: boolean[]) => void
+        }
         fx={fx}
         onSetFx={(handlers.onSetFx as (k: unknown) => void) ?? noop}
         onSetFxAmount={(handlers.onSetFxAmount as (v: number) => void) ?? noop}
@@ -637,21 +640,96 @@ describe('DeckColumn', () => {
     expect(onTargetCount).toHaveBeenLastCalledWith(0)
   })
 
-  it('snaps the cursor onto a pad target from the control bus', () => {
-    const onSetStyle = vi.fn()
+  it('toggles a pad target into and out of the net selection', () => {
+    const onSelectionChange = vi.fn()
     const bus = createControlBus()
-    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void }, bus)
+    renderPanel(
+      { connection: 'open' },
+      { onSelectionChange: onSelectionChange as () => void },
+      bus,
+    )
     addTarget('funk')
     addTarget('techno')
 
     act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 1 }))
+    expect(onSelectionChange).toHaveBeenLastCalledWith([false, true])
 
-    expect(onSetStyle.mock.calls.at(-1)![0]).toEqual({
-      prompts: [
-        { text: 'funk', weight: 0 },
-        { text: 'techno', weight: 1 },
-      ],
-    })
+    // Re-tapping the same pad deselects it.
+    act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 1 }))
+    expect(onSelectionChange).toHaveBeenLastCalledWith([false, false])
+  })
+
+  it('highlights a selected dot in the net', () => {
+    const bus = createControlBus()
+    const { container } = renderPanel({ connection: 'open' }, {}, bus)
+    addTarget('funk')
+    expect(container.querySelector('.ui-xypad__strand--selected')).toBeNull()
+
+    act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 0 }))
+    expect(container.querySelector('.ui-xypad__strand--selected')).not.toBeNull()
+    expect(
+      container.querySelector('.ui-xypad__target-dot--selected'),
+    ).not.toBeNull()
+  })
+
+  it('reels a selected dot toward the hub on a clockwise jog', () => {
+    vi.useFakeTimers()
+    try {
+      const onSetStyle = vi.fn()
+      const bus = createControlBus()
+      renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void }, bus)
+      addTarget('funk') // 12 o'clock
+      addTarget('techno') // 6 o'clock — symmetric about the centred cursor
+      act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 1 }))
+      onSetStyle.mockClear()
+
+      // Clockwise (positive steps) pulls techno in toward the cursor, so it
+      // outweighs the untouched funk.
+      act(() =>
+        bus.publish({ kind: 'track_seek', deck: 'a', steps: 1, shifted: false }),
+      )
+      vi.advanceTimersByTime(300) // flush the throttle's trailing send
+
+      const style = onSetStyle.mock.calls.at(-1)![0]
+      const weightOf = (text: string) =>
+        style.prompts.find((prompt: { text: string }) => prompt.text === text)!
+          .weight
+      expect(weightOf('techno')).toBeGreaterThan(weightOf('funk'))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves the realtime jog inert when nothing is selected', () => {
+    const onSetStyle = vi.fn()
+    const bus = createControlBus()
+    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void }, bus)
+    addTarget('funk')
+    onSetStyle.mockClear()
+
+    act(() =>
+      bus.publish({ kind: 'track_seek', deck: 'a', steps: 1, shifted: false }),
+    )
+
+    expect(onSetStyle).not.toHaveBeenCalled()
+  })
+
+  it('drops a prompt from the selection when it is removed', () => {
+    const onSelectionChange = vi.fn()
+    const bus = createControlBus()
+    renderPanel(
+      { connection: 'open' },
+      { onSelectionChange: onSelectionChange as () => void },
+      bus,
+    )
+    addTarget('funk')
+    addTarget('techno')
+    act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 0 }))
+    expect(onSelectionChange).toHaveBeenLastCalledWith([true, false])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove funk' }))
+    // funk is gone; the stale selection is pruned, techno stays unselected.
+    expect(onSelectionChange).toHaveBeenLastCalledWith([false])
   })
 
   it('sweeps the cursor around the target circle from the control bus', () => {

@@ -1,5 +1,7 @@
 import { useId, useRef, type KeyboardEvent, type PointerEvent } from 'react'
 
+import { orderByAngle, strandPath, webPath } from './netGeometry'
+
 export type XYPadTarget = {
   id: string
   label: string
@@ -15,6 +17,9 @@ type XYPadProps = {
   onChange: (x: number, y: number) => void
   /** When provided, target dots are draggable. */
   onTargetMove?: (id: string, x: number, y: number) => void
+  /** Ids of the targets currently selected on the controller — their strands
+   * and dots are highlighted in the net. */
+  selectedIds?: ReadonlySet<string>
 }
 
 const KEYBOARD_STEP = 0.05
@@ -36,6 +41,7 @@ export function XYPad({
   disabled,
   onChange,
   onTargetMove,
+  selectedIds,
 }: XYPadProps) {
   const id = useId()
   const surfaceRef = useRef<HTMLDivElement>(null)
@@ -99,6 +105,22 @@ export function XYPad({
     onChange(clamp01(cursor.x + step[0]), clamp01(cursor.y + step[1]))
   }
 
+  // The net: a radial strand from the cursor (the hub) to every target, plus
+  // an inward-bowing web lacing neighbouring dots. Drawn under the dots and
+  // inert to the pointer so dragging still hits the dots.
+  const strands = targets.map((target) => ({
+    id: target.id,
+    d: strandPath(cursor, target),
+    selected: selectedIds?.has(target.id) ?? false,
+  }))
+  const order = orderByAngle(targets, cursor)
+  const webCount = order.length < 2 ? 0 : order.length === 2 ? 1 : order.length
+  const web = Array.from({ length: webCount }, (_, index) => {
+    const a = targets[order[index]]
+    const b = targets[order[(index + 1) % order.length]]
+    return { key: `${a.id}|${b.id}`, d: webPath(a, b) }
+  })
+
   return (
     <div className="ui-xypad">
       <span className="ui-xypad__label" id={id}>
@@ -117,6 +139,23 @@ export function XYPad({
         onPointerCancel={handlePointerEnd}
         onKeyDown={handleKeyDown}
       >
+        <svg
+          className="ui-xypad__net"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          {web.map((segment) => (
+            <path key={segment.key} className="ui-xypad__web" d={segment.d} />
+          ))}
+          {strands.map((strand) => (
+            <path
+              key={strand.id}
+              className={`ui-xypad__strand${strand.selected ? ' ui-xypad__strand--selected' : ''}`}
+              d={strand.d}
+            />
+          ))}
+        </svg>
         {targets.map((target) => (
           <span
             key={target.id}
@@ -124,7 +163,9 @@ export function XYPad({
             style={{ left: `${target.x * 100}%`, top: `${target.y * 100}%` }}
             data-target-id={target.id}
           >
-            <span className="ui-xypad__target-dot" />
+            <span
+              className={`ui-xypad__target-dot${selectedIds?.has(target.id) ? ' ui-xypad__target-dot--selected' : ''}`}
+            />
             <span className="ui-xypad__target-label">{target.label}</span>
           </span>
         ))}
