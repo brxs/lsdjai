@@ -1,4 +1,10 @@
-import { useId, useRef, type KeyboardEvent, type PointerEvent } from 'react'
+import {
+  useId,
+  useRef,
+  type KeyboardEvent,
+  type MouseEvent,
+  type PointerEvent,
+} from 'react'
 
 import { orderByAngle, strandPath, webPath } from './netGeometry'
 
@@ -50,6 +56,11 @@ export function XYPad({
   const id = useId()
   const surfaceRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<Drag | null>(null)
+  // Pointer capture keeps a drag alive past the surface edge — but taking it in
+  // pointerdown suppresses the follow-up click/double-click (a Chromium
+  // gotcha), which would swallow the blue dot's double-click. So we capture
+  // lazily, only once a real drag starts moving.
+  const capturedRef = useRef(false)
 
   function pointerPosition(event: PointerEvent<HTMLDivElement>) {
     const rect = surfaceRef.current?.getBoundingClientRect()
@@ -71,36 +82,54 @@ export function XYPad({
     }
   }
 
+  function capture(event: PointerEvent<HTMLDivElement>) {
+    if (capturedRef.current) return
+    // jsdom has no pointer capture; in browsers it keeps the drag alive
+    // outside the surface.
+    surfaceRef.current?.setPointerCapture?.(event.pointerId)
+    capturedRef.current = true
+  }
+
   function handlePointerDown(event: PointerEvent<HTMLDivElement>) {
     if (disabled) return
-    const grabbedTarget = (event.target as HTMLElement)
+    const node = event.target as HTMLElement
+    const grabbedTarget = node
       .closest?.('[data-target-id]')
       ?.getAttribute('data-target-id')
+    const onCursor = Boolean(node.closest?.('[data-cursor]'))
     dragRef.current =
       grabbedTarget && onTargetMove
         ? { kind: 'target', id: grabbedTarget }
         : { kind: 'cursor' }
-    // jsdom has no pointer capture; in browsers it keeps the drag alive
-    // outside the surface.
-    surfaceRef.current?.setPointerCapture?.(event.pointerId)
-    applyDrag(event)
+    capturedRef.current = false
+    // Pressing the blue dot grabs it where it sits — no teleport, and no
+    // capture yet so its double-click still fires. Everything else places or
+    // moves on press and captures straight away.
+    if (!onCursor) {
+      capture(event)
+      applyDrag(event)
+    }
   }
 
   function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
     if (disabled || !dragRef.current) return
+    // A real drag has started; now it's safe to capture (the click is gone).
+    capture(event)
     applyDrag(event)
   }
 
   function handlePointerEnd() {
     dragRef.current = null
+    capturedRef.current = false
   }
 
-  // A double-click anywhere on the pad is the "tidy up" gesture (centre the
-  // cursor, fan the dots out). Surface-level so it survives pointer capture
-  // retargeting the click off the dot.
-  function handleDoubleClick() {
+  // Double-clicking the blue dot is the "tidy up" gesture (centre the cursor,
+  // fan the dots out). Only the dot, not the rest of the pad.
+  function handleDoubleClick(event: MouseEvent<HTMLDivElement>) {
     if (disabled) return
-    onCursorActivate?.()
+    if ((event.target as HTMLElement).closest?.('[data-cursor]')) {
+      onCursorActivate?.()
+    }
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -185,6 +214,7 @@ export function XYPad({
         <span
           className="ui-xypad__cursor"
           style={{ left: `${cursor.x * 100}%`, top: `${cursor.y * 100}%` }}
+          data-cursor=""
         />
       </div>
     </div>

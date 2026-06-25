@@ -725,7 +725,7 @@ describe('DeckColumn', () => {
     })
     const { container } = renderPanel({ connection: 'open' })
 
-    fireEvent.doubleClick(container.querySelector('.ui-xypad__surface')!)
+    fireEvent.doubleClick(container.querySelector('[data-cursor]')!)
 
     // The blue dot parks at the canvas centre…
     const cursorStyle = container
