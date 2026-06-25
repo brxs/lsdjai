@@ -43,9 +43,6 @@ const MAX_TARGETS = MAX_PRESET_TARGETS
 // Cursor drags re-blend cached embeddings server-side; ~7/s is plenty when
 // styles land at chunk boundaries anyway.
 const STYLE_SEND_INTERVAL_MS = 150
-// How close to the dots' centre the cursor must already be for a double-click
-// to fan the dots out rather than recentre the cursor.
-const RECENTER_EPSILON = 0.02
 
 /** Leading+trailing throttle where an immediate send is the chokepoint:
  * it cancels any pending trailing send, so a stale gesture frame queued
@@ -511,28 +508,19 @@ export function DeckColumn({
     sendStyleThrottled(targets, next)
   }
 
-  // Double-clicking the blue dot toggles two tidy arrangements: off the dots'
-  // centre it snaps the cursor there (a neutral blend); already centred it fans
-  // the dots out evenly on the spawn circle (equal distance to the pad centre).
+  // Double-clicking the pad tidies the arrangement in one move: park the blue
+  // dot at the canvas centre and fan the dots out evenly on the spawn circle —
+  // every prompt equidistant from the centred cursor, a neutral blend.
   function handleCursorActivate() {
     if (!operable || targets.length === 0) return
-    const centroid = {
-      x: targets.reduce((sum, target) => sum + target.x, 0) / targets.length,
-      y: targets.reduce((sum, target) => sum + target.y, 0) / targets.length,
-    }
-    const offCentre =
-      Math.hypot(cursor.x - centroid.x, cursor.y - centroid.y) > RECENTER_EPSILON
-    if (offCentre) {
-      setCursor(centroid)
-      sendStyle(targets, centroid)
-    } else {
-      const fanned = targets.map((target, index) => ({
-        ...target,
-        ...sweepPosition(index / targets.length),
-      }))
-      setTargets(fanned)
-      sendStyle(fanned, cursor)
-    }
+    const centre = { x: 0.5, y: 0.5 }
+    const fanned = targets.map((target, index) => ({
+      ...target,
+      ...sweepPosition(index / targets.length),
+    }))
+    setTargets(fanned)
+    setCursor(centre)
+    sendStyle(fanned, centre)
   }
 
   // Loading a preset (M16) replaces the pad wholesale: targets,

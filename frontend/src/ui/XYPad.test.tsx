@@ -65,7 +65,7 @@ describe('XYPad net', () => {
     ).toBe('true')
   })
 
-  it('fires onCursorActivate when the blue dot is double-clicked', () => {
+  it('fires onCursorActivate on a double-click of the pad', () => {
     const onCursorActivate = vi.fn()
     const { container } = render(
       <XYPad
@@ -76,17 +76,18 @@ describe('XYPad net', () => {
         onCursorActivate={onCursorActivate}
       />,
     )
-    fireEvent.doubleClick(container.querySelector('[data-cursor]')!)
+    fireEvent.doubleClick(container.querySelector('.ui-xypad__surface')!)
     expect(onCursorActivate).toHaveBeenCalledTimes(1)
   })
 
-  it('ignores a double-click that is not on the blue dot', () => {
+  it('does not fire onCursorActivate while disabled', () => {
     const onCursorActivate = vi.fn()
     const { container } = render(
       <XYPad
         label="Pad"
         targets={targets}
         cursor={centre}
+        disabled
         onChange={() => {}}
         onCursorActivate={onCursorActivate}
       />,
