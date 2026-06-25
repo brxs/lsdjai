@@ -313,13 +313,29 @@ function echo(status: number, note: number, on: boolean): number[] {
   return [status, note, on ? 0x7f : 0x00]
 }
 
+/** Velocity doubles as brightness on the pads, so the net dims an available
+ * target and burns a selected one bright. If a device only does on/off the
+ * two collapse to "lit" and the on-screen net stays the cue — provisional
+ * brightness until the M?? hardware pass measures it (docs/midi-ddj-flx4.md). */
+const PAD_LED_BRIGHT = 0x7f
+const PAD_LED_DIM = 0x20
+
 /** The FLX4 LED scheme (ControllerLeds): each op repaints the whole group it
  * owns, byte-for-byte as the app sent before the driver registry. */
 export const flx4Leds: ControllerLeds = {
-  styleTargetPads: (deck, count) =>
-    Array.from({ length: PAD_COUNT }, (_, pad) =>
-      echo(PAD_STATUS_BY_DECK[deck], pad, pad < count),
-    ),
+  styleTargetPads: (deck, count, selected) =>
+    Array.from({ length: PAD_COUNT }, (_, pad) => {
+      // No selection mask (or no net): keep the legacy full-bright target pads.
+      const velocity =
+        pad >= count
+          ? 0x00
+          : !selected
+            ? PAD_LED_BRIGHT
+            : selected[pad]
+              ? PAD_LED_BRIGHT
+              : PAD_LED_DIM
+      return [PAD_STATUS_BY_DECK[deck], pad, velocity]
+    }),
   fxPads: (deck, activeIndex) =>
     Array.from({ length: PAD_COUNT }, (_, pad) =>
       echo(PAD_STATUS_BY_DECK[deck], PAD_FX_NOTE_BASE + pad, pad === activeIndex),

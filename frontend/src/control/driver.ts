@@ -20,8 +20,14 @@ export type ControllerTranslator = (
  * another controller's may differ. Each op returns the messages for the full
  * group it owns so a single call repaints it (e.g. all eight pads). */
 export type ControllerLeds = {
-  /** Light pads 1..count for a deck's style targets, the rest dark. */
-  styleTargetPads: (deck: DeckId, count: number) => number[][]
+  /** Light pads 1..count for a deck's style targets, the rest dark. When a
+   * selection mask is given (the net, one bool per pad), selected pads burn
+   * bright and the rest sit dim; omitted, every target pad is lit full. */
+  styleTargetPads: (
+    deck: DeckId,
+    count: number,
+    selected?: boolean[],
+  ) => number[][]
   /** Light only the active effect's pad in the PAD FX bank (null = all dark). */
   fxPads: (deck: DeckId, activeIndex: number | null) => number[][]
   /** Light the filled loop slots in the SAMPLER bank. */

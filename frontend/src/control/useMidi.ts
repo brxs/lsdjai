@@ -98,9 +98,10 @@ export function useMidi() {
       connect: () => void link.connect(),
       selectDevice: (name: string) => link.select(name),
       readMonitor: () => entries,
-      /** Light pads 1–count for a deck's style targets. */
-      setPadLeds: (deck: DeckId, count: number) =>
-        sendLeds(activeDriver?.leds.styleTargetPads(deck, count)),
+      /** Light pads 1–count for a deck's style targets; the optional net
+       * selection mask burns selected pads bright and dims the rest. */
+      setPadLeds: (deck: DeckId, count: number, selected?: boolean[]) =>
+        sendLeds(activeDriver?.leds.styleTargetPads(deck, count, selected)),
       /** Light the active effect's pad in the PAD FX bank (null = all dark). */
       setFxPadLeds: (deck: DeckId, activeIndex: number | null) =>
         sendLeds(activeDriver?.leds.fxPads(deck, activeIndex)),

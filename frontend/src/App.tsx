@@ -31,6 +31,12 @@ import { combinedRamWarning } from './ramWarning'
 import { phaseOffsetBeats } from './audio/track'
 import { handleShortcutKey } from './shortcuts'
 
+/** Two net selection masks are equal when same length and same flags, so the
+ * LED state only churns on a real selection change. */
+function sameMask(a: boolean[], b: boolean[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
 function App() {
   const { t } = useTranslation()
   const engine = useAudioEngine()
@@ -267,6 +273,27 @@ function App() {
     (count: number) => handleTargetCount('b', count),
     [handleTargetCount],
   )
+  const [padSelections, setPadSelections] = useState<Record<DeckId, boolean[]>>(
+    { a: [], b: [] },
+  )
+  const handleSelectionChange = useCallback(
+    (deck: DeckId, selected: boolean[]) => {
+      setPadSelections((previous) =>
+        sameMask(previous[deck], selected)
+          ? previous
+          : { ...previous, [deck]: selected },
+      )
+    },
+    [],
+  )
+  const handleSelectionChangeA = useCallback(
+    (selected: boolean[]) => handleSelectionChange('a', selected),
+    [handleSelectionChange],
+  )
+  const handleSelectionChangeB = useCallback(
+    (selected: boolean[]) => handleSelectionChange('b', selected),
+    [handleSelectionChange],
+  )
 
   // LED feedback (M7 stretch): the HOT CUE bank's meaning follows the
   // deck mode (M21, ADR-0015) — pads 1–N lit for N style targets on a
@@ -279,14 +306,15 @@ function App() {
   useEffect(() => {
     if (midiStatus !== 'connected') return
     if (cueLedsA) setCuePadLeds('a', cueLedsA.map((cue) => cue !== null))
-    else setPadLeds('a', padCounts.a)
+    else setPadLeds('a', padCounts.a, padSelections.a)
     if (cueLedsB) setCuePadLeds('b', cueLedsB.map((cue) => cue !== null))
-    else setPadLeds('b', padCounts.b)
+    else setPadLeds('b', padCounts.b, padSelections.b)
   }, [
     midiStatus,
     setPadLeds,
     setCuePadLeds,
     padCounts,
+    padSelections,
     cueLedsA,
     cueLedsB,
     ledEpoch,
@@ -429,6 +457,7 @@ function App() {
           onSetModel={deckA.setModel}
           onRestart={deckA.restartWorker}
           onTargetCount={handleTargetCountA}
+          onSelectionChange={handleSelectionChangeA}
           primed={deckA.primed}
           fx={deckA.fx}
           onSetFx={deckA.setFx}
@@ -487,6 +516,7 @@ function App() {
           onSetModel={deckB.setModel}
           onRestart={deckB.restartWorker}
           onTargetCount={handleTargetCountB}
+          onSelectionChange={handleSelectionChangeB}
           primed={deckB.primed}
           fx={deckB.fx}
           onSetFx={deckB.setFx}
