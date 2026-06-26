@@ -98,7 +98,12 @@ export function applyAppIntent(
     case 'track_seek': {
       const deck = decks[intent.deck]
       // Jog ticks only mean something on a playback deck; the live
-      // stream keeps its no-scratch stance (ADR-0004).
+      // stream keeps its no-scratch stance (ADR-0004). A realtime deck's
+      // jog is handled in DeckColumn (reel the net's dots, or — under SHIFT —
+      // steer the cursor). That steering deliberately borrows the *other*
+      // deck's jog for its second axis, so if that other deck is in playback
+      // the same tick still scrubs here: intentional double-duty, not a bug to
+      // "fix" — see docs/net-hardware-checklist.md.
       if (deck.mode !== 'playback') return
       // The dual role of a real platter (M20): playing = phase nudge,
       // paused = fine seek — and SHIFT+jog fast-scrubs regardless

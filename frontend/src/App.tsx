@@ -30,12 +30,7 @@ import type { StylePreset } from './presets'
 import { combinedRamWarning } from './ramWarning'
 import { phaseOffsetBeats } from './audio/track'
 import { handleShortcutKey } from './shortcuts'
-
-/** Two net selection masks are equal when same length and same flags, so the
- * LED state only churns on a real selection change. */
-function sameMask(a: boolean[], b: boolean[]): boolean {
-  return a.length === b.length && a.every((value, index) => value === b[index])
-}
+import { sameMask } from './selectionMask'
 
 function App() {
   const { t } = useTranslation()
