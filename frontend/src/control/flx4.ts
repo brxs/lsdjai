@@ -250,11 +250,13 @@ export function createFlx4Translator(): Flx4Translator {
     const [status, number, value] = [data[0], data[1], data[2]]
 
     // SHIFT held-state, tracked from press AND release — so this must
-    // run before the velocity-0 drop below.
+    // run before the velocity-0 drop below. Also surfaced as an intent so
+    // cross-deck consumers (SHIFT+jog cursor steering) can see which deck's
+    // SHIFT is down.
     const shiftDeck = NOTE_ON_DECK[status]
     if (shiftDeck && number === SHIFT_NOTE) {
       shiftHeld[shiftDeck] = value > 0
-      return null
+      return { kind: 'shift', deck: shiftDeck, held: value > 0 }
     }
 
     // The browse rotary is relative — its CC must not enter the
@@ -313,13 +315,29 @@ function echo(status: number, note: number, on: boolean): number[] {
   return [status, note, on ? 0x7f : 0x00]
 }
 
+/** Velocity doubles as brightness on the pads, so the net dims an available
+ * target and burns a selected one bright. If a device only does on/off the
+ * two collapse to "lit" and the on-screen net stays the cue — provisional
+ * brightness until the M?? hardware pass measures it (docs/midi-ddj-flx4.md). */
+const PAD_LED_BRIGHT = 0x7f
+const PAD_LED_DIM = 0x20
+
 /** The FLX4 LED scheme (ControllerLeds): each op repaints the whole group it
  * owns, byte-for-byte as the app sent before the driver registry. */
 export const flx4Leds: ControllerLeds = {
-  styleTargetPads: (deck, count) =>
-    Array.from({ length: PAD_COUNT }, (_, pad) =>
-      echo(PAD_STATUS_BY_DECK[deck], pad, pad < count),
-    ),
+  styleTargetPads: (deck, count, selected) =>
+    Array.from({ length: PAD_COUNT }, (_, pad) => {
+      // No selection mask (or no net): keep the legacy full-bright target pads.
+      const velocity =
+        pad >= count
+          ? 0x00
+          : !selected
+            ? PAD_LED_BRIGHT
+            : selected[pad]
+              ? PAD_LED_BRIGHT
+              : PAD_LED_DIM
+      return [PAD_STATUS_BY_DECK[deck], pad, velocity]
+    }),
   fxPads: (deck, activeIndex) =>
     Array.from({ length: PAD_COUNT }, (_, pad) =>
       echo(PAD_STATUS_BY_DECK[deck], PAD_FX_NOTE_BASE + pad, pad === activeIndex),

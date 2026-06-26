@@ -42,6 +42,11 @@ export type ControlIntent =
   // While the track plays, plain ticks become phase nudges and
   // SHIFT+jog keeps scrubbing (M20, the CDJ search convention).
   | { kind: 'track_seek'; deck: DeckId; steps: number; shifted: boolean }
+  // SHIFT held-state per deck: most consumers read the per-intent `shifted`
+  // flag, but a cross-deck gesture needs the standalone state — SHIFT+jog
+  // steering the net cursor drives one axis from each deck's jog, so the
+  // steered deck must know its SHIFT is down while the *other* deck's jog turns.
+  | { kind: 'shift'; deck: DeckId; held: boolean }
   // Tempo sliders (M20, ADR-0014): varispeed on a playback deck,
   // ignored on a realtime deck — ADR-0004 still bars generation tempo.
   | { kind: 'track_rate'; deck: DeckId; value: number }

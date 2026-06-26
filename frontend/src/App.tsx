@@ -30,6 +30,7 @@ import type { StylePreset } from './presets'
 import { combinedRamWarning } from './ramWarning'
 import { phaseOffsetBeats } from './audio/track'
 import { handleShortcutKey } from './shortcuts'
+import { sameMask } from './selectionMask'
 
 function App() {
   const { t } = useTranslation()
@@ -168,14 +169,30 @@ function App() {
   // Resubscribes every render so the handler always reads current deck
   // state; the bus itself is a stable singleton.
   const bus = useControlBus()
+  // Which deck's SHIFT is down, for the cross-deck SHIFT+jog cursor steering
+  // (the steered deck takes one axis from each jog). Both down → deck A wins.
+  const [shiftHeld, setShiftHeld] = useState<Record<DeckId, boolean>>({
+    a: false,
+    b: false,
+  })
+  const shiftedDeck: DeckId | null = shiftHeld.a ? 'a' : shiftHeld.b ? 'b' : null
   useEffect(() =>
-    bus.subscribe((intent) =>
+    bus.subscribe((intent) => {
+      if (intent.kind === 'shift') {
+        setShiftHeld((previous) =>
+          previous[intent.deck] === intent.held
+            ? previous
+            : { ...previous, [intent.deck]: intent.held },
+        )
+        return
+      }
       applyAppIntent(
         intent,
         { a: deckA, b: deckB },
         { onCrossfade: handleCrossfade, onCueMix: handleCueMix },
-      ),
-    ),
+        shiftedDeck,
+      )
+    }),
   )
 
   // Loading a preset: this component owns the FX half (via the deck
@@ -267,6 +284,27 @@ function App() {
     (count: number) => handleTargetCount('b', count),
     [handleTargetCount],
   )
+  const [padSelections, setPadSelections] = useState<Record<DeckId, boolean[]>>(
+    { a: [], b: [] },
+  )
+  const handleSelectionChange = useCallback(
+    (deck: DeckId, selected: boolean[]) => {
+      setPadSelections((previous) =>
+        sameMask(previous[deck], selected)
+          ? previous
+          : { ...previous, [deck]: selected },
+      )
+    },
+    [],
+  )
+  const handleSelectionChangeA = useCallback(
+    (selected: boolean[]) => handleSelectionChange('a', selected),
+    [handleSelectionChange],
+  )
+  const handleSelectionChangeB = useCallback(
+    (selected: boolean[]) => handleSelectionChange('b', selected),
+    [handleSelectionChange],
+  )
 
   // LED feedback (M7 stretch): the HOT CUE bank's meaning follows the
   // deck mode (M21, ADR-0015) — pads 1–N lit for N style targets on a
@@ -279,14 +317,15 @@ function App() {
   useEffect(() => {
     if (midiStatus !== 'connected') return
     if (cueLedsA) setCuePadLeds('a', cueLedsA.map((cue) => cue !== null))
-    else setPadLeds('a', padCounts.a)
+    else setPadLeds('a', padCounts.a, padSelections.a)
     if (cueLedsB) setCuePadLeds('b', cueLedsB.map((cue) => cue !== null))
-    else setPadLeds('b', padCounts.b)
+    else setPadLeds('b', padCounts.b, padSelections.b)
   }, [
     midiStatus,
     setPadLeds,
     setCuePadLeds,
     padCounts,
+    padSelections,
     cueLedsA,
     cueLedsB,
     ledEpoch,
@@ -429,6 +468,8 @@ function App() {
           onSetModel={deckA.setModel}
           onRestart={deckA.restartWorker}
           onTargetCount={handleTargetCountA}
+          onSelectionChange={handleSelectionChangeA}
+          shiftedDeck={shiftedDeck}
           primed={deckA.primed}
           fx={deckA.fx}
           onSetFx={deckA.setFx}
@@ -487,6 +528,8 @@ function App() {
           onSetModel={deckB.setModel}
           onRestart={deckB.restartWorker}
           onTargetCount={handleTargetCountB}
+          onSelectionChange={handleSelectionChangeB}
+          shiftedDeck={shiftedDeck}
           primed={deckB.primed}
           fx={deckB.fx}
           onSetFx={deckB.setFx}

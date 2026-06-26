@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
+import type { DeckId } from '../audio/types'
 import type { FxKind } from '../audio/fx'
 import { createControlBus, type ControlBus } from '../control/bus'
 import { ControlBusProvider } from '../control/ControlBusProvider'
@@ -32,6 +33,7 @@ function renderPanel(
     mode: 'realtime',
     track: null,
   },
+  shiftedDeck: DeckId | null = null,
 ) {
   return render(
     <ControlBusProvider bus={bus}>
@@ -44,6 +46,10 @@ function renderPanel(
         onSetModel={(handlers.onSetModel as (m: string) => void) ?? noop}
         onRestart={handlers.onRestart ?? noop}
         onTargetCount={handlers.onTargetCount as (count: number) => void}
+        onSelectionChange={
+          handlers.onSelectionChange as (selected: boolean[]) => void
+        }
+        shiftedDeck={shiftedDeck}
         fx={fx}
         onSetFx={(handlers.onSetFx as (k: unknown) => void) ?? noop}
         onSetFxAmount={(handlers.onSetFxAmount as (v: number) => void) ?? noop}
@@ -637,21 +643,195 @@ describe('DeckColumn', () => {
     expect(onTargetCount).toHaveBeenLastCalledWith(0)
   })
 
-  it('snaps the cursor onto a pad target from the control bus', () => {
-    const onSetStyle = vi.fn()
+  it('toggles a pad target into and out of the net selection', () => {
+    const onSelectionChange = vi.fn()
     const bus = createControlBus()
-    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void }, bus)
+    renderPanel(
+      { connection: 'open' },
+      { onSelectionChange: onSelectionChange as () => void },
+      bus,
+    )
     addTarget('funk')
     addTarget('techno')
 
     act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 1 }))
+    expect(onSelectionChange).toHaveBeenLastCalledWith([false, true])
 
-    expect(onSetStyle.mock.calls.at(-1)![0]).toEqual({
-      prompts: [
-        { text: 'funk', weight: 0 },
-        { text: 'techno', weight: 1 },
+    // Re-tapping the same pad deselects it.
+    act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 1 }))
+    expect(onSelectionChange).toHaveBeenLastCalledWith([false, false])
+  })
+
+  it('highlights a selected dot in the net', () => {
+    const bus = createControlBus()
+    const { container } = renderPanel({ connection: 'open' }, {}, bus)
+    addTarget('funk')
+    expect(container.querySelector('.ui-xypad__strand--selected')).toBeNull()
+
+    act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 0 }))
+    expect(container.querySelector('.ui-xypad__strand--selected')).not.toBeNull()
+    expect(
+      container.querySelector('.ui-xypad__target-dot--selected'),
+    ).not.toBeNull()
+  })
+
+  it('reels a selected dot toward the hub on a clockwise jog', () => {
+    vi.useFakeTimers()
+    try {
+      const onSetStyle = vi.fn()
+      const bus = createControlBus()
+      renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void }, bus)
+      addTarget('funk') // 12 o'clock
+      addTarget('techno') // 6 o'clock — symmetric about the centred cursor
+      act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 1 }))
+      onSetStyle.mockClear()
+
+      // Clockwise (positive steps) pulls techno in toward the cursor, so it
+      // outweighs the untouched funk.
+      act(() =>
+        bus.publish({ kind: 'track_seek', deck: 'a', steps: 1, shifted: false }),
+      )
+      vi.advanceTimersByTime(300) // flush the throttle's trailing send
+
+      const style = onSetStyle.mock.calls.at(-1)![0]
+      const weightOf = (text: string) =>
+        style.prompts.find((prompt: { text: string }) => prompt.text === text)!
+          .weight
+      expect(weightOf('techno')).toBeGreaterThan(weightOf('funk'))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves the realtime jog inert when nothing is selected', () => {
+    const onSetStyle = vi.fn()
+    const bus = createControlBus()
+    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void }, bus)
+    addTarget('funk')
+    onSetStyle.mockClear()
+
+    act(() =>
+      bus.publish({ kind: 'track_seek', deck: 'a', steps: 1, shifted: false }),
+    )
+
+    expect(onSetStyle).not.toHaveBeenCalled()
+  })
+
+  it('centres the blue dot and fans the dots out on double-click', () => {
+    // Two dots clustered, cursor parked off-centre.
+    updateDeckSettings('a', {
+      targets: [
+        { text: 'funk', x: 0.2, y: 0.2 },
+        { text: 'techno', x: 0.7, y: 0.6 },
       ],
+      cursor: { x: 0.25, y: 0.8 },
     })
+    const { container } = renderPanel({ connection: 'open' })
+
+    fireEvent.doubleClick(container.querySelector('[data-cursor]')!)
+
+    // The blue dot parks at the canvas centre…
+    const cursorStyle = container
+      .querySelector('.ui-xypad__cursor')!
+      .getAttribute('style')
+    expect(cursorStyle).toContain('left: 50%')
+    expect(cursorStyle).toContain('top: 50%')
+    // …and the dots fan onto the spawn circle (top and bottom of the pad).
+    expect(
+      container.querySelector('[data-target-id="funk"]')!.getAttribute('style'),
+    ).toContain('top: 12')
+    expect(
+      container
+        .querySelector('[data-target-id="techno"]')!
+        .getAttribute('style'),
+    ).toContain('top: 88')
+  })
+
+  it('drops a prompt from the selection when it is removed', () => {
+    const onSelectionChange = vi.fn()
+    const bus = createControlBus()
+    renderPanel(
+      { connection: 'open' },
+      { onSelectionChange: onSelectionChange as () => void },
+      bus,
+    )
+    addTarget('funk')
+    addTarget('techno')
+    act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 0 }))
+    expect(onSelectionChange).toHaveBeenLastCalledWith([true, false])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove funk' }))
+    // funk is gone; the stale selection is pruned, techno stays unselected.
+    expect(onSelectionChange).toHaveBeenLastCalledWith([false])
+  })
+
+  // Deck A is the shifted deck, so its jogs steer its cursor in 2D.
+  function steerPanel(bus: ControlBus) {
+    updateDeckSettings('a', {
+      targets: [
+        { text: 'funk', x: 0.2, y: 0.2 },
+        { text: 'techno', x: 0.8, y: 0.8 },
+      ],
+      cursor: { x: 0.5, y: 0.5 },
+    })
+    return renderPanel(
+      { connection: 'open' },
+      {},
+      bus,
+      { kind: null, amount: 0 },
+      emptyLoop(),
+      null,
+      true,
+      null,
+      { mode: 'realtime', track: null },
+      'a',
+    )
+  }
+
+  it('steers the cursor with SHIFT+jog — jog A on x, jog B on y', () => {
+    const bus = createControlBus()
+    const { container } = steerPanel(bus)
+    const cursorStyle = () =>
+      container.querySelector('.ui-xypad__cursor')!.getAttribute('style')
+
+    // Jog A clockwise → right (x up): 0.5 + 10·0.01 = 0.6.
+    act(() =>
+      bus.publish({ kind: 'track_seek', deck: 'a', steps: 10, shifted: true }),
+    )
+    expect(cursorStyle()).toContain('left: 60%')
+
+    // Jog A counter-clockwise → left: 0.6 − 30·0.01 = 0.3.
+    act(() =>
+      bus.publish({ kind: 'track_seek', deck: 'a', steps: -30, shifted: true }),
+    )
+    expect(cursorStyle()).toContain('left: 30%')
+
+    // Jog B clockwise → down (y up): 0.5 + 10·0.01 = 0.6. (Its own SHIFT is not
+    // held, but deck A's is — that's what routes it here.)
+    act(() =>
+      bus.publish({ kind: 'track_seek', deck: 'b', steps: 10, shifted: false }),
+    )
+    expect(cursorStyle()).toContain('top: 60%')
+  })
+
+  it('SHIFT+jog steers instead of reeling the selected dots', () => {
+    const bus = createControlBus()
+    const { container } = steerPanel(bus)
+    // Select a dot — without SHIFT a jog would reel it.
+    act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 0 }))
+    const dotStyle = () =>
+      container.querySelector('[data-target-id="funk"]')!.getAttribute('style')
+    const before = dotStyle()
+
+    act(() =>
+      bus.publish({ kind: 'track_seek', deck: 'a', steps: 10, shifted: true }),
+    )
+
+    // The dot stayed put; the cursor moved instead.
+    expect(dotStyle()).toEqual(before)
+    expect(
+      container.querySelector('.ui-xypad__cursor')!.getAttribute('style'),
+    ).toContain('left: 60%')
   })
 
   it('sweeps the cursor around the target circle from the control bus', () => {

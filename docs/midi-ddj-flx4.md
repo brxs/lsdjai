@@ -25,7 +25,7 @@ sends it on every device bind so a fresh connection starts in sync.
 | PLAY/PAUSE deck 1 / 2 | `0x90`/`0x91` note `0x0B` | toggle play/stop |
 | Channel fader 1 / 2 | `0xB0`/`0xB1` CC `0x13` (LSB `0x33`) | deck volume |
 | Crossfader | `0xB6` CC `0x1F` (LSB `0x3F`) | master crossfade |
-| Pads 1–8, HOT CUE mode, deck 1 / 2 | `0x97`/`0x99` notes `0x00`–`0x07` | the pad gesture (`hot_cue_pad`) — meaning decided per deck mode (M21, ADR-0015): realtime snaps the style-pad cursor to target N; playback sets/jumps hot cue N |
+| Pads 1–8, HOT CUE mode, deck 1 / 2 | `0x97`/`0x99` notes `0x00`–`0x07` | the pad gesture (`hot_cue_pad`) — meaning decided per deck mode (M21, ADR-0015): realtime **toggles prompt N's net selection** (the jog then reels selected dots in/out — see the jog row; this replaced the older cursor-snap); playback sets/jumps hot cue N |
 | SHIFT + HOT CUE pad, deck 1 / 2 | `0x98`/`0x9A` notes `0x00`–`0x07` | clear hot cue N on a playback deck (the shift pad layer, the M13-measured firmware habit); realtime decks ignore it |
 | EQ HI deck 1 / 2 | `0xB0`/`0xB1` CC `0x07` (LSB `0x27`) | deck EQ high band (M6) |
 | EQ MID deck 1 / 2 | `0xB0`/`0xB1` CC `0x0B` (LSB `0x2B`) | deck EQ mid band (M6) |
@@ -71,8 +71,9 @@ remains the verification tool.
 
 | Control | Message | → App intent |
 | ------- | ------- | ------------ |
-| Jog wheel (turn) deck 1 / 2 | `0xB0`/`0xB1` CC `0x21` (side) / `0x22` (platter, vinyl on) / `0x23` (platter, vinyl off), relative around `0x40` (`0x41` = +1 CW) | the platter's dual role on a playback deck: paused = fine relative seek, playing = phase nudge; a realtime deck ignores the ticks — no scratch concept on the stream (ADR-0004) |
-| SHIFT + jog (turn) deck 1 / 2 | `0xB0`/`0xB1` CC `0x29` (`jogSearch` in the Mixxx FLX4 chart, **confirmed on the device** — third run: "Shift+jog works while playing"), relative around `0x40` | fast scrub even mid-play (the CDJ search convention). The firmware moves the shifted jog to its **own CC** — the software soft-shift on `0x21`/`0x22` shipped first and read as "scrubbing does nothing" on the device |
+| Jog wheel (turn) deck 1 / 2 | `0xB0`/`0xB1` CC `0x21` (side) / `0x22` (platter, vinyl on) / `0x23` (platter, vinyl off), relative around `0x40` (`0x41` = +1 CW) | the platter's dual role on a playback deck: paused = fine relative seek, playing = phase nudge. On a **realtime** deck (`track_seek`) it drives the net. With **no SHIFT held**, the deck's own jog reels its *selected* dots radially about the cursor — CW in (more weight), CCW out; inert when nothing is selected. While a deck's **SHIFT is held**, the two jogs instead steer THAT deck's blue dot in 2D: jog A = x (CW → right), jog B = y (CW → down) — so the *other* deck's jog supplies the second axis. The steered deck reads the global held-SHIFT state (a `shift` intent), not the jog's own `shifted` flag. Still no audio scratch on the stream (ADR-0004 holds — the jog edits the prompt blend, not playback) |
+| SHIFT (hold) deck 1 / 2 | `0x90`/`0x91` note `0x3F` | a software modifier (press = held, release = up). Beyond gating shifted CCs in the translator, it now also surfaces its held-state as a `shift` intent so a cross-deck gesture can see which deck's SHIFT is down — the net's SHIFT+jog cursor steering above |
+| SHIFT + jog (turn) deck 1 / 2 | `0xB0`/`0xB1` CC `0x29` (`jogSearch` in the Mixxx FLX4 chart, **confirmed on the device** — third run: "Shift+jog works while playing"), relative around `0x40` | fast scrub even mid-play on a playback deck (the CDJ search convention). The firmware moves the shifted jog to its **own CC** — the software soft-shift on `0x21`/`0x22` shipped first and read as "scrubbing does nothing" on the device. On a **realtime** deck this is the X-axis half of the net cursor steering (see the jog row above) |
 | Tempo slider deck 1 / 2 | `0xB0`/`0xB1` CC `0x00` (LSB `0x20`) | varispeed on a playback deck (`track_rate`, M20, ADR-0014 — playback rate is not generation tempo, so ADR-0004 stands); realtime decks ignore it. Orientation **measured on the device**: low values = slow end (the chart assumption shipped inverted and was caught on hardware) |
 | LOOP IN / LOOP OUT deck 1 / 2 | `0x90`/`0x91` notes `0x10` / `0x11` | track loop on a playback deck (M21, ADR-0015): IN arms a quantised start, OUT closes the region; realtime decks ignore them. Bytes per the Mixxx FLX4 chart — confirm with the monitor. (Loop release moved onto the 4 BEAT/EXIT toggle below in M23.) |
 | 4 BEAT/EXIT, CUE/LOOP CALL ◄ / ► deck 1 / 2 | `0x90`/`0x91` notes `0x4D`, `0x51` / `0x53` | beat loops on a playback deck (M23, ADR-0016): the **4 BEAT/EXIT** button (`0x4D` — the byte M21 had read as RELOOP/EXIT) toggles set/exit (a 4-beat loop when idle, release when one runs); CUE/LOOP CALL ◄ / ► halve / double the active loop. **All measured on the monitor** — on this device the panel's "4 BEAT" and "EXIT" are the one byte `0x4D` |
@@ -104,3 +105,12 @@ Pioneer pads/buttons light by echoing the same status/note back as MIDI
 out with velocity `0x7F` (on) / `0x00` (off) — the scheme Mixxx's FLX4
 script uses. Lighting pads 1–N to show which style targets exist is the
 natural first use.
+
+The net (live mode) adds a third level: a selected target pad burns bright
+(`0x7F`), an available-but-unselected one sits dim (`0x20`), the rest dark.
+This assumes velocity drives pad brightness; if the HOT CUE pads only do
+on/off the dim/bright distinction collapses to "all lit" with no regression,
+and the on-screen net stays the primary cue. **The `0x20` dim level is
+provisional — measure it on the device** (see the net hardware checklist) and
+adjust `PAD_LED_DIM` in `flx4.ts` if the pads need a different value to read
+as clearly dim-but-on.

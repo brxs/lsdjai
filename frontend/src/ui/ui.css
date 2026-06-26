@@ -571,13 +571,12 @@
   cursor: default;
 }
 
+/* The anchor is the dot itself, centred on (x, y) so its strand ends dead on
+ * it; the label hangs below absolutely, out of flow, so it can't shift the
+ * dot off the point. */
 .ui-xypad__target {
   position: absolute;
   transform: translate(-50%, -50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-1);
   pointer-events: none;
 }
 
@@ -588,6 +587,7 @@
 }
 
 .ui-xypad__target-dot {
+  display: block;
   width: var(--space-2);
   height: var(--space-2);
   border-radius: 50%;
@@ -595,6 +595,11 @@
 }
 
 .ui-xypad__target-label {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: var(--space-1);
   font: 500 var(--text-xs) var(--font-ui);
   color: var(--color-text-muted);
   max-width: 8rem;
@@ -610,10 +615,67 @@
   height: var(--space-4);
   border-radius: 50%;
   background: var(--color-accent);
+  /* Grabbable in its own right: pressing it moves it without a teleport, and a
+   * double-click resets the pad (see XYPad). */
+  pointer-events: auto;
+  cursor: grab;
+  /* No position easing: the net's strands recompute instantly each render, so
+   * any easing here would let the dot trail its own strands while dragging. */
+}
+
+.ui-xypad__surface--disabled .ui-xypad__cursor {
   pointer-events: none;
+  cursor: default;
+}
+
+/* The net: strands from the cursor (hub) to every target, laced by an
+ * inward-bowing web. An inert SVG layer under the dots — see XYPad. */
+.ui-xypad__net {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.ui-xypad__strand {
+  fill: none;
+  stroke: var(--color-border-strong);
+  stroke-width: 0.6;
+  stroke-linecap: round;
+  opacity: 0.5;
   transition:
-    left 0.05s linear,
-    top 0.05s linear;
+    stroke 0.15s ease,
+    stroke-width 0.15s ease,
+    opacity 0.15s ease;
+}
+
+.ui-xypad__strand--selected {
+  stroke: var(--color-accent);
+  stroke-width: 1.4;
+  opacity: 1;
+  filter: drop-shadow(0 0 1.5px var(--color-accent));
+}
+
+.ui-xypad__web {
+  fill: none;
+  stroke: var(--color-border);
+  stroke-width: 0.4;
+  opacity: 0.35;
+}
+
+.ui-xypad__target-dot--selected {
+  background: var(--color-accent);
+  box-shadow:
+    0 0 0 2px var(--color-accent),
+    0 0 6px 1px var(--color-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-xypad__strand {
+    transition: none;
+  }
 }
 
 /* ---------- panel chrome ---------- */
