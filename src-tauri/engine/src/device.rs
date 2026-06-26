@@ -180,51 +180,25 @@ fn open_output(
     Ok((device, config, info))
 }
 
-/// Spread an interleaved-stereo source onto channels 1/2 of a wider interleaved
-/// device buffer, zeroing every other channel. `src` is the already-drained
-/// stereo block; any device frame past it is silenced (the overflow guard for a
-/// block bigger than the pre-sized scratch). Pure and alloc-free — RT-safe.
-fn spread_stereo(data: &mut [f32], dev_ch: usize, src: &[f32]) {
+/// Zero a wider interleaved device buffer, then lay each `(channel_offset, src)`
+/// interleaved-stereo block onto channels `[offset, offset+1]`. One primitive for
+/// every routing: master on 1/2 is `&[(0, master)]`; the FLX4 combined path is
+/// `&[(0, master), (2, cue)]`; a split cue on the FLX4 phones is `&[(2, cue)]`.
+/// A frame past a block's length (or an offset past the device) is left silent.
+/// `placements` is a small fixed stack slice, so this stays pure and alloc-free —
+/// RT-safe.
+fn spread(data: &mut [f32], dev_ch: usize, placements: &[(usize, &[f32])]) {
     let frames = data.len() / dev_ch;
     for f in 0..frames {
         let base = f * dev_ch;
-        if 2 * f + 1 < src.len() {
-            data[base] = src[2 * f];
-            data[base + 1] = src[2 * f + 1];
-        } else {
-            data[base] = 0.0;
-            data[base + 1] = 0.0;
-        }
-        for c in 2..dev_ch {
+        for c in 0..dev_ch {
             data[base + c] = 0.0;
         }
-    }
-}
-
-/// Spread interleaved-stereo master + cue onto a ≥4-channel device buffer: master
-/// on channels 1/2, cue on 3/4, any further channel zeroed (the FLX4 combined
-/// path). `master`/`cue` are the already-drained stereo blocks; frames past
-/// either are silenced on those channels. Pure and alloc-free — RT-safe.
-fn spread_master_cue(data: &mut [f32], dev_ch: usize, master: &[f32], cue: &[f32]) {
-    let frames = data.len() / dev_ch;
-    for f in 0..frames {
-        let base = f * dev_ch;
-        if 2 * f + 1 < master.len() {
-            data[base] = master[2 * f];
-            data[base + 1] = master[2 * f + 1];
-        } else {
-            data[base] = 0.0;
-            data[base + 1] = 0.0;
-        }
-        if 2 * f + 1 < cue.len() {
-            data[base + 2] = cue[2 * f];
-            data[base + 3] = cue[2 * f + 1];
-        } else {
-            data[base + 2] = 0.0;
-            data[base + 3] = 0.0;
-        }
-        for c in 4..dev_ch {
-            data[base + c] = 0.0;
+        for &(offset, src) in placements {
+            if offset + 1 < dev_ch && 2 * f + 1 < src.len() {
+                data[base + offset] = src[2 * f];
+                data[base + offset + 1] = src[2 * f + 1];
+            }
         }
     }
 }
@@ -263,10 +237,11 @@ fn open_spread_stream(
     // FLX4) can carry it alongside the primary. Drop it on a narrower device.
     let mut secondary = if device_channels >= 4 { secondary } else { None };
     let secondary_routed = secondary.is_some();
-    // A standalone cue stream on a ≥4-channel device (the FLX4 chosen as a SEPARATE
-    // cue device) belongs on the phones channels 3/4, not 1/2 (the FLX4's MASTER
-    // RCA). On a stereo cue device (laptop jack, Bluetooth) the cue is its 1/2.
-    let primary_to_phones = primary_on_phones && device_channels >= 4;
+    // Where the primary lands: a standalone cue stream on a ≥4-channel device (the
+    // FLX4 chosen as a SEPARATE cue device) belongs on the phones channels 3/4
+    // (offset 2), not 1/2 (its MASTER RCA). Master, and a cue on a stereo device
+    // (laptop jack, Bluetooth), land on 1/2 (offset 0).
+    let primary_offset = if primary_on_phones && device_channels >= 4 { 2 } else { 0 };
 
     let mut first_call = true;
     // Per-callback scratch for wide (>2ch) devices: the rings hold interleaved
@@ -303,20 +278,17 @@ fn open_spread_stream(
                         let usable = scratch.len().min(want);
                         primary.drain_into(&mut scratch[..usable]);
                         if let Some(secondary) = secondary.as_mut() {
+                            // Combined: primary on 1/2, secondary (cue) on 3/4.
                             let su = secondary_scratch.len().min(want);
                             secondary.drain_into(&mut secondary_scratch[..su]);
-                            spread_master_cue(
+                            spread(
                                 data,
                                 dev_ch,
-                                &scratch[..usable],
-                                &secondary_scratch[..su],
+                                &[(0, &scratch[..usable]), (2, &secondary_scratch[..su])],
                             );
-                        } else if primary_to_phones {
-                            // Cue onto channels 3/4 (the FLX4 phones jack), 1/2
-                            // silent: the combined spreader with a silent master.
-                            spread_master_cue(data, dev_ch, &[], &scratch[..usable]);
                         } else {
-                            spread_stereo(data, dev_ch, &scratch[..usable]);
+                            // Lone feed (master, or a split cue) at its channel pair.
+                            spread(data, dev_ch, &[(primary_offset, &scratch[..usable])]);
                         }
                     }
                 });
@@ -495,63 +467,62 @@ pub(crate) fn set_ftz_daz() {
 
 #[cfg(test)]
 mod tests {
-    use super::{spread_master_cue, spread_stereo};
+    use super::spread;
 
-    /// Master-only spread lands the stereo pair on channels 1/2 and zeroes the
-    /// rest of each frame (the split main / cue stream on a wide device).
+    /// A lone block at offset 0 lands on channels 1/2 and zeroes the rest of each
+    /// frame (master, or a split cue on a stereo/wide non-FLX4 device).
     #[test]
-    fn spread_stereo_lands_on_channels_1_2() {
+    fn spread_offset_0_lands_on_channels_1_2() {
         let src = [0.1, 0.2, 0.3, 0.4]; // two stereo frames
         let dev_ch = 4;
         let mut data = vec![9.0f32; 2 * dev_ch]; // pre-fill to prove zeroing
-        spread_stereo(&mut data, dev_ch, &src);
+        spread(&mut data, dev_ch, &[(0, &src)]);
         assert_eq!(data, vec![0.1, 0.2, 0.0, 0.0, 0.3, 0.4, 0.0, 0.0]);
     }
 
-    /// A device block longer than the drained source silences the trailing frames
-    /// on channels 1/2 (the overflow guard for an unexpectedly large block).
+    /// A lone block at offset 2 lands on channels 3/4 with 1/2 silent — how a
+    /// split cue stream reaches the FLX4 phones jack (its 1/2 is the MASTER RCA).
     #[test]
-    fn spread_stereo_zeroes_frames_past_the_source() {
+    fn spread_offset_2_lands_on_channels_3_4() {
+        let cue = [0.7, 0.8]; // one stereo frame
+        let dev_ch = 4;
+        let mut data = vec![9.0f32; dev_ch];
+        spread(&mut data, dev_ch, &[(2, &cue)]);
+        assert_eq!(data, vec![0.0, 0.0, 0.7, 0.8]);
+    }
+
+    /// A device block longer than the source silences the trailing frames (the
+    /// overflow guard for an unexpectedly large block).
+    #[test]
+    fn spread_zeroes_frames_past_the_source() {
         let src = [0.5, 0.6]; // one stereo frame only
         let dev_ch = 2;
         let mut data = vec![9.0f32; 2 * dev_ch]; // two frames
-        spread_stereo(&mut data, dev_ch, &src);
+        spread(&mut data, dev_ch, &[(0, &src)]);
         assert_eq!(data, vec![0.5, 0.6, 0.0, 0.0]);
     }
 
-    /// Combined spread lands master on 1/2, cue on 3/4, and zeroes channels ≥4
-    /// (the FLX4 master+phones path on a ≥4-channel device).
+    /// Two placements (the FLX4 combined path): master on 1/2, cue on 3/4, and
+    /// channels ≥4 zeroed.
     #[test]
-    fn spread_master_cue_lands_master_1_2_cue_3_4() {
+    fn spread_combined_lands_master_1_2_cue_3_4() {
         let master = [0.1, 0.2]; // one stereo frame
         let cue = [0.7, 0.8];
         let dev_ch = 6;
         let mut data = vec![9.0f32; dev_ch];
-        spread_master_cue(&mut data, dev_ch, &master, &cue);
+        spread(&mut data, dev_ch, &[(0, &master), (2, &cue)]);
         assert_eq!(data, vec![0.1, 0.2, 0.7, 0.8, 0.0, 0.0]);
     }
 
-    /// A silent (empty) master leaves channels 1/2 zeroed and lands the cue on
-    /// 3/4 — exactly how a split cue stream reaches the FLX4 phones jack while its
-    /// MASTER RCA (1/2) stays silent.
+    /// Placements run dry independently: a short cue still silences only channels
+    /// 3/4, leaving master on 1/2 intact.
     #[test]
-    fn spread_master_cue_with_silent_master_is_cue_on_3_4() {
-        let cue = [0.7, 0.8]; // one stereo frame
-        let dev_ch = 4;
-        let mut data = vec![9.0f32; dev_ch];
-        spread_master_cue(&mut data, dev_ch, &[], &cue);
-        assert_eq!(data, vec![0.0, 0.0, 0.7, 0.8]);
-    }
-
-    /// The master and cue blocks can run dry independently: a short cue still
-    /// silences only channels 3/4, leaving master on 1/2 intact.
-    #[test]
-    fn spread_master_cue_silences_a_short_cue_only() {
+    fn spread_combined_silences_a_short_placement_only() {
         let master = [0.1, 0.2, 0.3, 0.4]; // two frames
         let cue = [0.7, 0.8]; // one frame — second frame's cue runs dry
         let dev_ch = 4;
         let mut data = vec![9.0f32; 2 * dev_ch];
-        spread_master_cue(&mut data, dev_ch, &master, &cue);
+        spread(&mut data, dev_ch, &[(0, &master), (2, &cue)]);
         assert_eq!(
             data,
             vec![0.1, 0.2, 0.7, 0.8, 0.3, 0.4, 0.0, 0.0],

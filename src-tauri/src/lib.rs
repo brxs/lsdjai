@@ -266,11 +266,11 @@ fn reopen_main(
     cue_name: &str,
 ) -> Result<(), String> {
     let combined = is_combined(main_name, cue_name);
-    let (master_ring, master_consumer) = host.new_master_ring();
+    let (master_ring, master_consumer) = host.new_output_ring();
     // In combined mode build a fresh cue ring too, so the cue rides the main
     // device's 3/4; `open_main_stream` drops it if the device is < 4 channels.
     let (cue_ring, cue_consumer) = if combined {
-        let (ring, consumer) = host.new_cue_ring();
+        let (ring, consumer) = host.new_output_ring();
         (Some(ring), Some(consumer))
     } else {
         (None, None)
@@ -299,7 +299,7 @@ fn reopen_main(
 /// the master ring) completely untouched — the property that lets a cue-device
 /// switch never interrupt the audience's master.
 fn reopen_cue_split(host: &Host, audio: &AudioState, cue_name: &str) -> Result<(), String> {
-    let (cue_ring, cue_consumer) = host.new_cue_ring();
+    let (cue_ring, cue_consumer) = host.new_output_ring();
     let stream =
         engine_device::open_cue_stream(selector(cue_name), cue_consumer).map_err(|e| e.to_string())?;
     if !host.install_cue_ring(cue_ring) {

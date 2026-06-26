@@ -71,8 +71,10 @@ export function OutputDevicePicker({
   }
 
   // The "same as main" cue option only carries the combined cue when the main
-  // device is ≥4 channels. The default device's capability is unknown (it has no
-  // name in the list), so assume it works; a named stereo main is flagged.
+  // device is ≥4 channels. This is a display hint only — the engine's
+  // `set_cue_device` owns the real combined-vs-split decision. The default
+  // device's capability is unknown (it has no name in the list), so assume it
+  // works; a named stereo main is flagged.
   const mainIsCueCapable =
     mainDeviceName === '' ||
     devices.some((device) => device.name === mainDeviceName && device.cueCapable)

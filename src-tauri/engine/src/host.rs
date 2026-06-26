@@ -424,12 +424,14 @@ impl Host {
     }
 
     /// Build one fresh output ring for an output-device switch: the producer
-    /// (carried in [`OutputRing`], installed later) and its device-side
-    /// [`OutputConsumer`] for the new cpal stream. The render thread keeps filling
-    /// the CURRENT ring until the matching `install_*_ring` swaps it — so the
-    /// caller opens the new stream on this consumer FIRST and only installs on
-    /// success, leaving audio undisturbed if the device fails to open.
-    fn new_output_ring(&self) -> (OutputRing, OutputConsumer) {
+    /// (carried in [`OutputRing`]) and its device-side [`OutputConsumer`] for the
+    /// new cpal stream. The ring is symmetric — master vs cue is decided by which
+    /// of [`install_master_ring`](Self::install_master_ring) /
+    /// [`install_cue_ring`](Self::install_cue_ring) the caller installs it with.
+    /// The render thread keeps filling the CURRENT ring until that install swaps
+    /// it, so the caller opens the new stream on this consumer FIRST and only
+    /// installs on success, leaving audio undisturbed if the device fails to open.
+    pub fn new_output_ring(&self) -> (OutputRing, OutputConsumer) {
         let (tx, rx) = RingBuffer::<f32>::new(OUTPUT_RING_FRAMES * CHANNELS as usize);
         (
             OutputRing(tx),
@@ -438,18 +440,6 @@ impl Host {
                 telemetry: self.telemetry.clone(),
             },
         )
-    }
-
-    /// A fresh MASTER output ring + its device-side consumer (see
-    /// [`new_output_ring`](Self::new_output_ring)).
-    pub fn new_master_ring(&self) -> (OutputRing, OutputConsumer) {
-        self.new_output_ring()
-    }
-
-    /// A fresh CUE output ring + its device-side consumer (see
-    /// [`new_output_ring`](Self::new_output_ring)).
-    pub fn new_cue_ring(&self) -> (OutputRing, OutputConsumer) {
-        self.new_output_ring()
     }
 
     /// Hand the new MASTER ring producer to the render thread (it swaps off the
