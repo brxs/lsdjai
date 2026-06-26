@@ -303,6 +303,33 @@ describe('applyAppIntent', () => {
     expect(deck.nudgeTrack).not.toHaveBeenCalled()
   })
 
+  it('does not scrub a playback deck while a live deck is SHIFT-steered', () => {
+    // Deck B (live) is being steered; its borrowed jog (here deck A's) must not
+    // also scrub deck A's track.
+    const playback = playbackDeck(false)
+    applyAppIntent(
+      { kind: 'track_seek', deck: 'a', steps: 3, shifted: false },
+      decks(playback, fakeDeck()),
+      noHandlers,
+      'b',
+    )
+    expect(playback.nudgeTrack).not.toHaveBeenCalled()
+    expect(playback.nudgeTrackPhase).not.toHaveBeenCalled()
+  })
+
+  it('still scrubs when the SHIFT-held deck is itself in playback', () => {
+    // Holding SHIFT on a playback deck is a normal scrub — only a realtime
+    // steered deck claims the jogs.
+    const deck = playbackDeck(true)
+    applyAppIntent(
+      { kind: 'track_seek', deck: 'a', steps: 3, shifted: true },
+      decks(deck),
+      noHandlers,
+      'a',
+    )
+    expect(deck.nudgeTrack).toHaveBeenCalledWith(3 * JOG_SCRUB_SECONDS)
+  })
+
   it('SHIFT+jog fast-scrubs even while playing — the CDJ search convention', () => {
     const deck = playbackDeck(true)
     applyAppIntent(

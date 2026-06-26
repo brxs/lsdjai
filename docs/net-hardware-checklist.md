@@ -45,9 +45,9 @@ CUE pads show brightness (the dim-vs-bright LED scheme). See the byte map in
       release SHIFT and the plain-jog reel is back.
 - [ ] Steering feel: tune `CURSOR_JOG_STEP` in `DeckColumn.tsx` if a turn moves
       the dot too far / not far enough. Tuned value = `______`.
-- [ ] Edge case to note (not a blocker): if the OTHER deck is in **playback**,
-      its jog also scrubs that track while steering — expected, since a playback
-      jog still seeks (ADR-0013). Both decks in live mode = clean.
+- [ ] If the OTHER deck is in **playback**, steering borrows its jog **without**
+      scrubbing that track — the playback position holds while you steer.
+      (Holding SHIFT on a playback deck still scrubs it normally.)
 
 ## LED scheme — the measured unknown (decision §4.4)
 

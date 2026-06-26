@@ -30,6 +30,7 @@ export function applyAppIntent(
   intent: ControlIntent,
   decks: Record<DeckId, DeckControls>,
   handlers: AppIntentHandlers,
+  shiftedDeck: DeckId | null = null,
 ): void {
   switch (intent.kind) {
     case 'play_toggle': {
@@ -97,14 +98,15 @@ export function applyAppIntent(
       return
     case 'track_seek': {
       const deck = decks[intent.deck]
-      // Jog ticks only mean something on a playback deck; the live
-      // stream keeps its no-scratch stance (ADR-0004). A realtime deck's
-      // jog is handled in DeckColumn (reel the net's dots, or — under SHIFT —
-      // steer the cursor). That steering deliberately borrows the *other*
-      // deck's jog for its second axis, so if that other deck is in playback
-      // the same tick still scrubs here: intentional double-duty, not a bug to
-      // "fix" — see docs/net-hardware-checklist.md.
+      // Jog ticks only mean something on a playback deck; the live stream keeps
+      // its no-scratch stance (ADR-0004). A realtime deck's jog is handled in
+      // DeckColumn (reel the net's dots, or — under SHIFT — steer the cursor).
       if (deck.mode !== 'playback') return
+      // SHIFT-steering a *live* deck borrows the other deck's jog for its second
+      // axis, so while that's happening the borrowed jog must not also scrub a
+      // playback deck on the same tick. Only a realtime steered deck claims the
+      // jogs — holding SHIFT on a playback deck is a normal scrub.
+      if (shiftedDeck != null && decks[shiftedDeck].mode === 'realtime') return
       // The dual role of a real platter (M20): playing = phase nudge,
       // paused = fine seek — and SHIFT+jog fast-scrubs regardless
       // (the CDJ search convention).

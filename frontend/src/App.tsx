@@ -190,6 +190,7 @@ function App() {
         intent,
         { a: deckA, b: deckB },
         { onCrossfade: handleCrossfade, onCueMix: handleCueMix },
+        shiftedDeck,
       )
     }),
   )
