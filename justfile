@@ -12,6 +12,7 @@ setup:
     cd backend && uv run mrt models download mrt2_base
     just setup-sa3
     cd frontend && npm install
+    cargo install tauri-cli
     just build
 
 # Stable Audio 3 (ADR-0012/0013): the pinned checkout, its venv, and a
