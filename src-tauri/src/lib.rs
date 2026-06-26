@@ -47,18 +47,35 @@ mod songs;
 const DEFAULT_MODEL: &str = "mrt2_small";
 
 /// Tauri-managed audio state held ALONGSIDE the [`Host`]: the running output
-/// stream (kept alive so its Drop does not stop audio) and whether the device
-/// actually started.
+/// streams (kept alive so their Drop does not stop audio), the current device
+/// choices, and whether the main device actually started.
 ///
 /// The `Host` is managed separately so the commands can take it as
 /// `tauri::State<'_, Host>` directly. This struct holds the things the commands
 /// do not need but the app must keep alive.
+///
+/// Two streams, dual-mode (ADR-0021): the MAIN stream always drains the master
+/// ring onto channels 1/2; the CUE stream depends on the chosen cue device:
+/// - **combined** (cue = "same as main", an empty `cue_name` or one equal to
+///   `main_name`): the cue rides the main device's channels 3/4 (the FLX4 phones
+///   jack) and `cue_stream` is `None`.
+/// - **split** (a different `cue_name`): a separate `cue_stream` drains the cue
+///   ring onto its own device's 1/2, so the cue reaches any second output.
 struct AudioState {
-    /// The running output stream — kept alive (its `Drop` stops audio) and
-    /// REPLACED by `set_output_device` to switch the output device. `None` in the
-    /// sandbox/headless case.
-    stream: Mutex<Option<AudioStream>>,
+    /// The MAIN output stream — master → ch 1/2, and cue → ch 3/4 in combined
+    /// mode. Kept alive; replaced when the main device (or the combined/split
+    /// mode) changes. `None` in the sandbox/headless case.
+    main_stream: Mutex<Option<AudioStream>>,
+    /// The CUE output stream in SPLIT mode (a separate device); `None` in combined
+    /// mode (the cue rides the main stream's 3/4).
+    cue_stream: Mutex<Option<AudioStream>>,
+    /// Whether the main device came up at startup (the `app_info` flag).
     device_started: bool,
+    /// The current main device name (empty = system default), so a cue-only switch
+    /// can recompute the combined/split topology.
+    main_name: Mutex<String>,
+    /// The current cue device name (empty = "same as main" → combined).
+    cue_name: Mutex<String>,
 }
 
 /// Deck producer handles NOT owned by a sidecar (sidecars disabled, or a spawn
@@ -81,34 +98,42 @@ struct SidecarStatus {
 /// The device-start path is graceful: a missing device leaves the host running
 /// headlessly with `device_started = false`.
 fn start_audio() -> (Host, AudioState, [DeckHandle; lsdj_engine::DECK_COUNT]) {
-    let (host, output, cue_output, deck_handles) = Host::new();
+    let (host, master, cue, deck_handles) = Host::new();
 
-    let (stream, device_started) = match engine_device::run_host_stream(None, output, cue_output) {
-        Ok(stream) => {
-            let info = stream.info();
-            // Non-RT setup logging only; the RT callback itself logs nothing.
-            println!(
-                "lsdj-app: audio device started — device='{}' channels={} rate={} buffer={:?}",
-                info.device_name, info.device_channels, info.sample_rate, info.buffer_frames
-            );
-            (Some(stream), true)
-        }
-        Err(DeviceError::Unavailable(msg)) => {
-            // Expected in a sandbox / headless CI: no exact-48000/f32 device. Log
-            // and continue with no stream — the host renders into the ring, the
-            // window opens, control/read-back work.
-            eprintln!("lsdj-app: audio device unavailable ({msg}) — continuing without audio");
-            (None, false)
-        }
-        Err(DeviceError::Stream(msg)) => {
-            eprintln!("lsdj-app: audio stream error ({msg}) — continuing without audio");
-            (None, false)
-        }
-    };
+    // Start combined on the default device: master → 1/2 and cue → 3/4 if the
+    // device is ≥4-channel (the FLX4), exactly as before. A separate cue device is
+    // opted into later via `set_cue_device`. These are the ORIGINAL ring consumers
+    // matching the render thread's producers, so no ring install is needed yet.
+    let (main_stream, device_started) =
+        match engine_device::open_main_stream(None, master, Some(cue)) {
+            Ok(stream) => {
+                let info = stream.info();
+                // Non-RT setup logging only; the RT callback itself logs nothing.
+                println!(
+                    "lsdj-app: audio device started — device='{}' channels={} rate={} buffer={:?}",
+                    info.device_name, info.device_channels, info.sample_rate, info.buffer_frames
+                );
+                (Some(stream), true)
+            }
+            Err(DeviceError::Unavailable(msg)) => {
+                // Expected in a sandbox / headless CI: no exact-48000/f32 device.
+                // Log and continue with no stream — the host renders into the ring,
+                // the window opens, control/read-back work.
+                eprintln!("lsdj-app: audio device unavailable ({msg}) — continuing without audio");
+                (None, false)
+            }
+            Err(DeviceError::Stream(msg)) => {
+                eprintln!("lsdj-app: audio stream error ({msg}) — continuing without audio");
+                (None, false)
+            }
+        };
 
     let state = AudioState {
-        stream: Mutex::new(stream),
+        main_stream: Mutex::new(main_stream),
+        cue_stream: Mutex::new(None),
         device_started,
+        main_name: Mutex::new(String::new()),
+        cue_name: Mutex::new(String::new()),
     };
     (host, state, deck_handles)
 }
@@ -211,36 +236,128 @@ fn list_output_devices() -> Vec<OutputDeviceDto> {
         .collect()
 }
 
-/// Switch the output device by name (an EMPTY name means the system default — the
-/// picker's "System default" option). Opens the NEW device stream FIRST (on fresh
-/// rings); only on success swaps the render thread onto them and drops the old
-/// stream — so a device that fails to open leaves the current audio untouched and
-/// returns the error to the webview.
+/// The webview message for a switch that could not land because the engine's
+/// command queue was momentarily full — the caller keeps the old stream and the
+/// UI invites a retry.
+const ENGINE_BUSY: &str = "the audio engine was momentarily busy — try switching again";
+
+/// True when the cue device choice means "ride the main device" (combined mode):
+/// an empty cue name ("same as main") or one equal to the main device.
+fn is_combined(main_name: &str, cue_name: &str) -> bool {
+    cue_name.is_empty() || cue_name == main_name
+}
+
+/// Convert a stored device name into the `open_*` selector (empty → the system
+/// default `None`).
+fn selector(name: &str) -> Option<&str> {
+    (!name.is_empty()).then_some(name)
+}
+
+/// (Re)open the MAIN stream for the given device choices. In combined mode the cue
+/// rides the main device's channels 3/4 (and any split cue stream is dropped); in
+/// split mode the main stream is master-only and the existing cue stream is left
+/// running. Opens the new device FIRST and only swaps the render thread's ring(s)
+/// on success, so a failed open leaves current audio untouched. Briefly gaps the
+/// master (you are changing the master device, or moving the cue onto it).
+fn reopen_main(
+    host: &Host,
+    audio: &AudioState,
+    main_name: &str,
+    cue_name: &str,
+) -> Result<(), String> {
+    let combined = is_combined(main_name, cue_name);
+    let (master_ring, master_consumer) = host.new_master_ring();
+    // In combined mode build a fresh cue ring too, so the cue rides the main
+    // device's 3/4; `open_main_stream` drops it if the device is < 4 channels.
+    let (cue_ring, cue_consumer) = if combined {
+        let (ring, consumer) = host.new_cue_ring();
+        (Some(ring), Some(consumer))
+    } else {
+        (None, None)
+    };
+    let stream = engine_device::open_main_stream(selector(main_name), master_consumer, cue_consumer)
+        .map_err(|e| e.to_string())?;
+    if !host.install_master_ring(master_ring) {
+        return Err(ENGINE_BUSY.into());
+    }
+    if let Some(cue_ring) = cue_ring {
+        // Combined: the cue now rides the main stream's 3/4 — install its ring
+        // (best-effort; the cue is secondary) and drop any split cue stream.
+        host.install_cue_ring(cue_ring);
+        *audio.cue_stream.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+    let info = stream.info();
+    println!(
+        "lsdj-app: main output switched — device='{}' channels={} combined_cue={combined}",
+        info.device_name, info.device_channels
+    );
+    *audio.main_stream.lock().unwrap_or_else(|p| p.into_inner()) = Some(stream);
+    Ok(())
+}
+
+/// (Re)open the SPLIT cue stream on its own device, leaving the main stream (and
+/// the master ring) completely untouched — the property that lets a cue-device
+/// switch never interrupt the audience's master.
+fn reopen_cue_split(host: &Host, audio: &AudioState, cue_name: &str) -> Result<(), String> {
+    let (cue_ring, cue_consumer) = host.new_cue_ring();
+    let stream =
+        engine_device::open_cue_stream(selector(cue_name), cue_consumer).map_err(|e| e.to_string())?;
+    if !host.install_cue_ring(cue_ring) {
+        return Err(ENGINE_BUSY.into());
+    }
+    let info = stream.info();
+    println!(
+        "lsdj-app: cue output switched — device='{}' channels={}",
+        info.device_name, info.device_channels
+    );
+    *audio.cue_stream.lock().unwrap_or_else(|p| p.into_inner()) = Some(stream);
+    Ok(())
+}
+
+/// Switch the MAIN output device by name (EMPTY = the system default). Rebuilds
+/// the main stream (carrying the cue on 3/4 if the current cue choice is
+/// combined); a split cue stream keeps playing on its own device, undisturbed.
 #[tauri::command]
-fn set_output_device(
+fn set_main_device(
     host: tauri::State<'_, Host>,
     audio: tauri::State<'_, AudioState>,
     name: String,
 ) -> Result<(), String> {
-    // Empty → the default device (`None`), so "System default" reopens it rather
-    // than erroring on an empty name miss.
-    let selected = (!name.is_empty()).then_some(name.as_str());
-    let (rings, output, cue_output) = host.new_output_rings();
-    let stream =
-        engine_device::run_host_stream(selected, output, cue_output).map_err(|e| e.to_string())?;
-    // The new device is open; re-point the render thread onto its rings. Only on
-    // success do we drop the old stream below — if the command queue was full the
-    // swap did not land, so keep the old stream (still being filled) and drop the
-    // new one (returned by the `?`-less early return) rather than going silent.
-    if !host.install_output_rings(rings) {
-        return Err("the audio engine was momentarily busy — try switching again".into());
+    let cue_name = audio.cue_name.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    reopen_main(&host, &audio, &name, &cue_name)?;
+    *audio.main_name.lock().unwrap_or_else(|p| p.into_inner()) = name;
+    Ok(())
+}
+
+/// Switch the CUE output device by name (EMPTY = "same as main" → combined, the
+/// FLX4 phones jack on channels 3/4). A split→split change touches ONLY the cue
+/// stream (the master is never interrupted); transitions into or out of combined
+/// also reopen the main stream (a brief master gap, the rarer case).
+#[tauri::command]
+fn set_cue_device(
+    host: tauri::State<'_, Host>,
+    audio: tauri::State<'_, AudioState>,
+    name: String,
+) -> Result<(), String> {
+    let main_name = audio.main_name.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let was_combined = {
+        let cue_name = audio.cue_name.lock().unwrap_or_else(|p| p.into_inner());
+        is_combined(&main_name, &cue_name)
+    };
+    if is_combined(&main_name, &name) {
+        // Cue rides the main device's 3/4: reopen main with cue duty (it also drops
+        // any split cue stream).
+        reopen_main(&host, &audio, &main_name, &name)?;
+    } else {
+        // Split: open/replace the cue stream first (so the cue never drops out),
+        // then — only when leaving combined — reopen the main stream master-only so
+        // the cue isn't also duplicated on its 3/4.
+        reopen_cue_split(&host, &audio, &name)?;
+        if was_combined {
+            reopen_main(&host, &audio, &main_name, &name)?;
+        }
     }
-    let info = stream.info();
-    println!(
-        "lsdj-app: output device switched — device='{}' channels={}",
-        info.device_name, info.device_channels
-    );
-    *audio.stream.lock().unwrap_or_else(|p| p.into_inner()) = Some(stream);
+    *audio.cue_name.lock().unwrap_or_else(|p| p.into_inner()) = name;
     Ok(())
 }
 
@@ -291,7 +408,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_info,
             list_output_devices,
-            set_output_device,
+            set_main_device,
+            set_cue_device,
             commands::set_crossfade,
             commands::set_eq,
             commands::set_volume,
