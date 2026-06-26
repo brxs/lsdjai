@@ -88,9 +88,11 @@ cluster them), and ride the crossfader between decks.
   reduction shows in the mixer) and per-channel auto-gain Trim that
   levels decks of different loudness, with a manual override.
 - **Headphone cue** — hit a channel's **Cue**, ride the **Cue mix** knob
-  between cue and master, and pick a **Phones out**: an output device the Rust
-  engine can reach, or the FLX4's own headphone jack
-  ([ADR-0007](docs/adr/0007-flx4-phones-jack-via-a-backend-cue-sink.md)).
+  between cue and master, and route **Main output** and **Cue output** to
+  independent devices: the cue can ride the FLX4's own headphone jack
+  (channels 3/4 of the one device) or play out any second output — the laptop
+  jack, Bluetooth headphones, a second interface
+  ([ADR-0021](docs/adr/0021-split-master-and-cue-to-independent-output-devices.md)).
 
 Settings (pad arrangements, volumes, crossfade) persist across reloads.
 Shortcuts: `A`/`B` focus a deck's style-target input, `X` focuses the
