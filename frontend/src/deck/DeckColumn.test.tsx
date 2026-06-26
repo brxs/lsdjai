@@ -17,6 +17,7 @@ const noop = () => {}
 const emptyLoop = (): LoopState => ({
   slots: Array.from({ length: 4 }, () => ({ state: 'empty' })),
   active: null,
+  layering: [],
   seconds: 4,
 })
 
@@ -1223,7 +1224,7 @@ describe('DeckColumn', () => {
       {
         ...emptyLoop(),
         slots: [
-          { state: 'filled', label: null, oneShot: false },
+          { state: 'filled', label: null, oneShot: false, layer: false },
           { state: 'empty' },
           { state: 'empty' },
           { state: 'empty' },
@@ -1320,6 +1321,7 @@ describe('DeckColumn', () => {
         state: 'filled',
         label: null,
         oneShot: false,
+        layer: false,
       })),
     }
     generateRow({}, fullSlots)
@@ -1351,7 +1353,7 @@ describe('DeckColumn', () => {
     const generated: LoopState = {
       ...emptyLoop(),
       slots: [
-        { state: 'filled', label: 'air horn', oneShot: true },
+        { state: 'filled', label: 'air horn', oneShot: true, layer: false },
         { state: 'empty' },
         { state: 'empty' },
         { state: 'empty' },

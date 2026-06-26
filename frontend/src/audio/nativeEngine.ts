@@ -83,6 +83,45 @@ export function invoke<T = void>(cmd: string, args?: unknown, options?: unknown)
   return g.core.invoke<T>(cmd, args, options)
 }
 
+/** Minimal shape of the Tauri event API we use (`event.listen`). */
+type TauriEventApi = {
+  listen: (
+    event: string,
+    handler: (e: { payload: unknown }) => void,
+  ) => Promise<() => void>
+}
+
+/** The library a `library://changed` event names (Rust `watcher::LibraryChanged`). */
+export type LibraryKind = 'songs' | 'samples'
+
+/** Subscribe to the Rust folder watcher's `library://changed` event (ADR-0022): the
+ * named library's folder changed out-of-band — a deck auto-saved a sample, a file
+ * was dropped in or deleted by hand — so the matching Media Explorer tab should
+ * re-list. Returns an unsubscribe fn (safe to call before the async `listen`
+ * resolves). A no-op outside Tauri or without the event bridge (so tests that stub
+ * only `core` are unaffected). */
+export function subscribeLibraryChanged(
+  onChange: (library: LibraryKind) => void,
+): () => void {
+  const ev = (globalThis as { __TAURI__?: { event?: TauriEventApi } }).__TAURI__?.event
+  if (!ev) return () => {}
+  let unlisten: (() => void) | null = null
+  let cancelled = false
+  void ev
+    .listen('library://changed', (e) => {
+      const library = (e.payload as { library?: LibraryKind }).library
+      if (library === 'songs' || library === 'samples') onChange(library)
+    })
+    .then((un) => {
+      if (cancelled) un()
+      else unlisten = un
+    })
+  return () => {
+    cancelled = true
+    unlisten?.()
+  }
+}
+
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }
 
 /** Map the TS `FxKind` (snake) to the Rust `FxKindArg` (camel, serde). */
@@ -136,6 +175,19 @@ function framePayload(prefix: number[], pcm: Float32Array): Uint8Array {
   out.set(header, 0)
   out.set(body, header.length)
   return out
+}
+
+/** Frame a save payload for the songs/samples libraries: `[u32 LE meta-JSON
+ * byte-length][meta JSON utf-8][WAV bytes]`. A JSON args map would be MBs of text for
+ * a multi-MB WAV, so the bytes ride a single binary-IPC arg. Shared by every
+ * `save_generated_*` caller (the song/sample compose paths and the deck channel). */
+export function encodeMetaFrame(meta: object, wav: ArrayBuffer): Uint8Array {
+  const metaBytes = new TextEncoder().encode(JSON.stringify(meta))
+  const payload = new Uint8Array(4 + metaBytes.length + wav.byteLength)
+  new DataView(payload.buffer).setUint32(0, metaBytes.length, true)
+  payload.set(metaBytes, 4)
+  payload.set(new Uint8Array(wav), 4 + metaBytes.length)
+  return payload
 }
 
 /** Decode + resample a WAV to 48 kHz: an `OfflineAudioContext` at the engine rate
@@ -364,18 +416,29 @@ export function createNativeEngine(): AudioEngine {
         )
       },
       // Synchronous boolean from the cached slot state (false iff empty — exactly
-      // the engine's own false condition).
-      playLoop: (slot) => {
+      // the engine's own false condition). `layer` chooses replace vs sum-on-top
+      // (ADR-0022); the engine ignores it for a one-shot buffer.
+      playLoop: (slot, layer) => {
         const filled = snapshot?.loops[deck]?.[slot]?.filled ?? false
-        if (filled) send('play_loop', { deck, slot })
+        if (filled) send('play_loop', { deck, slot, layer })
         return filled
       },
       stopLoop: () => send('stop_loop', { deck }),
+      stopLayer: (slot) => send('stop_layer', { deck, slot }),
       stopOneShot: () => send('stop_one_shot', { deck }),
       clearLoop: (slot) => send('clear_loop', { deck, slot }),
       captureSample: async (seconds) => {
         const samples = await invoke<number[] | null>('capture_sample', { deck, seconds })
         return samples ? Float32Array.from(samples) : null
+      },
+      saveLoopSlot: async (slot, meta) => {
+        // A freeze's audio lives only in the engine slot, so the shell reads the
+        // exact stored buffer for this deck/slot and persists it — no PCM crosses
+        // the boundary here, just the slot coordinates and metadata.
+        await invoke('save_loop_slot', { deck, slot, meta })
+      },
+      saveGeneratedSample: async (wav, meta) => {
+        await invoke('save_generated_sample', encodeMetaFrame(meta, wav))
       },
       loadTrack: async (wav) => {
         const buf = await decodeTo48k(wav)

@@ -46,6 +46,12 @@ tauri-plugin-opener = "2"
 # Move a deleted song to the OS Trash (recoverable) instead of an unrecoverable
 # unlink, for the take list's ✕ (delete_generated_song). Reputable, cross-platform.
 trash = "5"
+# Watch the generated_songs / generated_samples folders so the Media Explorer tabs
+# live-reload on a change (a deck auto-saving a sample, a hand-drop/-delete). The
+# de-facto Rust FS-watch crate (also what tauri-plugin-fs uses); cross-platform,
+# widely maintained. Rust owns the watch + emits an event — the webview gets no fs
+# access (ADR-0022).
+notify = "6"
 # The audio engine as a workspace member (the cpal device + RT-safe mix core).
 lsdj-engine = { path = "engine" }
 serde = { version = "1", features = ["derive"] }

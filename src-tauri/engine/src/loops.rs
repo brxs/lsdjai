@@ -8,15 +8,21 @@
 //! no-ops (track-buffer slicing is a parked Later idea, ADR-0013), and the Engine
 //! gates them on the deck being Realtime.
 //!
-//! # Where the loop plays (ADR-0009)
+//! # Where the loop plays (ADR-0009, ADR-0022)
 //!
-//! A freeze loop plays **at the channel head**, behind a live/loop gain pair: when
-//! a loop is on, the deck's output IS the loop while the live ring keeps being fed
+//! A **freeze** loop plays **at the channel head**, REPLACING the live stream: when
+//! a freeze is on, the deck's output IS the loop while the live ring keeps being fed
 //! and drained underneath (so the played history advances and the model can be
-//! re-steered). Returning to live is seamless — the stream never stopped. Here the
-//! gain pair is a plain branch in `render`: a deck with an active loop reads the
-//! loop's frame instead of the ring's, but still pops the ring so history advances.
-//! One-shots overlay (sum) on top of the live/loop output and end themselves.
+//! re-steered). Returning to live is seamless — the stream never stopped. This is a
+//! plain branch in `render`: a deck with an active freeze reads the loop's frame
+//! instead of the ring's, but still pops the ring so history advances.
+//!
+//! A **loaded sample** loop instead LAYERS (ADR-0022): it is summed on top of the
+//! base (the live stream, or the active freeze), and several can stack at once — a
+//! loaded riff plays *over* the deck rather than replacing it. One-shots likewise
+//! overlay (sum) on top and end themselves. Whether a loop replaces or layers is the
+//! caller's choice (`play`'s `layer` flag), set by the shell from the slot's
+//! provenance (a freeze capture vs a Samples-tab load).
 //!
 //! # Seamless loops by construction (ADR-0009)
 //!
@@ -120,10 +126,15 @@ struct LoopBuffer {
 pub(crate) struct LoopBank {
     /// The four slots; `None` is empty.
     slots: [Option<LoopBuffer>; LOOP_SLOT_COUNT],
-    /// The active loop's buffer source, replacing the live stream while present.
-    /// Index of the slot it came from is tracked so status reports which slot is
-    /// playing.
+    /// The active loop's buffer source, REPLACING the live stream while present (the
+    /// freeze "hold a moment and re-steer" path, ADR-0009). Index of the slot it came
+    /// from is tracked so status reports which slot is playing. One at a time.
     active: Option<(usize, BufferSource)>,
+    /// Stacked LAYER loops, each SUMMED on top of the base (live or the active freeze)
+    /// — the loaded-sample path (ADR-0022): a loop loaded from the Samples tab plays
+    /// over the deck rather than replacing it, and several can stack. One source per
+    /// slot (re-loading a slot replaces its layer); kept in press order.
+    layers: Vec<(usize, BufferSource)>,
     /// The one ringing one-shot, overlaid on top of the live/loop output. One at a
     /// time: a re-fire cuts the previous (the per-pad mono convention of hardware
     /// samplers).
@@ -135,6 +146,7 @@ impl LoopBank {
         LoopBank {
             slots: Default::default(),
             active: None,
+            layers: Vec::new(),
             one_shot: None,
         }
     }
@@ -195,9 +207,12 @@ impl LoopBank {
     }
 
     /// Play `slot` (`playLoop` in `engine.ts`). A one-shot overlays and ends itself
-    /// (a re-fire cuts the previous); a loop replaces the live stream (the prior
-    /// active loop, if any, is cut). Returns `false` if the slot is empty. Non-RT.
-    pub(crate) fn play(&mut self, slot: usize) -> bool {
+    /// (a re-fire cuts the previous). A loop either REPLACES the live stream (a freeze,
+    /// `layer = false`: the prior active loop is cut) or LAYERS on top of it (a loaded
+    /// sample, `layer = true`: summed, stacking with any other layers — a re-press of
+    /// the same slot restarts its layer). Returns `false` if the slot is empty or a
+    /// loop is too short to install. Non-RT.
+    pub(crate) fn play(&mut self, slot: usize, layer: bool) -> bool {
         let Some(buffer) = self.slots.get(slot).and_then(|b| b.as_ref()) else {
             return false;
         };
@@ -207,18 +222,25 @@ impl LoopBank {
             // Overlay: sum on top of whatever is playing, end itself. A re-fire
             // cuts the previous (the sampler's per-pad mono convention).
             self.one_shot = Some(source);
+            return true;
+        }
+        // A whole-buffer loop: fold over `[0, len)` continuously. set_loop runs the
+        // same planner the track loop uses; a whole-buffer region at the top installs
+        // cleanly (playing, inside → reanchor at 0).
+        let len = source.status().duration_frames;
+        source.set_loop(0, len);
+        // If the buffer was too short to install a loop region, don't pretend it is
+        // playing (a lying LED + silence after one pass). The load guard prevents this
+        // in normal flow; this keeps `is_playing` truthful anyway.
+        if source.status().loop_region.is_none() {
+            return false;
+        }
+        if layer {
+            // Layer: sum on top of the base, stacking. A re-press of the same slot
+            // restarts it (drop the old source first so it never doubles).
+            self.layers.retain(|(s, _)| *s != slot);
+            self.layers.push((slot, source));
         } else {
-            // A whole-buffer loop: fold over `[0, len)` continuously. set_loop runs
-            // the same planner the track loop uses; a whole-buffer region at the top
-            // installs cleanly (playing, inside → reanchor at 0).
-            let len = source.status().duration_frames;
-            source.set_loop(0, len);
-            // If the buffer was too short to install a loop region, don't pretend it
-            // is playing (a lying LED + silence after one pass). The load guard
-            // prevents this in normal flow; this keeps `is_playing` truthful anyway.
-            if source.status().loop_region.is_none() {
-                return false;
-            }
             // Replace the live stream; the prior active loop is dropped (a hard cut,
             // the sampler convention — only the live↔loop handover is ramped in the
             // shell, and that ramp is the gain pair, not the source).
@@ -227,10 +249,18 @@ impl LoopBank {
         true
     }
 
-    /// Stop the active loop (`stopLoop` in `engine.ts`): back to live. A no-op when
-    /// no loop is active. Non-RT.
+    /// Stop the active (REPLACING) loop (`stopLoop` in `engine.ts`): back to the base
+    /// (live, or whatever layers are summed on it). Layers are left untouched — they
+    /// are independent of the freeze. A no-op when no loop is active. Non-RT.
     pub(crate) fn stop(&mut self) {
         self.active = None;
+    }
+
+    /// Stop a single LAYER (`stopLayer` in `engine.ts`): the loaded-sample loop in
+    /// `slot` stops summing; its buffer stays in the slot for a re-press. A no-op when
+    /// the slot isn't layering. Non-RT.
+    pub(crate) fn stop_layer(&mut self, slot: usize) {
+        self.layers.retain(|(s, _)| *s != slot);
     }
 
     /// Stop the ringing one-shot (`stopOneShot` in `engine.ts`). Non-RT.
@@ -249,6 +279,8 @@ impl LoopBank {
         if matches!(self.active, Some((active_slot, _)) if active_slot == slot) {
             self.active = None;
         }
+        // A cleared slot can no longer be replayed, so drop any layer it is feeding.
+        self.layers.retain(|(s, _)| *s != slot);
     }
 
     /// Whether `slot` holds a buffer.
@@ -256,22 +288,39 @@ impl LoopBank {
         self.slots.get(slot).map(|b| b.is_some()).unwrap_or(false)
     }
 
-    /// Whether `slot` is the active (replacing) loop.
+    /// Whether `slot` is sounding — the active (replacing) freeze OR a stacked layer.
     pub(crate) fn is_playing(&self, slot: usize) -> bool {
         matches!(self.active, Some((active_slot, _)) if active_slot == slot)
+            || self.layers.iter().any(|(s, _)| *s == slot)
     }
 
-    /// **RT path.** Combine the live/loop output with any ringing one-shot for one
-    /// output frame. `live` is the deck's underlying frame (the ring or track
-    /// frame). When a loop is active the loop frame REPLACES `live`; a one-shot is
-    /// always SUMMED on top. Only ticks pre-built buffer sources — no alloc, no
-    /// lock, no syscall.
+    /// A clone of `slot`'s stored interleaved-stereo buffer, for persisting a
+    /// captured freeze / loaded pad to the generated-samples library — the audio
+    /// exactly as it replays (a loop is already seam-folded). `None` for an empty or
+    /// out-of-range slot. Non-RT (the clone allocates off the RT path).
+    pub(crate) fn slot_samples(&self, slot: usize) -> Option<Vec<f32>> {
+        self.slots
+            .get(slot)
+            .and_then(|b| b.as_ref())
+            .map(|b| b.samples.clone())
+    }
+
+    /// **RT path.** Combine the base output with any stacked layers and a ringing
+    /// one-shot for one output frame. `live` is the deck's underlying frame (the ring
+    /// or track frame). The base is the active (replacing) freeze loop if present, else
+    /// `live`; each LAYER (a loaded sample, ADR-0022) and the one-shot are SUMMED on
+    /// top of it. Only ticks pre-built buffer sources — no alloc, no lock, no syscall.
     #[inline]
     pub(crate) fn mix_frame(&mut self, live: (f32, f32)) -> (f32, f32) {
         let (mut l, mut r) = match self.active.as_mut() {
             Some((_, source)) => source.pop_frame(),
             None => live,
         };
+        for (_, source) in self.layers.iter_mut() {
+            let (ll, lr) = source.pop_frame();
+            l += ll;
+            r += lr;
+        }
         if let Some(source) = self.one_shot.as_mut() {
             let (ol, or) = source.pop_frame();
             l += ol;
@@ -365,6 +414,62 @@ mod tests {
         // A long-enough loop loads, plays, and reports `playing` truthfully.
         let long = vec![0.5f32; (MIN_LOOP_FRAMES + LOOP_CROSSFADE_FRAMES) * SAMPLES_PER_FRAME];
         assert!(bank.load_generated(1, long, false));
-        assert!(bank.play(1) && bank.is_playing(1), "a valid loop plays + reports playing");
+        assert!(bank.play(1, false) && bank.is_playing(1), "a valid loop plays + reports playing");
+    }
+
+    /// A constant-valued loop buffer that folds to itself (the seam blend of a
+    /// constant is the constant) and is long enough to install a loop region.
+    fn flat_loop(value: f32) -> Vec<f32> {
+        interleave_channels(&vec![value; SAMPLE_RATE as usize], &vec![value; SAMPLE_RATE as usize])
+    }
+
+    #[test]
+    fn a_layer_sums_over_live_and_stacks_independently() {
+        let mut bank = LoopBank::new();
+        assert!(bank.load_generated(0, flat_loop(0.1), false));
+        assert!(bank.load_generated(1, flat_loop(0.2), false));
+
+        // No layer yet: live passes through untouched.
+        assert_eq!(bank.mix_frame((1.0, 1.0)), (1.0, 1.0));
+
+        // Layer slot 0: SUMMED on top of live (not replacing it), and reported playing.
+        assert!(bank.play(0, true));
+        assert!(bank.is_playing(0));
+        assert!(bank.active.is_none(), "a layer never becomes the replacing loop");
+        let (l, _) = bank.mix_frame((1.0, 1.0));
+        assert!((l - 1.1).abs() < 1e-6, "layer sums over live, got {l}");
+
+        // Stack slot 1: both layers sum.
+        assert!(bank.play(1, true));
+        let (l, _) = bank.mix_frame((1.0, 1.0));
+        assert!((l - 1.3).abs() < 1e-6, "stacked layers both sum, got {l}");
+
+        // Stop only layer 0: slot 1 keeps summing.
+        bank.stop_layer(0);
+        assert!(!bank.is_playing(0));
+        let (l, _) = bank.mix_frame((1.0, 1.0));
+        assert!((l - 1.2).abs() < 1e-6, "stopping one layer keeps the other, got {l}");
+    }
+
+    #[test]
+    fn an_active_freeze_is_the_base_that_layers_sum_onto() {
+        let mut bank = LoopBank::new();
+        assert!(bank.load_generated(0, flat_loop(0.4), false)); // played as a replace
+        assert!(bank.load_generated(1, flat_loop(0.1), false)); // played as a layer
+
+        // Replace with slot 0 (a freeze): the base is the loop, not live.
+        assert!(bank.play(0, false));
+        let (l, _) = bank.mix_frame((1.0, 1.0));
+        assert!((l - 0.4).abs() < 1e-6, "a replace loop is the base, got {l}");
+
+        // Layer slot 1 on top: summed onto the freeze base, not onto live.
+        assert!(bank.play(1, true));
+        let (l, _) = bank.mix_frame((1.0, 1.0));
+        assert!((l - 0.5).abs() < 1e-6, "the layer sums onto the freeze base, got {l}");
+
+        // Returning the freeze to live leaves the layer summing over live.
+        bank.stop();
+        let (l, _) = bank.mix_frame((1.0, 1.0));
+        assert!((l - 1.1).abs() < 1e-6, "stopping the freeze leaves the layer over live, got {l}");
     }
 }

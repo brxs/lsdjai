@@ -37,6 +37,7 @@
     "tabs": {
       "crates": "Crates",
       "generate": "Generate",
+      "samples": "Samples",
       "folder": "Folder"
     },
     "live": "Live stream",
@@ -67,6 +68,20 @@
       "openFolderFailed": "Couldn't open the songs folder: {{message}}",
       "deleteFailed": "Couldn't delete {{title}}: {{message}}",
       "empty": "No tracks yet — compose one from a prompt."
+    },
+    "samples": {
+      "prompt": "Loop prompt",
+      "openFolder": "Open samples folder",
+      "loop": "Loop",
+      "oneShot": "One-shot",
+      "playbackMode": "Toggle loop or one-shot",
+      "freeze": "Freeze",
+      "empty": "No samples yet — compose a loop, or freeze one on a deck.",
+      "failed": "Sample generation failed: {{message}}",
+      "saveFailed": "Couldn't save {{title}} to the samples folder: {{message}}",
+      "openFolderFailed": "Couldn't open the samples folder: {{message}}",
+      "deleteFailed": "Couldn't delete {{title}}: {{message}}",
+      "loadFailed": "{{title}} couldn't be loaded into a slot"
     },
     "folder": {
       "choose": "Choose folder",

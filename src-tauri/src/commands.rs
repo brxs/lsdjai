@@ -24,12 +24,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use lsdj_engine::host::{Health, Host};
 use lsdj_engine::{
-    EqBand, FxKind, LoopRegion, LoopSlotStatus, TrackStatus, DECK_COUNT, LOOP_SLOT_COUNT,
+    EqBand, FxKind, LoopRegion, LoopSlotStatus, TrackStatus, CHANNELS, DECK_COUNT, LOOP_SLOT_COUNT,
+    SAMPLE_RATE,
 };
 
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri_plugin_opener::OpenerExt;
 
+use crate::samples::{NewSample, SampleEntry, SampleLibrary};
 use crate::sidecar::{PcmTaps, Sidecars};
 use crate::songs::{NewSong, SongEntry, SongLibrary};
 
@@ -476,6 +478,127 @@ pub fn open_songs_folder(
         .map_err(|e| format!("cannot open songs folder: {e}"))
 }
 
+// --- Generated samples (short loops): the SampleLibrary counterpart of the songs
+// commands above (ADR-0022). Same binary-IPC save/read shapes; the registry carries
+// the extra `oneShot` reload needs.
+
+/// The generated-samples list, reconciled against the folder. The webview calls this
+/// at startup and when the Samples tab opens (a deck auto-saves out-of-band, so a
+/// re-list surfaces a freeze/pad made since).
+#[tauri::command]
+pub async fn list_generated_samples(
+    library: tauri::State<'_, SampleLibrary>,
+) -> Result<Vec<SampleEntry>, String> {
+    library.list()
+}
+
+/// Persist a sample whose WAV the webview already holds (a deck generated pad's
+/// backend response, or a Samples-tab composition) and return its registry entry.
+/// Same binary frame as [`save_generated_song`]: `[u32 LE meta-JSON byte-length]
+/// [meta JSON utf-8][WAV bytes]`. The untrusted title is sanitised to one filename
+/// component inside [`SampleLibrary::record`].
+#[tauri::command]
+pub async fn save_generated_sample(
+    library: tauri::State<'_, SampleLibrary>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<SampleEntry, String> {
+    let payload = raw_payload(&request)?;
+    let meta_len = read_u32_le(payload, 0).ok_or("save payload too short")? as usize;
+    let meta_end = 4 + meta_len;
+    let meta_bytes = payload.get(4..meta_end).ok_or("save payload meta truncated")?;
+    let meta: NewSample =
+        serde_json::from_slice(meta_bytes).map_err(|e| format!("bad sample metadata: {e}"))?;
+    library.record(meta, &payload[meta_end..])
+}
+
+/// Read one persisted sample's bytes back as binary, scoped to the samples folder
+/// (the webview supplies only the plain filename), for reloading into a deck slot.
+#[tauri::command]
+pub async fn read_generated_sample(
+    library: tauri::State<'_, SampleLibrary>,
+    name: String,
+) -> Result<tauri::ipc::Response, String> {
+    library.read(&name).map(tauri::ipc::Response::new)
+}
+
+/// Delete a persisted sample: move it to the OS Trash and drop it from the registry.
+#[tauri::command]
+pub async fn delete_generated_sample(
+    library: tauri::State<'_, SampleLibrary>,
+    name: String,
+) -> Result<(), String> {
+    library.remove(&name)
+}
+
+/// Open the generated-samples folder in the OS file manager (driven from Rust, no
+/// opener capability granted to the webview), creating it first.
+#[tauri::command]
+pub fn open_samples_folder(
+    library: tauri::State<'_, SampleLibrary>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let dir = library.dir();
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create samples folder: {e}"))?;
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("cannot open samples folder: {e}"))
+}
+
+/// Persist a deck freeze capture to the samples library. Unlike a generated pad, a
+/// freeze's audio lives ONLY in the engine slot (the webview never holds its WAV), so
+/// this reads the EXACT stored slot buffer through the engine — any loop length, no
+/// drift — encodes it as a float32 WAV, and records it. An empty slot or bad
+/// deck/slot is an `Err` the webview surfaces. Blocks briefly on the engine
+/// round-trip + write, like [`capture_sample`].
+#[tauri::command]
+pub fn save_loop_slot(
+    state: tauri::State<'_, Host>,
+    library: tauri::State<'_, SampleLibrary>,
+    deck: usize,
+    slot: usize,
+    meta: NewSample,
+) -> Result<SampleEntry, String> {
+    if !valid_deck(deck) || !valid_slot(slot) {
+        return Err("invalid deck or slot".to_string());
+    }
+    let samples = state
+        .read_loop_slot(deck, slot)
+        .ok_or("the loop slot is empty")?;
+    library.record(meta, &encode_wav_f32(&samples))
+}
+
+/// Encode interleaved-stereo f32 samples as a 48 kHz IEEE-float WAV (`WAVE_FORMAT_
+/// IEEE_FLOAT`, the same shape the backend's `float32_wav` produces and the webview's
+/// `decodeAudioData` reads). A minimal float PCM WAV writer, mirroring the recorder's
+/// int16 [`encode_wav_i16`](lsdj_engine) but lossless for a loop's f32 buffer.
+fn encode_wav_f32(samples: &[f32]) -> Vec<u8> {
+    let channels = CHANNELS as u32;
+    let sample_rate = SAMPLE_RATE;
+    let bits = 32u32;
+    let byte_rate = sample_rate * channels * bits / 8;
+    let block_align = (channels * bits / 8) as u16;
+    let data_len = (samples.len() * 4) as u32;
+
+    let mut wav = Vec::with_capacity(44 + samples.len() * 4);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVE");
+    wav.extend_from_slice(b"fmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
+    wav.extend_from_slice(&3u16.to_le_bytes()); // WAVE_FORMAT_IEEE_FLOAT
+    wav.extend_from_slice(&(channels as u16).to_le_bytes());
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    wav.extend_from_slice(&byte_rate.to_le_bytes());
+    wav.extend_from_slice(&block_align.to_le_bytes());
+    wav.extend_from_slice(&(bits as u16).to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    for &s in samples {
+        wav.extend_from_slice(&s.to_le_bytes());
+    }
+    wav
+}
+
 /// Load a decoded track onto a deck, switching it to Playback. The payload is a
 /// little-endian `u32` deck index followed by interleaved-stereo f32 @ 48 kHz
 /// (the webview decodes + resamples a WAV and ships the bytes). Sent over Tauri's
@@ -561,10 +684,13 @@ pub fn capture_loop(state: tauri::State<'_, Host>, deck: usize, slot: usize, sec
     }
 }
 
+/// Play a loop slot. `layer = false` REPLACES the live stream (a freeze, ADR-0009);
+/// `layer = true` SUMS the loop on top, stacking with other layers (a loaded sample,
+/// ADR-0022). The shell picks `layer` from the slot's provenance.
 #[tauri::command]
-pub fn play_loop(state: tauri::State<'_, Host>, deck: usize, slot: usize) {
+pub fn play_loop(state: tauri::State<'_, Host>, deck: usize, slot: usize, layer: bool) {
     if valid_deck(deck) && valid_slot(slot) {
-        state.play_loop(deck, slot);
+        state.play_loop(deck, slot, layer);
     }
 }
 
@@ -572,6 +698,15 @@ pub fn play_loop(state: tauri::State<'_, Host>, deck: usize, slot: usize) {
 pub fn stop_loop(state: tauri::State<'_, Host>, deck: usize) {
     if valid_deck(deck) {
         state.stop_loop(deck);
+    }
+}
+
+/// Stop one layered loop (a loaded sample stops summing; its buffer stays for a
+/// re-press). ADR-0022.
+#[tauri::command]
+pub fn stop_layer(state: tauri::State<'_, Host>, deck: usize, slot: usize) {
+    if valid_deck(deck) && valid_slot(slot) {
+        state.stop_layer(deck, slot);
     }
 }
 
