@@ -31,6 +31,9 @@ real devices, real clocks, real ears.
 - [ ] Master plays out the main device; the cue plays out the laptop jack.
 - [ ] Repeat with **Bluetooth headphones** as the cue device — cue is audible
       there (latency/drift aside, see below).
+- [ ] Main output = **MacBook speakers**, Cue output = **DDJ-FLX4** (the FLX4 as a
+      dedicated cue device): the cue plays out the FLX4's **headphone jack**
+      (channels 3/4), NOT its MASTER RCA (1/2). Master stays on the MacBook.
 - [ ] The cue/master **Cue mix** knob still blends master into the cue on the
       separate device.
 

@@ -236,6 +236,11 @@ fn spread_master_cue(data: &mut [f32], dev_ch: usize, master: &[f32], cue: &[f32
 /// secondary ring stays undrained (its `push_all` overflow is discarded, so the
 /// render thread never stalls). Start it and return the running stream.
 ///
+/// `primary_on_phones` flips the lone-primary placement onto channels 3/4 when the
+/// device has ≥4 channels — the FLX4 chosen as a SEPARATE cue device, whose phones
+/// jack is 3/4 (its 1/2 is the MASTER RCA). It is ignored when `secondary` is set
+/// (the combined path already owns 1/2 and 3/4) or on a stereo device.
+///
 /// The callback is the ONLY real-time path: it sets FTZ/DAZ once, drains the
 /// ring(s), and spreads into the device buffer, all under `assert_no_alloc` —
 /// trivially alloc/lock/syscall free. The [`Engine`] renders on the host's
@@ -249,6 +254,7 @@ fn open_spread_stream(
     selected: Option<&str>,
     mut primary: OutputConsumer,
     secondary: Option<OutputConsumer>,
+    primary_on_phones: bool,
 ) -> Result<AudioStream, DeviceError> {
     let (device, config, info) = open_output(selected)?;
     let device_channels = info.device_channels as usize;
@@ -257,6 +263,10 @@ fn open_spread_stream(
     // FLX4) can carry it alongside the primary. Drop it on a narrower device.
     let mut secondary = if device_channels >= 4 { secondary } else { None };
     let secondary_routed = secondary.is_some();
+    // A standalone cue stream on a ≥4-channel device (the FLX4 chosen as a SEPARATE
+    // cue device) belongs on the phones channels 3/4, not 1/2 (the FLX4's MASTER
+    // RCA). On a stereo cue device (laptop jack, Bluetooth) the cue is its 1/2.
+    let primary_to_phones = primary_on_phones && device_channels >= 4;
 
     let mut first_call = true;
     // Per-callback scratch for wide (>2ch) devices: the rings hold interleaved
@@ -301,6 +311,10 @@ fn open_spread_stream(
                                 &scratch[..usable],
                                 &secondary_scratch[..su],
                             );
+                        } else if primary_to_phones {
+                            // Cue onto channels 3/4 (the FLX4 phones jack), 1/2
+                            // silent: the combined spreader with a silent master.
+                            spread_master_cue(data, dev_ch, &[], &scratch[..usable]);
                         } else {
                             spread_stereo(data, dev_ch, &scratch[..usable]);
                         }
@@ -332,18 +346,22 @@ pub fn open_main_stream(
     master: OutputConsumer,
     cue: Option<OutputConsumer>,
 ) -> Result<AudioStream, DeviceError> {
-    open_spread_stream(main, master, cue)
+    // Master always on channels 1/2 (the FLX4's MASTER RCA when it is the main
+    // device); never on the phones channels.
+    open_spread_stream(main, master, cue, false)
 }
 
 /// Open the CUE output device (`cue_dev`, or the default when `None`) draining the
-/// cue ring onto its channels 1/2 — split mode, a second independently chosen
-/// device. Independent of the main stream, so opening / replacing it never
-/// disturbs the master.
+/// cue ring — split mode, a second independently chosen device. On a stereo cue
+/// device the cue plays out its channels 1/2 (laptop jack, Bluetooth); on a
+/// ≥4-channel cue device it plays out channels 3/4 (the FLX4 phones jack, whose
+/// 1/2 is the MASTER RCA). Independent of the main stream, so opening / replacing
+/// it never disturbs the master.
 pub fn open_cue_stream(
     cue_dev: Option<&str>,
     cue: OutputConsumer,
 ) -> Result<AudioStream, DeviceError> {
-    open_spread_stream(cue_dev, cue, None)
+    open_spread_stream(cue_dev, cue, None, true)
 }
 
 /// Open the default output device at exactly 48000/stereo/f32, build the stream
@@ -511,6 +529,18 @@ mod tests {
         let mut data = vec![9.0f32; dev_ch];
         spread_master_cue(&mut data, dev_ch, &master, &cue);
         assert_eq!(data, vec![0.1, 0.2, 0.7, 0.8, 0.0, 0.0]);
+    }
+
+    /// A silent (empty) master leaves channels 1/2 zeroed and lands the cue on
+    /// 3/4 — exactly how a split cue stream reaches the FLX4 phones jack while its
+    /// MASTER RCA (1/2) stays silent.
+    #[test]
+    fn spread_master_cue_with_silent_master_is_cue_on_3_4() {
+        let cue = [0.7, 0.8]; // one stereo frame
+        let dev_ch = 4;
+        let mut data = vec![9.0f32; dev_ch];
+        spread_master_cue(&mut data, dev_ch, &[], &cue);
+        assert_eq!(data, vec![0.0, 0.0, 0.7, 0.8]);
     }
 
     /// The master and cue blocks can run dry independently: a short cue still

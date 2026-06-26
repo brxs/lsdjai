@@ -37,8 +37,10 @@ We will run **two output streams** with a derived **dual-mode** topology:
   channels): one stream drains master → 1/2 and cue → 3/4. This is the FLX4
   one-cable path, kept bit-for-bit, and the default at startup.
 - **Split mode** (cue device = a different device): a second cpal stream opens on
-  the cue device and drains the cue ring → its channels 1/2; the main stream
-  becomes master-only.
+  the cue device and drains the cue ring → its channels 1/2 on a stereo device
+  (laptop jack, Bluetooth), or → channels **3/4** on a ≥4-channel cue device (the
+  FLX4 chosen purely as a cue device, whose phones jack is 3/4 and whose 1/2 is
+  the MASTER RCA). The main stream becomes master-only.
 
 Mode is **derived**, not a stored flag:
 `combined = (cue_name == "" || cue_name == main_name) && main_is_4ch`. The master
