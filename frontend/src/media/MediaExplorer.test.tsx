@@ -11,6 +11,12 @@ type Handlers = {
   onLoadPreset?: (deck: DeckId, preset: StylePreset) => void
   onLoadTrack?: (deck: DeckId, wav: ArrayBuffer, title: string) => Promise<boolean>
   onLoadLive?: (deck: DeckId) => void
+  onLoadSample?: (
+    deck: DeckId,
+    wav: ArrayBuffer,
+    oneShot: boolean,
+    label: string,
+  ) => Promise<boolean>
 }
 
 function renderExplorer(
@@ -27,6 +33,7 @@ function renderExplorer(
         onImportPresets={vi.fn()}
         onLoadTrack={handlers.onLoadTrack ?? vi.fn(async () => true)}
         onLoadLive={handlers.onLoadLive ?? vi.fn()}
+        onLoadSample={handlers.onLoadSample ?? vi.fn(async () => true)}
       />
     </ControlBusProvider>,
   )
@@ -49,6 +56,20 @@ async function composeTrack(name: string) {
   fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
   fireEvent.change(screen.getByLabelText('Title'), { target: { value: name } })
   fireEvent.change(screen.getByLabelText('Track prompt'), { target: { value: name } })
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Compose' }))
+  })
+}
+
+/** Compose a clip in the Samples tab. One-shot by default so the requested length is
+ * exact (a loop adds the seam surplus the engine folds on reload). */
+async function composeSampleClip(name: string, oneShot = true) {
+  fireEvent.click(screen.getByRole('tab', { name: 'Samples' }))
+  if (oneShot) {
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle loop or one-shot' }))
+  }
+  fireEvent.change(screen.getByLabelText('Title'), { target: { value: name } })
+  fireEvent.change(screen.getByLabelText('Loop prompt'), { target: { value: name } })
   await act(async () => {
     fireEvent.click(screen.getByRole('button', { name: 'Compose' }))
   })
@@ -172,31 +193,149 @@ describe('MediaExplorer', () => {
     )
   })
 
-  it('offers the small models too, with their shorter length menu', async () => {
+  it('composes a short loop in the Samples tab with the small SFX model', async () => {
+    // The small SFX/Music models compose into the samples library now (ADR-0022),
+    // not the Generate tab; their shorter length menu lives on the Samples tab.
     const fetchMock = stubFetch()
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
-    fireEvent.change(screen.getByLabelText('Engine'), {
-      target: { value: 'sfx' },
-    })
-    fireEvent.change(screen.getByLabelText('Track prompt'), {
+    fireEvent.click(screen.getByRole('tab', { name: 'Samples' }))
+    // One-shot so the requested length is exact (a loop adds the seam surplus).
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle loop or one-shot' }))
+    fireEvent.change(screen.getByLabelText('Loop prompt'), {
       target: { value: 'vinyl spinback' },
     })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Compose' }))
     })
-    // 120 s is past the small-model cap, so the length snapped down.
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/generate',
       expect.objectContaining({
         body: JSON.stringify({ prompt: 'vinyl spinback', seconds: 10, kind: 'sfx' }),
       }),
     )
+    // The row's meta shows the small-model engine (combined with the play mode).
     expect(
       screen
-        .getAllByText('SFX (SA3 small)')
+        .getAllByText('SFX (SA3 small)', { exact: false })
         .some((element) => element.classList.contains('media__meta')),
     ).toBe(true)
+  })
+
+  it('auto-saves a composed sample to the samples folder, carrying oneShot', async () => {
+    stubFetch()
+    const calls: { cmd: string; args: unknown }[] = []
+    const invoke = vi.fn(async (cmd: string, args?: unknown) => {
+      calls.push({ cmd, args })
+      if (cmd === 'list_generated_samples') return []
+      if (cmd === 'save_generated_sample') {
+        return { file: 'riff.wav', title: 'riff', prompt: 'riff', model: 'sfx', oneShot: true }
+      }
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    await composeSampleClip('riff')
+    const saveCall = calls.find((c) => c.cmd === 'save_generated_sample')
+    expect(saveCall).toBeDefined()
+    // The same binary frame as a song save: [u32 LE meta-JSON length][meta JSON][WAV].
+    const payload = saveCall!.args as Uint8Array
+    const metaLen = new DataView(
+      payload.buffer,
+      payload.byteOffset,
+      payload.byteLength,
+    ).getUint32(0, true)
+    const meta = JSON.parse(new TextDecoder().decode(payload.subarray(4, 4 + metaLen)))
+    expect(meta).toEqual({ title: 'riff', prompt: 'riff', model: 'sfx', oneShot: true })
+  })
+
+  it('loads a restored sample into a deck loop slot via onLoadSample', async () => {
+    const wav = new ArrayBuffer(8)
+    const calls: { cmd: string; args: unknown }[] = []
+    const invoke = vi.fn(async (cmd: string, args?: unknown) => {
+      calls.push({ cmd, args })
+      if (cmd === 'list_generated_samples') {
+        return [
+          { file: 'break.wav', title: 'break', prompt: 'break', model: 'music', oneShot: false },
+        ]
+      }
+      if (cmd === 'read_generated_sample') return wav
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    const onLoadSample = vi.fn(async () => true)
+    renderExplorer({ onLoadSample })
+    fireEvent.click(screen.getByRole('tab', { name: 'Samples' }))
+    const loadButton = await screen.findByRole('button', {
+      name: 'Load break #1 to deck A',
+    })
+    await act(async () => {
+      fireEvent.click(loadButton)
+    })
+    // A restored sample carries no in-memory bytes, so the scoped read fetches them,
+    // and the sample's oneShot flag rides along to the slot loader.
+    const readCall = calls.find((c) => c.cmd === 'read_generated_sample')
+    expect(readCall?.args).toEqual({ name: 'break.wav' })
+    expect(onLoadSample).toHaveBeenCalledWith('a', expect.any(ArrayBuffer), false, 'break #1')
+  })
+
+  it('live-reloads the Samples tab on the folder-watcher event, keeping ids stable', async () => {
+    // The folder watcher fires `library://changed` when a deck saves out-of-band or a
+    // file is dropped in; the tab re-lists, reusing existing rows by filename.
+    let rows = [
+      { file: 'one.wav', title: 'one', prompt: 'one', model: 'sfx', oneShot: false },
+    ]
+    let onChange: ((e: { payload: unknown }) => void) | null = null
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'list_generated_samples') return rows
+      return undefined
+    })
+    const listen = vi.fn(
+      async (event: string, handler: (e: { payload: unknown }) => void) => {
+        if (event === 'library://changed') onChange = handler
+        return () => {}
+      },
+    )
+    vi.stubGlobal('__TAURI__', { core: { invoke }, event: { listen } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Samples' }))
+    expect(await screen.findByText('one')).toBeInTheDocument()
+    expect(screen.getByText('#1')).toBeInTheDocument()
+
+    // A deck saves a second sample → the watcher fires → the tab re-lists.
+    rows = [
+      { file: 'one.wav', title: 'one', prompt: 'one', model: 'sfx', oneShot: false },
+      { file: 'two.wav', title: 'two', prompt: 'two', model: 'music', oneShot: false },
+    ]
+    await act(async () => {
+      onChange?.({ payload: { library: 'samples' } })
+    })
+    expect(await screen.findByText('two')).toBeInTheDocument()
+    // The pre-existing row kept its identity across the reload (no id churn).
+    expect(screen.getByText('one')).toBeInTheDocument()
+    expect(screen.getByText('#1')).toBeInTheDocument()
+    expect(screen.getByText('#2')).toBeInTheDocument()
+  })
+
+  it('restores samples, tagging a freeze and a hand-added file', async () => {
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'list_generated_samples') {
+        return [
+          { file: 'Freeze A.wav', title: 'Freeze A', prompt: null, model: 'freeze', oneShot: false },
+          { file: 'break.wav', title: 'break', prompt: null, model: null, oneShot: false },
+        ]
+      }
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Samples' }))
+    // A deck capture reads as "Freeze" in its meta; a hand-added file as "Imported".
+    await screen.findByText('break')
+    const metas = [...document.querySelectorAll('.media__meta')].map(
+      (el) => el.textContent ?? '',
+    )
+    expect(metas.some((text) => text.includes('Freeze'))).toBe(true)
+    expect(metas.some((text) => text.includes('Imported'))).toBe(true)
   })
 
   it('auto-saves a composed take to the songs folder via the Rust shell', async () => {
@@ -466,6 +605,9 @@ describe('MediaExplorer', () => {
     renderExplorer({}, [], bus)
     act(() => bus.publish({ kind: 'browse_tab' }))
     expect(screen.getByLabelText('Track prompt')).toBeInTheDocument()
+    act(() => bus.publish({ kind: 'browse_tab' }))
+    // Samples sits between Generate and Folder in the rotation.
+    expect(screen.getByLabelText('Loop prompt')).toBeInTheDocument()
     act(() => bus.publish({ kind: 'browse_tab' }))
     expect(
       screen.getByRole('button', { name: 'Choose folder' }),

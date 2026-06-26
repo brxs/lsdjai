@@ -198,8 +198,12 @@ enum Command {
     SetTrackLoop(usize, u64, u64),
     ClearTrackLoop(usize),
     CaptureLoop(usize, usize, f64),
-    PlayLoop(usize, usize),
+    /// Play a loop slot; the `bool` is `layer` — replace the live stream (a freeze)
+    /// or sum on top of it (a loaded sample, ADR-0022).
+    PlayLoop(usize, usize, bool),
     StopLoop(usize),
+    /// Stop one layered loop (the loaded-sample slot stops summing; ADR-0022).
+    StopLayer(usize, usize),
     StopOneShot(usize),
     ClearLoop(usize, usize),
     /// Load a decoded pad/loop into a slot; whether the engine accepted it
@@ -212,6 +216,11 @@ enum Command {
     /// over the enclosed reply channel. Built on the render thread (it allocates)
     /// and shipped to the caller, which is parked on the receiver.
     CaptureSample(usize, f64, Producer<Option<Vec<f32>>>),
+    /// Read a loop slot's stored buffer (to persist a freeze/pad to the samples
+    /// library); the cloned `Vec` (`None` for an empty slot) is sent back over the
+    /// reply channel. Clones on the render thread, off the callback, like
+    /// `CaptureSample`. The caller parks on the receiver.
+    ReadLoopSlot(usize, usize, Producer<Option<Vec<f32>>>),
     /// Compute a loaded track's min/max envelope at `buckets` resolution; the
     /// result (`Some((min, max))` / `None` off Playback) is sent back over the
     /// reply channel. Allocates the envelope on the render thread (off the
@@ -567,12 +576,16 @@ impl Host {
         self.send(Command::CaptureLoop(deck, slot, seconds));
     }
 
-    pub fn play_loop(&self, deck: usize, slot: usize) {
-        self.send(Command::PlayLoop(deck, slot));
+    pub fn play_loop(&self, deck: usize, slot: usize, layer: bool) {
+        self.send(Command::PlayLoop(deck, slot, layer));
     }
 
     pub fn stop_loop(&self, deck: usize) {
         self.send(Command::StopLoop(deck));
+    }
+
+    pub fn stop_layer(&self, deck: usize, slot: usize) {
+        self.send(Command::StopLayer(deck, slot));
     }
 
     pub fn stop_one_shot(&self, deck: usize) {
@@ -626,6 +639,26 @@ impl Host {
         // Park until the render thread answers. The capture is a rare, explicit
         // user action; a short spin-park keeps it off any RT path while not busy-
         // burning a core. Bounded so a vanished render thread cannot hang the call.
+        for _ in 0..1000 {
+            match reply_rx.pop() {
+                Ok(result) => return result,
+                Err(_) => thread::sleep(Duration::from_millis(1)),
+            }
+        }
+        None
+    }
+
+    /// A loop slot's stored buffer (interleaved-stereo f32), for persisting a freeze
+    /// / loaded pad to the generated-samples library. `None` for an empty slot, a bad
+    /// index, or a vanished render thread. Round-trips through the render thread on
+    /// the same parked-reply pattern as [`Host::capture_sample`] (the clone allocates
+    /// off the callback); a rare, explicit action, so the bounded park is well off
+    /// any hot path.
+    pub fn read_loop_slot(&self, deck: usize, slot: usize) -> Option<Vec<f32>> {
+        let (reply_tx, mut reply_rx) = RingBuffer::<Option<Vec<f32>>>::new(CAPTURE_REPLY_DEPTH);
+        if !self.send(Command::ReadLoopSlot(deck, slot, reply_tx)) {
+            return None;
+        }
         for _ in 0..1000 {
             match reply_rx.pop() {
                 Ok(result) => return result,
@@ -810,10 +843,11 @@ impl RenderLoop {
             Command::CaptureLoop(d, slot, secs) => {
                 self.engine.capture_loop(d, slot, secs);
             }
-            Command::PlayLoop(d, slot) => {
-                self.engine.play_loop(d, slot);
+            Command::PlayLoop(d, slot, layer) => {
+                self.engine.play_loop(d, slot, layer);
             }
             Command::StopLoop(d) => self.engine.stop_loop(d),
+            Command::StopLayer(d, slot) => self.engine.stop_layer(d, slot),
             Command::StopOneShot(d) => self.engine.stop_one_shot(d),
             Command::ClearLoop(d, slot) => self.engine.clear_loop(d, slot),
             Command::LoadGeneratedLoop(d, slot, samples, one_shot, mut reply) => {
@@ -827,6 +861,11 @@ impl RenderLoop {
                 // The caller is parked on the receiver; a full/closed reply queue
                 // just means the caller gave up — drop the result silently.
                 let _ = reply.push(captured);
+            }
+            Command::ReadLoopSlot(d, slot, mut reply) => {
+                let samples = self.engine.read_loop_slot(d, slot);
+                // As CaptureSample: the parked caller may have given up; drop silently.
+                let _ = reply.push(samples);
             }
             Command::TrackPeaks(d, buckets, mut reply) => {
                 let peaks = self.engine.get_track_peaks(d, buckets);
@@ -1151,7 +1190,7 @@ mod tests {
         assert!(host.loop_slots(0)[0].filled, "slot 0 filled after capture");
         assert!(!host.loop_slots(0)[0].playing, "not playing until play_loop");
 
-        host.send(Command::PlayLoop(0, 0));
+        host.send(Command::PlayLoop(0, 0, false));
         host.pump();
         assert!(host.loop_slots(0)[0].playing, "slot 0 plays after play_loop");
     }
@@ -1195,6 +1234,37 @@ mod tests {
         let captured = reply_rx.pop().unwrap().expect("4 s clears the floor");
         let want = (4.0 * SAMPLE_RATE as f64) as usize * CHANNELS as usize;
         assert_eq!(captured.len(), want, "captured 4 s of interleaved stereo");
+    }
+
+    /// read_loop_slot round-trips a reply: an empty slot replies `None`; after a
+    /// generated pad fills the slot it replies the stored interleaved buffer (the
+    /// audio the samples library persists for a freeze/pad).
+    #[test]
+    fn read_loop_slot_replies_with_the_stored_buffer() {
+        let mut host = TestHost::new();
+
+        // Empty slot → None.
+        let (reply_tx, mut reply_rx) = RingBuffer::<Option<Vec<f32>>>::new(CAPTURE_REPLY_DEPTH);
+        host.send(Command::ReadLoopSlot(0, 0, reply_tx));
+        host.pump();
+        assert_eq!(reply_rx.pop().unwrap(), None, "empty slot → None");
+
+        // Load a one-shot pad (stored verbatim — no fold), then read it back.
+        let pad = vec![0.3f32; 4_800 * CHANNELS as usize]; // 0.1 s stereo
+        host.send(Command::LoadGeneratedLoop(
+            0,
+            0,
+            pad.clone(),
+            true,
+            RingBuffer::<bool>::new(CAPTURE_REPLY_DEPTH).0,
+        ));
+        host.pump();
+
+        let (reply_tx, mut reply_rx) = RingBuffer::<Option<Vec<f32>>>::new(CAPTURE_REPLY_DEPTH);
+        host.send(Command::ReadLoopSlot(0, 0, reply_tx));
+        host.pump();
+        let read = reply_rx.pop().unwrap().expect("a filled slot reads back");
+        assert_eq!(read, pad, "a one-shot reads back its verbatim buffer");
     }
 
     /// A full spawned Host drives end-to-end with no device: build it, send

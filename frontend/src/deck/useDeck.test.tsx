@@ -121,6 +121,9 @@ function makeFakeEngine(overrides: Partial<AudioEngine> = {}) {
     stopOneShot: vi.fn(),
     clearLoop: vi.fn(),
     captureSample: vi.fn(async () => new Float32Array(2)),
+    saveLoopSlot: vi.fn(async () => {}),
+    saveGeneratedSample: vi.fn(async () => {}),
+    stopLayer: vi.fn(),
     loadTrack: vi.fn(async () => ({
       duration: 120,
       sampleRate: 48_000,
@@ -571,9 +574,22 @@ describe('useDeck freeze loops', () => {
 
     await act(async () => result.current.toggleLoopPad(1))
     expect(channel.captureLoop).toHaveBeenCalledWith(1, 4)
-    expect(channel.playLoop).toHaveBeenCalledWith(1)
+    expect(channel.playLoop).toHaveBeenCalledWith(1, false)
     expect(result.current.loop.slots[1].state).toBe('filled')
     expect(result.current.loop.active).toBe(1)
+  })
+
+  it('auto-saves the freeze to the samples library after the capture', async () => {
+    const { engine, channel } = makeFakeEngine()
+    const { result } = await playingDeck(engine)
+
+    await act(async () => result.current.toggleLoopPad(1))
+    // The freeze persists the EXACT slot buffer server-side (ADR-0022): the deck only
+    // sends the slot coordinates and a loop's metadata, never the audio.
+    expect(channel.saveLoopSlot).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ model: 'freeze', oneShot: false }),
+    )
   })
 
   it('returns to live on a second press, keeping the capture', async () => {
@@ -596,7 +612,7 @@ describe('useDeck freeze loops', () => {
 
     await act(async () => result.current.toggleLoopPad(0))
     expect(channel.captureLoop).not.toHaveBeenCalled()
-    expect(channel.playLoop).toHaveBeenLastCalledWith(0)
+    expect(channel.playLoop).toHaveBeenLastCalledWith(0, false)
     expect(result.current.loop.active).toBe(0)
   })
 
@@ -757,8 +773,90 @@ describe('useDeck generated pads', () => {
       state: 'filled',
       label: 'vinyl spinback',
       oneShot: true,
+      // A deck-generated pad keeps the replace behaviour; only loaded samples layer.
+      layer: false,
     })
     expect(result.current.loop.active).toBeNull()
+  })
+
+  it('auto-saves a generated pad to the samples library (raw WAV + metadata)', async () => {
+    stubFetchOk()
+    const { engine, channel } = makeFakeEngine()
+    const { result } = await playingDeck(engine)
+
+    act(() => result.current.generateToPad('air horn', 'sfx', true))
+    await act(async () => {})
+    // The raw backend WAV is persisted (it carries the seam surplus), tagged with the
+    // prompt/engine and the one-shot flag reload needs.
+    expect(channel.saveGeneratedSample).toHaveBeenCalledWith(
+      expect.any(ArrayBuffer),
+      expect.objectContaining({ prompt: 'air horn', model: 'sfx', oneShot: true }),
+    )
+  })
+
+  it('loads a saved sample into the first empty slot', async () => {
+    const { engine, channel } = makeFakeEngine()
+    const { result } = await playingDeck(engine)
+    const wav = new ArrayBuffer(8)
+
+    let ok = false
+    await act(async () => {
+      ok = await result.current.loadSampleToSlot(wav, false, 'break')
+    })
+    expect(ok).toBe(true)
+    expect(channel.loadGeneratedLoop).toHaveBeenCalledWith(0, wav, false)
+    expect(result.current.loop.slots[0]).toEqual({
+      state: 'filled',
+      label: 'break',
+      oneShot: false,
+      // A loaded sample loop is a layer (ADR-0022).
+      layer: true,
+    })
+  })
+
+  it('layers a loaded sample on press, stacks a second, and stops each independently', async () => {
+    const { engine, channel } = makeFakeEngine()
+    const { result } = await playingDeck(engine)
+    // Two loaded-sample loops fill slots 0 and 1 (layer slots, not played yet).
+    await act(async () => {
+      await result.current.loadSampleToSlot(new ArrayBuffer(8), false, 'riff')
+    })
+    await act(async () => {
+      await result.current.loadSampleToSlot(new ArrayBuffer(8), false, 'break')
+    })
+
+    // Press slot 0: it LAYERS (sum on top), never becomes the replacing `active`.
+    act(() => result.current.toggleLoopPad(0))
+    expect(channel.playLoop).toHaveBeenLastCalledWith(0, true)
+    expect(result.current.loop.layering).toEqual([0])
+    expect(result.current.loop.active).toBeNull()
+
+    // Press slot 1: it stacks alongside slot 0.
+    act(() => result.current.toggleLoopPad(1))
+    expect(channel.playLoop).toHaveBeenLastCalledWith(1, true)
+    expect(result.current.loop.layering).toEqual([0, 1])
+
+    // Press slot 0 again: only that layer stops; slot 1 keeps playing.
+    act(() => result.current.toggleLoopPad(0))
+    expect(channel.stopLayer).toHaveBeenCalledWith(0)
+    expect(result.current.loop.layering).toEqual([1])
+  })
+
+  it('refuses to load a sample when every slot is full', async () => {
+    const { engine, channel } = makeFakeEngine()
+    const { result } = await playingDeck(engine)
+    for (const slot of [0, 1, 2, 3]) {
+      await act(async () => result.current.toggleLoopPad(slot))
+    }
+    vi.mocked(channel.loadGeneratedLoop).mockClear()
+
+    let ok = true
+    await act(async () => {
+      ok = await result.current.loadSampleToSlot(new ArrayBuffer(8), false, 'break')
+    })
+    expect(ok).toBe(false)
+    expect(channel.loadGeneratedLoop).not.toHaveBeenCalled()
+    expect(result.current.generateError).toBeTruthy()
   })
 
   it('shapes a loop by the locked tempo: whole bars, BPM in the prompt', async () => {
@@ -837,7 +935,7 @@ describe('useDeck generated pads', () => {
     await act(async () => {})
 
     await act(async () => result.current.toggleLoopPad(0))
-    expect(channel.playLoop).toHaveBeenCalledWith(0)
+    expect(channel.playLoop).toHaveBeenCalledWith(0, false)
     expect(result.current.loop.active).toBeNull()
   })
 

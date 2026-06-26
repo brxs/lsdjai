@@ -958,17 +958,19 @@ export function DeckColumn({
         <div className="deck__loop-slots">
           {Array.from({ length: LOOP_SLOT_COUNT }, (_, slot) => {
             const slotState = loop.slots[slot]
+            // Sounding = the active (replacing) freeze OR a stacked layer (ADR-0022).
+            const playing = loop.active === slot || loop.layering.includes(slot)
             return (
               <Button
                 key={slot}
                 lit={slotState.state === 'filled'}
-                variant={loop.active === slot ? 'primary' : 'default'}
+                variant={playing ? 'primary' : 'default'}
                 aria-label={
                   slotState.state === 'pending'
                     ? t('deck.loop.slotPending', { n: slot + 1 })
                     : t('deck.loop.slot', { n: slot + 1 })
                 }
-                aria-pressed={loop.active === slot}
+                aria-pressed={playing}
                 disabled={!operable || slotState.state === 'pending'}
                 title={
                   slotState.state === 'empty'

@@ -233,6 +233,13 @@ function App() {
     (deck: DeckId) => (deck === 'a' ? deckA : deckB).leavePlayback(),
     [deckA, deckB],
   )
+  // Load a saved sample into a deck's loop-slot bank (ADR-0022) — the Samples-tab
+  // counterpart of handleLoadTrack, routed to the deck's `loadSampleToSlot`.
+  const handleLoadSample = useCallback(
+    (deck: DeckId, wav: ArrayBuffer, oneShot: boolean, label: string) =>
+      (deck === 'a' ? deckA : deckB).loadSampleToSlot(wav, oneShot, label),
+    [deckA, deckB],
+  )
 
   // Beat-matching (M20, ADR-0014): SYNC matches a track deck to the
   // other deck's effective tempo — gated stream BPM, or grid BPM ×
@@ -582,6 +589,7 @@ function App() {
         onImportPresets={handleImportPresets}
         onLoadTrack={handleLoadTrack}
         onLoadLive={handleLoadLive}
+        onLoadSample={handleLoadSample}
       />
     </main>
   )

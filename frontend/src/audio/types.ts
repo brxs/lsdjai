@@ -11,6 +11,17 @@ import type { TrackLoop } from './track'
 
 export type DeckId = 'a' | 'b'
 
+/** Metadata persisted with a generated sample / freeze capture (ADR-0022) — the
+ * Rust `samples::NewSample`. `prompt`/`model` are null for a freeze (no prompt; the
+ * model column reads "freeze"); `oneShot` is the loop-vs-one-shot verdict reload
+ * uses to put the sample back into a slot the way it was made. */
+export type SampleMeta = {
+  title: string
+  prompt: string | null
+  model: string | null
+  oneShot: boolean
+}
+
 export type DeckChannel = {
   postPcm: (samples: Float32Array) => void
   reset: () => void
@@ -44,19 +55,31 @@ export type DeckChannel = {
     wav: ArrayBuffer,
     oneShot: boolean,
   ) => Promise<boolean>
-  /** Swap the channel source from the live stream to a filled slot's
-   * loop (false when the slot is empty). The stream keeps running,
-   * muted, so stopLoop returns to fresh material instantly. One-shot
-   * slots overlay instead: they sum onto whatever is playing, fire
-   * once, and fall silent — the live/loop handover is untouched. */
-  playLoop: (slot: number) => boolean
+  /** Play a filled slot's loop (false when the slot is empty). `layer`
+   * picks how it plays: false REPLACES the live stream (a freeze — the
+   * stream keeps running, muted, so stopLoop returns to fresh material
+   * instantly); true LAYERS it on top, summed and stacking with other
+   * layers (a loaded sample, ADR-0022). One-shot slots always overlay
+   * (sum once) regardless of `layer`. */
+  playLoop: (slot: number, layer: boolean) => boolean
+  /** Return the active (replacing) freeze to the base; layers untouched. */
   stopLoop: () => void
+  /** Stop one layered loop (ADR-0022): the slot stops summing; its
+   * buffer stays for a re-press. */
+  stopLayer: (slot: number) => void
   /** Cut a ringing one-shot (deck STOP silences everything). */
   stopOneShot: () => void
   clearLoop: (slot: number) => void
   /** Style sampling (M15): the just-played tail as wire-format PCM,
    * or null when too little has played to embed meaningfully. */
   captureSample: (seconds: number) => Promise<Float32Array<ArrayBuffer> | null>
+  /** Persist a freeze capture in `slot` to the generated-samples library
+   * (ADR-0022). The shell reads the EXACT stored slot buffer (the freeze WAV
+   * never lives here), encodes it, and records it. Auto-save: fire-and-forget. */
+  saveLoopSlot: (slot: number, meta: SampleMeta) => Promise<void>
+  /** Persist a generated pad's WAV (already in hand) to the generated-samples
+   * library. Same binary frame as the songs save. Auto-save: fire-and-forget. */
+  saveGeneratedSample: (wav: ArrayBuffer, meta: SampleMeta) => Promise<void>
   /** Playback mode (M19, ADR-0013): decode a whole track into the
    * channel. Resolves to its duration plus live views of the decoded
    * channels (for the offline BPM pass — no second decode), or null

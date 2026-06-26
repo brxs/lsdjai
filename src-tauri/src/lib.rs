@@ -39,8 +39,11 @@ use tauri::Manager;
 
 mod commands;
 mod generation;
+mod library;
+mod samples;
 mod sidecar;
 mod songs;
+mod watcher;
 
 /// The default per-deck model the sidecars load (mirrors `controller.py`
 /// `DEFAULT_MODEL`).
@@ -412,7 +415,21 @@ pub fn run() {
                 .document_dir()
                 .map(|d| d.join("LSDJai").join("generated_songs"))
                 .unwrap_or_else(|_| std::path::PathBuf::from("LSDJai/generated_songs"));
-            app.manage(songs::SongLibrary::new(songs_dir));
+            app.manage(songs::SongLibrary::new(songs_dir.clone()));
+            // The generated-samples library: the short-loop counterpart of the songs
+            // folder (ADR-0022), the home for deck freezes / generated pads / composed
+            // SFX-Music that used to die at session end. Same fixed-folder + registry
+            // discipline.
+            let samples_dir = app
+                .path()
+                .document_dir()
+                .map(|d| d.join("LSDJai").join("generated_samples"))
+                .unwrap_or_else(|_| std::path::PathBuf::from("LSDJai/generated_samples"));
+            app.manage(samples::SampleLibrary::new(samples_dir.clone()));
+            // Watch both library folders so the Media Explorer tabs live-reload on a
+            // change (a deck auto-saving a sample, a hand-drop/-delete); Rust owns the
+            // watch and emits `library://changed` (ADR-0022).
+            watcher::watch_libraries(app.handle().clone(), songs_dir, samples_dir);
             app.manage(host);
             app.manage(audio_state);
             app.manage(sidecars);
@@ -445,6 +462,12 @@ pub fn run() {
             commands::read_generated_song,
             commands::delete_generated_song,
             commands::open_songs_folder,
+            commands::list_generated_samples,
+            commands::save_generated_sample,
+            commands::read_generated_sample,
+            commands::delete_generated_sample,
+            commands::open_samples_folder,
+            commands::save_loop_slot,
             commands::load_track,
             commands::unload_track,
             commands::play_track,
@@ -457,6 +480,7 @@ pub fn run() {
             commands::capture_loop,
             commands::play_loop,
             commands::stop_loop,
+            commands::stop_layer,
             commands::stop_one_shot,
             commands::clear_loop,
             commands::load_generated_loop,

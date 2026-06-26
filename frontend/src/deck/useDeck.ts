@@ -55,17 +55,22 @@ export type TrimState = { mode: 'auto' | 'manual'; db: number }
 
 /** One pad slot. The audio buffers live in the channel; `label` is null
  * for captures from the deck and the prompt for generated slots (M18).
- * One-shots overlay the playing source and end themselves; everything
- * else replaces the live stream while active. */
+ * One-shots overlay the playing source and end themselves. A filled loop
+ * either REPLACES the live stream while active (a freeze) or LAYERS on
+ * top of it (a loaded sample, `layer: true`, ADR-0022) — the play path
+ * branches on `layer`. */
 export type LoopSlot =
   | { state: 'empty' }
   | { state: 'pending'; label: string; oneShot: boolean }
-  | { state: 'filled'; label: string | null; oneShot: boolean }
+  | { state: 'filled'; label: string | null; oneShot: boolean; layer: boolean }
 
 export type LoopState = {
   slots: LoopSlot[]
-  /** The slot currently replacing the live stream, if any. */
+  /** The slot currently replacing the live stream, if any (a freeze). */
   active: number | null
+  /** Slots currently layering on top of the base (loaded samples, ADR-0022),
+   * stacked — independent of `active`. */
+  layering: number[]
   /** Capture length for the next press; persisted, unlike the loops. */
   seconds: number
 }
@@ -173,6 +178,14 @@ export type DeckControls = {
    * music-model loops snap to whole bars while the tempo gate is
    * locked and respect the quality floor. */
   generateToPad: (prompt: string, engine: GenerateEngine, oneShot: boolean) => void
+  /** Load a saved sample (ADR-0022) into the first empty loop slot, as a loop or
+   * one-shot per the sample. Resolves false when every slot is full, the deck isn't
+   * a live Realtime deck, or the body doesn't decode (surfaced via `generateError`). */
+  loadSampleToSlot: (
+    wav: ArrayBuffer,
+    oneShot: boolean,
+    label: string,
+  ) => Promise<boolean>
   /** Why the last generation produced nothing, until the next attempt. */
   generateError: string | null
   /** Detected tempo of the deck's stream (M14, ADR-0010), or null
@@ -278,6 +291,7 @@ export function useDeck(deckId: DeckId): DeckControls {
   const [loop, setLoopState] = useState<LoopState>(() => ({
     slots: Array<LoopSlot>(LOOP_SLOT_COUNT).fill(EMPTY_SLOT),
     active: null,
+    layering: [],
     seconds: loadDeckSettings(deckId).loopSeconds ?? DEFAULT_LOOP_SECONDS,
   }))
   const loopRef = useRef(loop)
@@ -633,6 +647,14 @@ export function useDeck(deckId: DeckId): DeckControls {
     dispatch({ type: 'play_requested' })
   }, [ensureChannel, engine, send, setPrimed, resetStreamMeasurements, seekTrack])
 
+  // Stop every layered sample on the engine (ADR-0022); the caller resets the UI
+  // `layering` set in its own setLoop. Reads only refs, so it stays stable.
+  const silenceLayers = useCallback(() => {
+    for (const slot of loopRef.current.layering) {
+      channelRef.current?.stopLayer(slot)
+    }
+  }, [])
+
   const stop = useCallback(() => {
     // A playback deck's STOP pauses the track; running pads stop with
     // it, exactly as on the live deck.
@@ -641,8 +663,9 @@ export function useDeck(deckId: DeckId): DeckControls {
       loopGestureRef.current += 1
       channelRef.current?.stopLoop()
       channelRef.current?.stopOneShot()
-      if (loopRef.current.active !== null) {
-        setLoop({ ...loopRef.current, active: null })
+      silenceLayers()
+      if (loopRef.current.active !== null || loopRef.current.layering.length > 0) {
+        setLoop({ ...loopRef.current, active: null, layering: [] })
       }
       return
     }
@@ -653,18 +676,19 @@ export function useDeck(deckId: DeckId): DeckControls {
     channelRef.current?.reset()
     channelRef.current?.setOnAir(true)
     // STOP silences the deck — a running freeze loop goes with it (the
-    // slot keeps its capture), a ringing one-shot is cut, and an
-    // in-flight capture may not land.
+    // slot keeps its capture), any layered samples stop too, a ringing
+    // one-shot is cut, and an in-flight capture may not land.
     loopGestureRef.current += 1
     channelRef.current?.stopLoop()
     channelRef.current?.stopOneShot()
-    if (loopRef.current.active !== null) {
-      setLoop({ ...loopRef.current, active: null })
+    silenceLayers()
+    if (loopRef.current.active !== null || loopRef.current.layering.length > 0) {
+      setLoop({ ...loopRef.current, active: null, layering: [] })
     }
     resetStreamMeasurements()
     setPrimed(false)
     dispatch({ type: 'stop_requested' })
-  }, [send, setPrimed, setLoop, resetStreamMeasurements])
+  }, [send, setPrimed, setLoop, resetStreamMeasurements, silenceLayers])
 
   const setStyle = useCallback(
     (style: ActiveStyle) => {
@@ -1117,13 +1141,24 @@ export function useDeck(deckId: DeckId): DeckControls {
       const slotState = current.slots[slot]
       // A pending generation owns the slot; the press waits it out.
       if (slotState.state === 'pending') return
+      // A layer (loaded sample, ADR-0022) toggles independently and stacks: pressing
+      // it starts/stops its own summed loop, never touching the freeze or the others.
+      if (slotState.state === 'filled' && slotState.layer) {
+        if (current.layering.includes(slot)) {
+          channel.stopLayer(slot)
+          setLoop({ ...current, layering: current.layering.filter((s) => s !== slot) })
+        } else if (channel.playLoop(slot, true)) {
+          setLoop({ ...current, layering: [...current.layering, slot] })
+        }
+        return
+      }
       if (current.active === slot) {
         channel.stopLoop()
         setLoop({ ...current, active: null })
         return
       }
       if (slotState.state === 'filled') {
-        if (!channel.playLoop(slot)) return
+        if (!channel.playLoop(slot, false)) return
         // One-shots overlay and end themselves — never "active", which
         // means "replacing the live stream".
         if (!slotState.oneShot) setLoop({ ...current, active: slot })
@@ -1150,7 +1185,7 @@ export function useDeck(deckId: DeckId): DeckControls {
           channel.clearLoop(slot)
           return
         }
-        if (!channel.playLoop(slot)) return
+        if (!channel.playLoop(slot, false)) return
         const latest = loopRef.current
         setLoop({
           ...latest,
@@ -1158,12 +1193,26 @@ export function useDeck(deckId: DeckId): DeckControls {
             state: 'filled',
             label: null,
             oneShot: false,
+            // A freeze REPLACES (ADR-0009); only loaded samples layer.
+            layer: false,
           }),
           active: slot,
         })
+        // Auto-save the freeze to the generated-samples library (ADR-0022): the
+        // shell reads the EXACT stored slot buffer (a freeze WAV never lives in the
+        // webview) and persists it. Fire-and-forget — a save failure must never
+        // disturb the loop the performer is hearing. A freeze is always a loop.
+        void channel
+          .saveLoopSlot(slot, {
+            title: `Freeze ${deckId.toUpperCase()}`,
+            prompt: null,
+            model: 'freeze',
+            oneShot: false,
+          })
+          .catch(() => {})
       })
     },
-    [setLoop, beat],
+    [setLoop, beat, deckId],
   )
 
   const clearLoopPad = useCallback(
@@ -1174,12 +1223,15 @@ export function useDeck(deckId: DeckId): DeckControls {
       const channel = channelRef.current
       const current = loopRef.current
       if (current.active === slot) channel?.stopLoop()
+      // clearLoop drops the engine buffer (and any active/layer it fed); mirror that
+      // in the UI state for the active replace and any layer this slot was feeding.
       channel?.clearLoop(slot)
       if (current.slots[slot].state === 'empty') return
       setLoop({
         ...current,
         slots: withSlot(current, slot, EMPTY_SLOT),
         active: current.active === slot ? null : current.active,
+        layering: current.layering.filter((s) => s !== slot),
       })
     },
     [setLoop],
@@ -1269,8 +1321,23 @@ export function useDeck(deckId: DeckId): DeckControls {
               state: 'filled',
               label: trimmed,
               oneShot,
+              // A generated pad LOOP layers like a loaded sample (ADR-0022); only a
+              // freeze capture replaces. A one-shot overlays (not a layer).
+              layer: !oneShot,
             }),
           })
+          // Auto-save the generated pad to the samples library (ADR-0022): persist
+          // the RAW backend WAV (it carries the seam surplus, so a single reload
+          // fold reproduces the loop exactly — `decodeTo48k` cloned it, so `wav`
+          // survives the load above). Fire-and-forget; the pad plays regardless.
+          void channel
+            .saveGeneratedSample(wav, {
+              title: trimmed,
+              prompt: trimmed,
+              model: engine,
+              oneShot,
+            })
+            .catch(() => {})
         } catch (error) {
           if (stale()) return
           const latest = loopRef.current
@@ -1280,6 +1347,58 @@ export function useDeck(deckId: DeckId): DeckControls {
       })()
     },
     [setLoop, beat, ensureChannel],
+  )
+
+  /** Load a saved sample's WAV into the first empty loop slot (ADR-0022): the
+   * Samples-tab counterpart of a deck capture/generate. Reuses `generateToPad`'s
+   * install tail (find a free slot → decode + fold into the slot → mark filled),
+   * minus the network half. `oneShot` comes from the sample's registry row.
+   * Resolves false when every slot is full, the deck isn't a live Realtime deck, or
+   * the body doesn't decode — the engine's honest verdict, surfaced via
+   * `generateError`. */
+  const loadSampleToSlot = useCallback(
+    async (wav: ArrayBuffer, oneShot: boolean, label: string): Promise<boolean> => {
+      const current = loopRef.current
+      const slot = current.slots.findIndex((entry) => entry.state === 'empty')
+      if (slot === -1) {
+        setGenerateError('every loop slot is full — clear one to load a sample')
+        return false
+      }
+      const generation = ++slotGenerationRef.current[slot]
+      const stale = () => slotGenerationRef.current[slot] !== generation
+      setGenerateError(null)
+      setLoop({
+        ...current,
+        slots: withSlot(current, slot, { state: 'pending', label, oneShot }),
+      })
+      try {
+        const channel = await ensureChannel()
+        const accepted = await channel.loadGeneratedLoop(slot, wav, oneShot)
+        if (stale()) return false
+        if (!accepted) {
+          const latest = loopRef.current
+          setLoop({ ...latest, slots: withSlot(latest, slot, EMPTY_SLOT) })
+          setGenerateError('the deck could not load the sample')
+          return false
+        }
+        const latest = loopRef.current
+        setLoop({
+          ...latest,
+          // A loaded sample LOOP layers over the deck (ADR-0022); a loaded one-shot
+          // overlays once like any one-shot (not a layer).
+          slots: withSlot(latest, slot, { state: 'filled', label, oneShot, layer: !oneShot }),
+        })
+        return true
+      } catch (error) {
+        if (!stale()) {
+          const latest = loopRef.current
+          setLoop({ ...latest, slots: withSlot(latest, slot, EMPTY_SLOT) })
+          setGenerateError(error instanceof Error ? error.message : String(error))
+        }
+        return false
+      }
+    },
+    [setLoop, ensureChannel],
   )
 
   const setLoopSeconds = useCallback(
@@ -1315,6 +1434,7 @@ export function useDeck(deckId: DeckId): DeckControls {
     clearLoopPad,
     setLoopSeconds,
     generateToPad,
+    loadSampleToSlot,
     generateError,
     bpm,
     captureStyleSample,

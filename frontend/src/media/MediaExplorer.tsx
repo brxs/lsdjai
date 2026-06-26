@@ -1,8 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { DeckId } from '../audio/types'
-import { getApiBaseUrl, invoke, isTauri } from '../audio/nativeEngine'
+import { LOOP_CROSSFADE_SECONDS } from '../audio/loops'
+import {
+  encodeMetaFrame,
+  getApiBaseUrl,
+  invoke,
+  isTauri,
+  subscribeLibraryChanged,
+} from '../audio/nativeEngine'
 import { useControlBus } from '../control/busContext'
 import { CrateBrowser } from '../crates/CrateBrowser'
 import type { StylePreset } from '../presets'
@@ -13,8 +20,11 @@ import { TextField } from '../ui/TextField'
 import { randomSongTitle } from './songTitle'
 import './media.css'
 
-type MediaTab = 'crates' | 'generate' | 'folder'
+type MediaTab = 'crates' | 'generate' | 'samples' | 'folder'
 type TrackEngine = 'sfx' | 'music' | 'track' | 'magenta'
+// The short loop engines (ADR-0022): SFX/Music now compose into the samples library,
+// not the songs library — the Generate tab keeps only the full-track engines.
+type SampleEngine = 'sfx' | 'music'
 
 // One row of the on-disk song registry (Rust `songs::SongEntry`, camelCase): a file
 // in the songs folder with the provenance the filesystem can't carry.
@@ -23,6 +33,16 @@ type SongEntry = {
   title: string
   prompt: string | null
   model: string | null
+}
+
+// One row of the on-disk sample registry (Rust `samples::SampleEntry`, camelCase):
+// like a SongEntry plus `oneShot`, the loop-vs-one-shot verdict reload needs.
+type SampleEntry = {
+  file: string
+  title: string
+  prompt: string | null
+  model: string | null
+  oneShot: boolean
 }
 
 type GeneratedTrack =
@@ -48,6 +68,37 @@ type GeneratedTrack =
       wav?: ArrayBuffer
     }
 
+// A take in the Samples tab — the loop counterpart of GeneratedTrack. Carries
+// `oneShot` (how it reloads into a slot) and a `model` that may also be 'freeze' (a
+// deck capture) or null (imported).
+type GeneratedSample =
+  | {
+      id: number
+      state: 'pending'
+      title: string
+      prompt: string
+      model: SampleEngine
+      oneShot: boolean
+    }
+  | {
+      id: number
+      state: 'ready'
+      title: string
+      // The prompt that generated the clip; null for a freeze capture or an imported
+      // file.
+      prompt: string | null
+      // The source: an engine (sfx/music/magenta), 'freeze' for a deck capture, or
+      // null for an imported file. A plain display string, like SongEntry.model.
+      model: string | null
+      // The filename on disk (registry identity); null only outside Tauri.
+      file: string | null
+      // Loop vs one-shot — picks how it reloads into a slot.
+      oneShot: boolean
+      // Bytes held only for a clip composed THIS session in the Samples tab; a
+      // restored sample (incl. a deck-saved freeze/pad) reads them from disk on load.
+      wav?: ArrayBuffer
+    }
+
 // A browsable file: just the name. `read_audio_file` re-derives the path from the
 // chosen folder + name (the webview never supplies a path to read).
 type FolderFile = { name: string }
@@ -63,6 +114,11 @@ const ENGINE_LENGTHS: Record<TrackEngine, number[]> = {
   magenta: [30, 60, 120, 180],
 }
 const ENGINES = Object.keys(ENGINE_LENGTHS) as TrackEngine[]
+// The Generate tab composes full tracks (songs); the Samples tab composes short
+// loops (samples). SFX/Music moved to the Samples tab (ADR-0022). `ENGINES` stays
+// the full set so `asTrackEngine` still recognises an older song saved as sfx/music.
+const TRACK_ENGINES: TrackEngine[] = ['track', 'magenta']
+const SAMPLE_ENGINES: SampleEngine[] = ['sfx', 'music']
 
 function formatLength(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
@@ -91,21 +147,81 @@ function trackLabel(track: GeneratedTrack): string {
   return track.prompt != null ? `${track.title} #${track.id}` : track.title
 }
 
+/** A sample's row/deck/aria label — the take rule, applied to a sample: title plus a
+ * session-unique #id for a composed/generated clip (a prompt), or just the name for a
+ * freeze / imported file. */
+function sampleLabel(sample: GeneratedSample): string {
+  return sample.prompt != null ? `${sample.title} #${sample.id}` : sample.title
+}
+
+/** A row's on-disk filename, or null for a pending row / an in-session take not yet
+ * saved. The key a live re-list reuses an existing row by, so its id (and any
+ * in-memory `wav`) survive a refresh instead of churning. */
+function fileOf(row: { state: string; file?: string | null }): string | null {
+  return row.state === 'ready' ? (row.file ?? null) : null
+}
+
+/** Re-list one library (songs or samples) from its on-disk registry, reconciled
+ * against the folder by the Rust shell (hand-added files appear; deleted files drop
+ * out). A row already held for a file keeps its id + in-memory wav (reuse by
+ * filename), so a live re-list never churns; a row whose file vanished is dropped; an
+ * in-session take not yet on disk is kept. `ref` is read after the fetch resolves
+ * (freshest), and the id mint (`toRow`) runs OUTSIDE the state updater — StrictMode
+ * replays updaters, so they must be pure. A no-op outside Tauri. */
+function reListLibrary<
+  R extends { id: number; state: string; file?: string | null },
+  E extends { file: string },
+>(
+  command: string,
+  ref: { current: R[] },
+  setRows: (next: (current: R[]) => R[]) => void,
+  toRow: (entry: E) => R,
+): void {
+  if (!isTauri()) return
+  void (async () => {
+    let entries: E[]
+    try {
+      entries = (await invoke<E[]>(command)) ?? []
+    } catch {
+      return // a failed scan just means no refresh; composing still works
+    }
+    const byFile = new Map(
+      ref.current
+        .map((row) => [fileOf(row), row] as const)
+        .filter((pair): pair is readonly [string, R] => pair[0] != null),
+    )
+    const restored = entries.map((entry) => byFile.get(entry.file) ?? toRow(entry))
+    setRows((current) => [...restored, ...current.filter((row) => fileOf(row) == null)])
+  })()
+}
+
 /** What the webview sends with a freshly composed take (Rust `songs::NewSong`). */
 type NewSong = { title: string; prompt: string; model: TrackEngine }
 
 /** Persist a ready take to ~/Documents/LSDJai/generated_songs through the Rust shell
- * and return its registry entry. Frame [u32 LE meta-JSON length][meta JSON utf-8]
- * [WAV bytes] as one binary payload — the same binary-IPC shape the engine's
- * load/embed commands use (a JSON args map would be megabytes of text for a multi-MB
- * WAV). The old `<a download>` is gone: it silently no-ops in WKWebView. */
+ * and return its registry entry ({@link encodeMetaFrame} builds the binary payload —
+ * a JSON args map would be megabytes of text for a multi-MB WAV). The old
+ * `<a download>` is gone: it silently no-ops in WKWebView. */
 function saveGeneratedSong(meta: NewSong, wav: ArrayBuffer): Promise<SongEntry> {
-  const metaBytes = new TextEncoder().encode(JSON.stringify(meta))
-  const payload = new Uint8Array(4 + metaBytes.length + wav.byteLength)
-  new DataView(payload.buffer).setUint32(0, metaBytes.length, true)
-  payload.set(metaBytes, 4)
-  payload.set(new Uint8Array(wav), 4 + metaBytes.length)
-  return invoke<SongEntry>('save_generated_song', payload)
+  return invoke<SongEntry>('save_generated_song', encodeMetaFrame(meta, wav))
+}
+
+/** What the webview sends with a freshly composed sample (Rust `samples::NewSample`):
+ * a NewSong plus `oneShot`. `prompt`/`model` are nullable so the same shape carries a
+ * deck freeze (server-side via `save_loop_slot`), though the Samples tab always sends
+ * a prompt + engine. */
+type NewSample = {
+  title: string
+  prompt: string | null
+  model: string | null
+  oneShot: boolean
+}
+
+/** Persist a Samples-tab composition to ~/Documents/LSDJai/generated_samples through
+ * the Rust shell. (Deck freezes and pads auto-save through the deck channel; this is
+ * only the explorer's own SFX/Music compositions.) */
+function saveGeneratedSample(meta: NewSample, wav: ArrayBuffer): Promise<SampleEntry> {
+  return invoke<SampleEntry>('save_generated_sample', encodeMetaFrame(meta, wav))
 }
 
 type MediaExplorerProps = {
@@ -119,6 +235,15 @@ type MediaExplorerProps = {
   /** Return a deck to its live stream — the guaranteed exit from
    * playback, expressed as a load like everything else (ADR-0013). */
   onLoadLive: (deck: DeckId) => void
+  /** Load a saved sample into a deck loop slot (ADR-0022) — the first free
+   * slot, as a loop or one-shot per the sample. Resolves false when every slot
+   * is full, the deck isn't a live Realtime deck, or the body doesn't decode. */
+  onLoadSample: (
+    deck: DeckId,
+    wav: ArrayBuffer,
+    oneShot: boolean,
+    label: string,
+  ) => Promise<boolean>
 }
 
 /** The Media Explorer (M19, ADR-0013): one pane below the booth that
@@ -133,6 +258,7 @@ export function MediaExplorer({
   onImportPresets,
   onLoadTrack,
   onLoadLive,
+  onLoadSample,
 }: MediaExplorerProps) {
   const { t } = useTranslation()
   const [tab, setTab] = useState<MediaTab>('crates')
@@ -147,6 +273,17 @@ export function MediaExplorer({
   // Auto-save runs after a take is composed; its failure is separate from a
   // generation failure (the take is already playable from memory).
   const [saveError, setSaveError] = useState<string | null>(null)
+  // The Samples tab (ADR-0022): its own compose form + list, the loop counterpart of
+  // the Generate tab's. Short SFX/Music compose here now; deck freezes/pads also land
+  // in this library and surface on a re-list.
+  const [samples, setSamples] = useState<GeneratedSample[]>([])
+  const [sampleTitle, setSampleTitle] = useState('')
+  const [samplePrompt, setSamplePrompt] = useState('')
+  const [sampleEngine, setSampleEngine] = useState<SampleEngine>('sfx')
+  const [sampleSeconds, setSampleSeconds] = useState(10)
+  const [sampleOneShot, setSampleOneShot] = useState(false)
+  const [sampleError, setSampleError] = useState<string | null>(null)
+  const [sampleSaveError, setSampleSaveError] = useState<string | null>(null)
   const [folderName, setFolderName] = useState<string | null>(null)
   // The native picker's absolute folder path; `read_audio_file` scopes reads to it.
   const [folderPath, setFolderPath] = useState<string | null>(null)
@@ -161,6 +298,17 @@ export function MediaExplorer({
   // A ref, not state: two composes batched into one render (Enter +
   // click) must not mint the same id.
   const nextIdRef = useRef(1)
+  // The latest lists mirrored in refs (synced after commit). A live re-list (tab
+  // open, or the folder watcher firing) reads these from its effect/callback to reuse
+  // a row's id + in-memory wav by filename, so a refresh never churns ids or re-reads
+  // bytes — and the id mint stays OUTSIDE the state updater (StrictMode replays
+  // updaters, so they must be pure). At most one render stale, which is fine here.
+  const tracksRef = useRef<GeneratedTrack[]>([])
+  const samplesRef = useRef<GeneratedSample[]>([])
+  useEffect(() => {
+    tracksRef.current = tracks
+    samplesRef.current = samples
+  }, [tracks, samples])
 
   const ready = tracks.filter(
     (track): track is GeneratedTrack & { state: 'ready' } =>
@@ -168,6 +316,15 @@ export function MediaExplorer({
   )
   const highlightedReadyId =
     ready.length === 0 ? null : ready[Math.min(highlight, ready.length - 1)].id
+
+  const readySamples = samples.filter(
+    (sample): sample is GeneratedSample & { state: 'ready' } =>
+      sample.state === 'ready',
+  )
+  const highlightedSampleId =
+    readySamples.length === 0
+      ? null
+      : readySamples[Math.min(highlight, readySamples.length - 1)].id
 
   async function loadGeneratedTrack(
     deck: DeckId,
@@ -234,44 +391,119 @@ export function MediaExplorer({
     }
   }
 
-  // Restore the take list from the on-disk registry at startup, reconciled against
-  // the folder by the Rust shell (files added by hand appear with no model; deleted
-  // files drop out). Tauri only — a plain browser has nothing persisted. Restored
-  // takes carry no in-memory `wav`; their bytes load from disk on demand.
-  useEffect(() => {
-    if (!isTauri()) return
-    let live = true
-    void (async () => {
-      try {
-        const entries = (await invoke<SongEntry[]>('list_generated_songs')) ?? []
-        if (!live) return
-        const restored: GeneratedTrack[] = entries.map((entry) => ({
+  /** The display label for a sample's source/engine column: an engine name, "Freeze"
+   * for a deck capture, or "Imported" for a hand-added file / unknown model. */
+  function sampleModelLabel(model: string | null): string {
+    if (model == null) return t('media.generate.imported')
+    if (model === 'freeze') return t('media.samples.freeze')
+    if ((ENGINES as string[]).includes(model)) return t(`media.generate.engines.${model}`)
+    return t('media.generate.imported')
+  }
+
+  async function loadSample(
+    deck: DeckId,
+    sample: GeneratedSample & { state: 'ready' },
+  ) {
+    setSampleError(null)
+    try {
+      // In memory for a clip composed this session; otherwise read the bytes back
+      // from disk (scoped to the samples folder by the Rust shell).
+      const label = sampleLabel(sample)
+      let wav = sample.wav
+      if (!wav) {
+        if (!sample.file) throw new Error(t('media.undecodable', { title: label }))
+        wav = await invoke<ArrayBuffer>('read_generated_sample', { name: sample.file })
+      }
+      // decodeAudioData (inside the slot load) detaches its input — hand over a copy
+      // so the sample can load again, or onto the other deck.
+      const loaded = await onLoadSample(deck, wav.slice(0), sample.oneShot, label)
+      if (!loaded) setSampleError(t('media.samples.loadFailed', { title: label }))
+    } catch (error) {
+      // The click is fire-and-forget (`void loadSample`), so a rejected read/decode/
+      // load would otherwise vanish and look like nothing happened.
+      setSampleError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const dropSample = (id: number) =>
+    setSamples((current) => current.filter((entry) => entry.id !== id))
+
+  async function removeSample(sample: GeneratedSample & { state: 'ready' }) {
+    // Mirror removeTrack: an in-memory-only clip just leaves the list; a persisted
+    // one is removed only after the file is trashed and the registry pruned.
+    if (!isTauri() || !sample.file) {
+      dropSample(sample.id)
+      return
+    }
+    try {
+      await invoke('delete_generated_sample', { name: sample.file })
+      dropSample(sample.id)
+    } catch (error) {
+      setSampleSaveError(
+        t('media.samples.deleteFailed', {
+          title: sample.title,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      )
+    }
+  }
+
+  // The two libraries' re-list, each a thin {@link reListLibrary} call differing only
+  // in the command, the ref, the setter, and the registry-entry → row mapping (a
+  // sample carries `oneShot`; a song's model runs through `asTrackEngine`). Used at
+  // startup and by the folder watcher.
+  const refreshSongs = useCallback(
+    () =>
+      reListLibrary<GeneratedTrack, SongEntry>(
+        'list_generated_songs',
+        tracksRef,
+        setTracks,
+        (entry) => ({
           id: nextIdRef.current++,
           state: 'ready',
           title: entry.title,
           prompt: entry.prompt,
           model: asTrackEngine(entry.model),
           file: entry.file,
-        }))
-        const restoredFiles = new Set(entries.map((entry) => entry.file))
-        // Keep any take composed before this resolved (not in the registry read).
-        setTracks((current) => [
-          ...restored,
-          ...current.filter(
-            (track) =>
-              track.state !== 'ready' ||
-              track.file == null ||
-              !restoredFiles.has(track.file),
-          ),
-        ])
-      } catch {
-        // A failed scan just means no restored list; composing still works.
-      }
-    })()
-    return () => {
-      live = false
-    }
-  }, [])
+        }),
+      ),
+    [],
+  )
+  const refreshSamples = useCallback(
+    () =>
+      reListLibrary<GeneratedSample, SampleEntry>(
+        'list_generated_samples',
+        samplesRef,
+        setSamples,
+        (entry) => ({
+          id: nextIdRef.current++,
+          state: 'ready',
+          title: entry.title,
+          prompt: entry.prompt,
+          model: entry.model,
+          file: entry.file,
+          oneShot: entry.oneShot,
+        }),
+      ),
+    [],
+  )
+
+  // Restore both lists at startup; the folder watcher keeps them live thereafter.
+  useEffect(() => {
+    refreshSongs()
+    refreshSamples()
+  }, [refreshSongs, refreshSamples])
+
+  // Live-reload from the Rust folder watcher (ADR-0022): a deck auto-saving a sample,
+  // or a file dropped in / deleted by hand, fires `library://changed`; re-list the
+  // named library. A no-op outside Tauri (the event bridge is absent).
+  useEffect(
+    () =>
+      subscribeLibraryChanged((library) =>
+        library === 'songs' ? refreshSongs() : refreshSamples(),
+      ),
+    [refreshSongs, refreshSamples],
+  )
 
   const bus = useControlBus()
   useEffect(() =>
@@ -279,14 +511,19 @@ export function MediaExplorer({
       if (intent.kind === 'browse_tab') {
         // Rotary press: cycle the visible tab from the hardware.
         setTab((current) => {
-          const order: MediaTab[] = ['crates', 'generate', 'folder']
+          const order: MediaTab[] = ['crates', 'generate', 'samples', 'folder']
           return order[(order.indexOf(current) + 1) % order.length]
         })
         setHighlight(0)
         return
       }
       if (tab === 'crates') return // CrateBrowser owns its own list
-      const count = tab === 'generate' ? ready.length : files.length
+      const count =
+        tab === 'generate'
+          ? ready.length
+          : tab === 'samples'
+            ? readySamples.length
+            : files.length
       if (intent.kind === 'browse_scroll') {
         if (count === 0) return
         setHighlight((current) =>
@@ -297,12 +534,119 @@ export function MediaExplorer({
         if (index < 0) return
         if (tab === 'generate') {
           void loadGeneratedTrack(intent.deck, ready[index])
+        } else if (tab === 'samples') {
+          void loadSample(intent.deck, readySamples[index])
         } else {
           void loadFolderFile(intent.deck, files[index])
         }
       }
     }),
   )
+
+  /** Compose a short loop in the Samples tab → ~/Documents/LSDJai/generated_samples
+   * (ADR-0022). Mirrors {@link generateTrack} but always SFX/Music and persists to the
+   * sample library. A loop carries the seam surplus the engine folds on reload (the
+   * deck-pad convention), so the saved WAV reloads at the right musical length. */
+  function composeSample() {
+    const trimmedPrompt = samplePrompt.trim()
+    if (!trimmedPrompt) return
+    const id = nextIdRef.current++
+    const requestEngine = sampleEngine
+    const oneShot = sampleOneShot
+    const clipTitle = sampleTitle.trim() || randomSongTitle()
+    // A loop asks for the surplus tail the engine folds away on reload; a one-shot is
+    // taken as asked.
+    const requestSeconds = oneShot ? sampleSeconds : sampleSeconds + LOOP_CROSSFADE_SECONDS
+    setSampleError(null)
+    setSampleSaveError(null)
+    setSamples((current) => [
+      ...current,
+      {
+        id,
+        state: 'pending',
+        title: clipTitle,
+        prompt: trimmedPrompt,
+        model: requestEngine,
+        oneShot,
+      },
+    ])
+    void (async () => {
+      try {
+        const apiBase = await getApiBaseUrl()
+        const response = await fetch(`${apiBase}/api/generate`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            prompt: trimmedPrompt,
+            seconds: requestSeconds,
+            kind: requestEngine,
+          }),
+        })
+        if (!response.ok) {
+          const detail = await response
+            .json()
+            .then((body: { detail?: string }) => body.detail)
+            .catch(() => null)
+          throw new Error(detail || `generation failed (${response.status})`)
+        }
+        const wav = await response.arrayBuffer()
+        setSamples((current) =>
+          current.map((sample) =>
+            sample.id === id
+              ? {
+                  id,
+                  state: 'ready',
+                  title: clipTitle,
+                  prompt: trimmedPrompt,
+                  model: requestEngine,
+                  file: null,
+                  oneShot,
+                  wav,
+                }
+              : sample,
+          ),
+        )
+        if (isTauri()) {
+          try {
+            const entry = await saveGeneratedSample(
+              { title: clipTitle, prompt: trimmedPrompt, model: requestEngine, oneShot },
+              wav,
+            )
+            setSamples((current) =>
+              current.map((sample) =>
+                sample.id === id && sample.state === 'ready'
+                  ? { ...sample, file: entry.file }
+                  : sample,
+              ),
+            )
+          } catch (error) {
+            setSampleSaveError(
+              t('media.samples.saveFailed', {
+                title: clipTitle,
+                message: error instanceof Error ? error.message : String(error),
+              }),
+            )
+          }
+        }
+      } catch (error) {
+        setSamples((current) => current.filter((sample) => sample.id !== id))
+        setSampleError(error instanceof Error ? error.message : String(error))
+      }
+    })()
+  }
+
+  async function openSamplesFolder() {
+    setSampleSaveError(null)
+    try {
+      await invoke('open_samples_folder')
+    } catch (error) {
+      setSampleSaveError(
+        t('media.samples.openFolderFailed', {
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      )
+    }
+  }
 
   function generateTrack() {
     const trimmedPrompt = prompt.trim()
@@ -444,7 +788,7 @@ export function MediaExplorer({
       <div className="media__header">
         <h2 className="media__title">{t('media.title')}</h2>
         <div className="media__tabs" role="tablist">
-          {(['crates', 'generate', 'folder'] as const).map((name) => (
+          {(['crates', 'generate', 'samples', 'folder'] as const).map((name) => (
             <Button
               key={name}
               lit={tab === name}
@@ -507,7 +851,7 @@ export function MediaExplorer({
             <Select
               label={t('media.generate.engine')}
               value={engine}
-              options={ENGINES.map((name) => ({
+              options={TRACK_ENGINES.map((name) => ({
                 value: name,
                 label: t(`media.generate.engines.${name}`),
               }))}
@@ -611,6 +955,146 @@ export function MediaExplorer({
           {saveError && (
             <p className="media__error" role="alert">
               {saveError}
+            </p>
+          )}
+        </div>
+      )}
+
+      {tab === 'samples' && (
+        <div className="media__generate">
+          <div className="media__generate-toolbar">
+            <Button onClick={() => void openSamplesFolder()}>
+              {t('media.samples.openFolder')}
+            </Button>
+          </div>
+          <div className="media__generate-row">
+            <div className="media__title-field">
+              <TextField
+                label={t('media.generate.title')}
+                value={sampleTitle}
+                placeholder={t('media.generate.titlePlaceholder')}
+                onChange={(event) => setSampleTitle(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') composeSample()
+                }}
+              />
+            </div>
+            <TextField
+              label={t('media.samples.prompt')}
+              value={samplePrompt}
+              onChange={(event) => setSamplePrompt(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') composeSample()
+              }}
+            />
+            <Select
+              label={t('media.generate.engine')}
+              value={sampleEngine}
+              options={SAMPLE_ENGINES.map((name) => ({
+                value: name,
+                label: t(`media.generate.engines.${name}`),
+              }))}
+              onChange={(value) => {
+                const next = value as SampleEngine
+                setSampleEngine(next)
+                if (!ENGINE_LENGTHS[next].includes(sampleSeconds)) {
+                  setSampleSeconds(ENGINE_LENGTHS[next][1])
+                }
+              }}
+            />
+            <Select
+              label={t('media.generate.length')}
+              value={String(sampleSeconds)}
+              options={ENGINE_LENGTHS[sampleEngine].map((length) => ({
+                value: String(length),
+                label: formatLength(length),
+              }))}
+              onChange={(value) => setSampleSeconds(Number(value))}
+            />
+            <Button
+              lit={sampleOneShot}
+              aria-pressed={sampleOneShot}
+              aria-label={t('media.samples.playbackMode')}
+              onClick={() => setSampleOneShot((current) => !current)}
+            >
+              {t(sampleOneShot ? 'media.samples.oneShot' : 'media.samples.loop')}
+            </Button>
+            <Button disabled={!samplePrompt.trim()} onClick={composeSample}>
+              {t('media.generate.action')}
+            </Button>
+          </div>
+          {samples.length === 0 ? (
+            <p className="media__empty">{t('media.samples.empty')}</p>
+          ) : (
+            <ul className="media__list">
+              {samples.map((sample) => {
+                const composed = sample.prompt != null
+                const rowLabel = sampleLabel(sample)
+                return (
+                  <li
+                    key={sample.id}
+                    className={`media__item${
+                      sample.id === highlightedSampleId
+                        ? ' media__item--highlighted'
+                        : ''
+                    }`}
+                  >
+                    <span className="media__name">
+                      <span className="media__name-text">
+                        {sample.state === 'pending'
+                          ? t('media.generate.pending', { title: sample.title })
+                          : sample.title}
+                      </span>
+                      {sample.state === 'ready' && composed && (
+                        <span className="media__name-tag">{`#${sample.id}`}</span>
+                      )}
+                    </span>
+                    <span className="media__meta">
+                      {`${sampleModelLabel(sample.model)} · ${t(
+                        sample.oneShot ? 'media.samples.oneShot' : 'media.samples.loop',
+                      )}`}
+                    </span>
+                    {sample.state === 'ready' &&
+                      loadButtons((deck) => void loadSample(deck, sample), rowLabel)}
+                    {sample.state === 'ready' && sample.prompt != null && (
+                      <Button
+                        aria-label={t('media.generate.inspect', { name: rowLabel })}
+                        lit={expandedId === sample.id}
+                        onClick={() =>
+                          setExpandedId((current) =>
+                            current === sample.id ? null : sample.id,
+                          )
+                        }
+                      >
+                        🔍
+                      </Button>
+                    )}
+                    {sample.state === 'ready' && (
+                      <Button
+                        aria-label={t('media.remove', { name: rowLabel })}
+                        onClick={() => void removeSample(sample)}
+                      >
+                        ✕
+                      </Button>
+                    )}
+                    {sample.state === 'ready' &&
+                      sample.prompt != null &&
+                      expandedId === sample.id && (
+                        <p className="media__prompt">{prettyPrompt(sample.prompt)}</p>
+                      )}
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+          {sampleError && (
+            <p className="media__error" role="alert">
+              {t('media.samples.failed', { message: sampleError })}
+            </p>
+          )}
+          {sampleSaveError && (
+            <p className="media__error" role="alert">
+              {sampleSaveError}
             </p>
           )}
         </div>

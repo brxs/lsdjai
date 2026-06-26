@@ -69,8 +69,10 @@ cluster them), and ride the crossfader between decks.
   bit-exact bypass ([ADR-0008](docs/adr/0008-color-fx-as-one-knob-curves-at-a-pre-fader-insert.md)).
 - **Freeze loops** — capture the last bars of a deck into one of four
   loop slots and hold the moment on air while you re-steer the model
-  underneath; loops are session-only by design
+  underneath
   ([ADR-0009](docs/adr/0009-freeze-pads-loop-played-audio-at-the-channel-head.md)).
+  Captures and generated pads now auto-save to the samples library so a
+  good one survives the session (see **Samples** below).
 - **Beat detection** — each deck shows its detected BPM behind an
   honesty gate (a dash rather than a wrong number); with a confident
   tempo the Dub Echo syncs to the beat and freeze captures quantise to
@@ -83,6 +85,13 @@ cluster them), and ride the crossfader between decks.
 - **Crates** — save a deck's pad + Color FX as a named preset, browse
   the crate from the FLX4's rotary, and load onto either deck mid-set;
   export/import as JSON for backup and sharing.
+- **Samples** — frozen loops, generated pads, and short SFX/Music
+  compositions persist to `~/Documents/LSDJai/generated_samples`; the Media
+  Explorer's **Samples** tab browses them and loads one back into a deck
+  loop slot. A loaded sample **layers** over the deck — it's summed on top
+  of the live stream and several stack at once, so you can build a jam over
+  whatever the model is playing (freezes still *replace*, to hold a moment)
+  ([ADR-0022](docs/adr/0022-persist-generated-samples-and-loops.md)).
 - **Master housekeeping** — a limiter on the master (the meter, the
   recording, and the phones all hear the limited signal; its gain
   reduction shows in the mixer) and per-channel auto-gain Trim that

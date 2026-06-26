@@ -281,11 +281,14 @@ describe('createNativeEngine — snapshot-backed getters', () => {
     await settle()
     calls.length = 0
 
-    expect(ch.playLoop(0)).toBe(true) // slot 0 filled
-    expect(calls).toContainEqual({ cmd: 'play_loop', args: { deck: 0, slot: 0 } })
+    expect(ch.playLoop(0, false)).toBe(true) // slot 0 filled
+    expect(calls).toContainEqual({
+      cmd: 'play_loop',
+      args: { deck: 0, slot: 0, layer: false },
+    })
 
     calls.length = 0
-    expect(ch.playLoop(1)).toBe(false) // slot 1 empty
+    expect(ch.playLoop(1, true)).toBe(false) // slot 1 empty
     expect(calls.find((c) => c.cmd === 'play_loop')).toBeUndefined()
   })
 
