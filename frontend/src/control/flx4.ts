@@ -250,11 +250,13 @@ export function createFlx4Translator(): Flx4Translator {
     const [status, number, value] = [data[0], data[1], data[2]]
 
     // SHIFT held-state, tracked from press AND release — so this must
-    // run before the velocity-0 drop below.
+    // run before the velocity-0 drop below. Also surfaced as an intent so
+    // cross-deck consumers (SHIFT+jog cursor steering) can see which deck's
+    // SHIFT is down.
     const shiftDeck = NOTE_ON_DECK[status]
     if (shiftDeck && number === SHIFT_NOTE) {
       shiftHeld[shiftDeck] = value > 0
-      return null
+      return { kind: 'shift', deck: shiftDeck, held: value > 0 }
     }
 
     // The browse rotary is relative — its CC must not enter the

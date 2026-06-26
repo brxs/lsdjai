@@ -43,6 +43,13 @@ const MAX_TARGETS = MAX_PRESET_TARGETS
 // Cursor drags re-blend cached embeddings server-side; ~7/s is plenty when
 // styles land at chunk boundaries anyway.
 const STYLE_SEND_INTERVAL_MS = 150
+// Pad units a single jog tick steers the cursor under SHIFT (tunable on the
+// device — see the net hardware checklist).
+const CURSOR_JOG_STEP = 0.01
+
+function clamp01(value: number) {
+  return Math.min(1, Math.max(0, value))
+}
 
 /** Leading+trailing throttle where an immediate send is the chokepoint:
  * it cancels any pending trailing send, so a stale gesture frame queued
@@ -120,6 +127,9 @@ type DeckColumnProps = {
   /** Reports which pads are selected in the net (for the pad LED echo),
    * one boolean per target by pad index. */
   onSelectionChange?: (selected: boolean[]) => void
+  /** Which deck's SHIFT is held (App-tracked). When it equals this deck's id,
+   * the jogs steer this deck's cursor — jog A the x axis, jog B the y. */
+  shiftedDeck?: DeckId | null
   /** Generating off air (M10 deck prep) — surfaced in the status line. */
   primed?: boolean
   /** Color FX insert state and controls (M12). */
@@ -184,6 +194,7 @@ export function DeckColumn({
   onRestart,
   onTargetCount,
   onSelectionChange,
+  shiftedDeck,
   primed = false,
   fx,
   onSetFx,
@@ -563,19 +574,34 @@ export function DeckColumn({
           else next.add(target.text)
           return next
         })
-      } else if (intent.kind === 'track_seek' && intent.deck === deckId) {
-        // Jog ticks move every selected dot radially about the cursor:
-        // clockwise (positive steps) pulls inward — closer to the hub, more
-        // weight — counter-clockwise pushes out. No-op with nothing selected,
-        // so the realtime jog stays inert until the user opts in.
-        if (selected.size === 0) return
-        const next = targets.map((target) =>
-          selected.has(target.text)
-            ? { ...target, ...moveRadial(target, cursor, intent.steps) }
-            : target,
-        )
-        setTargets(next)
-        sendStyleThrottled(next, cursor)
+      } else if (intent.kind === 'track_seek') {
+        if (shiftedDeck === deckId) {
+          // SHIFT held on this deck: the two jogs steer this cursor in 2D —
+          // jog A the x axis (CW → right), jog B the y (CW → down). The other
+          // deck's jog reaches us because shiftedDeck routes by held SHIFT,
+          // not by the jog's own deck.
+          const delta = intent.steps * CURSOR_JOG_STEP
+          if (intent.deck === 'a') {
+            handleCursor(clamp01(cursor.x + delta), cursor.y)
+          } else {
+            handleCursor(cursor.x, clamp01(cursor.y + delta))
+          }
+        } else if (
+          shiftedDeck == null &&
+          intent.deck === deckId &&
+          selected.size > 0
+        ) {
+          // No SHIFT: this deck's own jog reels its selected dots radially
+          // about the cursor — CW pulls inward (more weight), CCW pushes out.
+          const next = targets.map((target) =>
+            selected.has(target.text)
+              ? { ...target, ...moveRadial(target, cursor, intent.steps) }
+              : target,
+          )
+          setTargets(next)
+          sendStyleThrottled(next, cursor)
+        }
+        // Otherwise another deck is being steered — leave this one alone.
       } else if (intent.kind === 'style_sweep' && intent.deck === deckId) {
         const next = sweepPosition(intent.value)
         handleCursor(next.x, next.y)

@@ -35,6 +35,20 @@ CUE pads show brightness (the dim-vs-bright LED scheme). See the byte map in
       no drift) — the realtime stream is untouched (ADR-0004).
 - [ ] The mouse still drags both the cursor and any dot; the net follows.
 
+## SHIFT+jog steers the blue dot (full 2D)
+
+- [ ] Hold a deck's **SHIFT**: turning **jog A** moves THAT deck's blue dot
+      left/right (CW → right), turning **jog B** moves it up/down (CW → down).
+      Both wheels together navigate the dot anywhere on the pad.
+- [ ] Holding the OTHER deck's SHIFT steers the other deck's dot the same way.
+- [ ] While SHIFT is held the jogs steer and do **not** reel selected dots;
+      release SHIFT and the plain-jog reel is back.
+- [ ] Steering feel: tune `CURSOR_JOG_STEP` in `DeckColumn.tsx` if a turn moves
+      the dot too far / not far enough. Tuned value = `______`.
+- [ ] Edge case to note (not a blocker): if the OTHER deck is in **playback**,
+      its jog also scrubs that track while steering — expected, since a playback
+      jog still seeks (ADR-0013). Both decks in live mode = clean.
+
 ## LED scheme — the measured unknown (decision §4.4)
 
 - [ ] Selected pads read **brighter** than available-but-unselected pads.

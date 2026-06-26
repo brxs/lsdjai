@@ -544,13 +544,29 @@ describe('createFlx4Translator', () => {
   describe('unmapped traffic', () => {
     // CUE (0x90 note 0x0C) left this list in M10: it now preps a
     // deck; the jog wheels left in M19 (seek) and the tempo sliders
-    // in M20 (varispeed). SHIFT (note 0x3F) is consumed as a modifier
-    // since M12 but still emits no intent of its own.
+    // in M20 (varispeed). SHIFT (note 0x3F) is a modifier but now also
+    // surfaces its held-state as an intent (see below).
     it('ignores controls the map deliberately leaves out', () => {
       const translate = createFlx4Translator()
       expect(translate([0xb0, 0x21, 0x40])).toBeNull() // jog centre tick
-      expect(translate([0x90, 0x3f, PRESS])).toBeNull() // SHIFT (modifier)
       expect(translate([0xf8, 0x00, 0x00])).toBeNull() // clock-ish noise
+    })
+
+    it.each([
+      [0x90, 'a'],
+      [0x91, 'b'],
+    ] as const)('surfaces deck %s SHIFT held-state as an intent', (status, deck) => {
+      const translate = createFlx4Translator()
+      expect(translate([status, 0x3f, PRESS])).toEqual({
+        kind: 'shift',
+        deck,
+        held: true,
+      })
+      expect(translate([status, 0x3f, 0x00])).toEqual({
+        kind: 'shift',
+        deck,
+        held: false,
+      })
     })
 
     it('ignores truncated messages', () => {

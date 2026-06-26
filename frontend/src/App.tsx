@@ -174,14 +174,29 @@ function App() {
   // Resubscribes every render so the handler always reads current deck
   // state; the bus itself is a stable singleton.
   const bus = useControlBus()
+  // Which deck's SHIFT is down, for the cross-deck SHIFT+jog cursor steering
+  // (the steered deck takes one axis from each jog). Both down → deck A wins.
+  const [shiftHeld, setShiftHeld] = useState<Record<DeckId, boolean>>({
+    a: false,
+    b: false,
+  })
+  const shiftedDeck: DeckId | null = shiftHeld.a ? 'a' : shiftHeld.b ? 'b' : null
   useEffect(() =>
-    bus.subscribe((intent) =>
+    bus.subscribe((intent) => {
+      if (intent.kind === 'shift') {
+        setShiftHeld((previous) =>
+          previous[intent.deck] === intent.held
+            ? previous
+            : { ...previous, [intent.deck]: intent.held },
+        )
+        return
+      }
       applyAppIntent(
         intent,
         { a: deckA, b: deckB },
         { onCrossfade: handleCrossfade, onCueMix: handleCueMix },
-      ),
-    ),
+      )
+    }),
   )
 
   // Loading a preset: this component owns the FX half (via the deck
@@ -458,6 +473,7 @@ function App() {
           onRestart={deckA.restartWorker}
           onTargetCount={handleTargetCountA}
           onSelectionChange={handleSelectionChangeA}
+          shiftedDeck={shiftedDeck}
           primed={deckA.primed}
           fx={deckA.fx}
           onSetFx={deckA.setFx}
@@ -517,6 +533,7 @@ function App() {
           onRestart={deckB.restartWorker}
           onTargetCount={handleTargetCountB}
           onSelectionChange={handleSelectionChangeB}
+          shiftedDeck={shiftedDeck}
           primed={deckB.primed}
           fx={deckB.fx}
           onSetFx={deckB.setFx}

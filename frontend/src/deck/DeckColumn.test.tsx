@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
+import type { DeckId } from '../audio/types'
 import type { FxKind } from '../audio/fx'
 import { createControlBus, type ControlBus } from '../control/bus'
 import { ControlBusProvider } from '../control/ControlBusProvider'
@@ -32,6 +33,7 @@ function renderPanel(
     mode: 'realtime',
     track: null,
   },
+  shiftedDeck: DeckId | null = null,
 ) {
   return render(
     <ControlBusProvider bus={bus}>
@@ -47,6 +49,7 @@ function renderPanel(
         onSelectionChange={
           handlers.onSelectionChange as (selected: boolean[]) => void
         }
+        shiftedDeck={shiftedDeck}
         fx={fx}
         onSetFx={(handlers.onSetFx as (k: unknown) => void) ?? noop}
         onSetFxAmount={(handlers.onSetFxAmount as (v: number) => void) ?? noop}
@@ -760,6 +763,75 @@ describe('DeckColumn', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove funk' }))
     // funk is gone; the stale selection is pruned, techno stays unselected.
     expect(onSelectionChange).toHaveBeenLastCalledWith([false])
+  })
+
+  // Deck A is the shifted deck, so its jogs steer its cursor in 2D.
+  function steerPanel(bus: ControlBus) {
+    updateDeckSettings('a', {
+      targets: [
+        { text: 'funk', x: 0.2, y: 0.2 },
+        { text: 'techno', x: 0.8, y: 0.8 },
+      ],
+      cursor: { x: 0.5, y: 0.5 },
+    })
+    return renderPanel(
+      { connection: 'open' },
+      {},
+      bus,
+      { kind: null, amount: 0 },
+      emptyLoop(),
+      null,
+      true,
+      null,
+      { mode: 'realtime', track: null },
+      'a',
+    )
+  }
+
+  it('steers the cursor with SHIFT+jog — jog A on x, jog B on y', () => {
+    const bus = createControlBus()
+    const { container } = steerPanel(bus)
+    const cursorStyle = () =>
+      container.querySelector('.ui-xypad__cursor')!.getAttribute('style')
+
+    // Jog A clockwise → right (x up): 0.5 + 10·0.01 = 0.6.
+    act(() =>
+      bus.publish({ kind: 'track_seek', deck: 'a', steps: 10, shifted: true }),
+    )
+    expect(cursorStyle()).toContain('left: 60%')
+
+    // Jog A counter-clockwise → left: 0.6 − 30·0.01 = 0.3.
+    act(() =>
+      bus.publish({ kind: 'track_seek', deck: 'a', steps: -30, shifted: true }),
+    )
+    expect(cursorStyle()).toContain('left: 30%')
+
+    // Jog B clockwise → down (y up): 0.5 + 10·0.01 = 0.6. (Its own SHIFT is not
+    // held, but deck A's is — that's what routes it here.)
+    act(() =>
+      bus.publish({ kind: 'track_seek', deck: 'b', steps: 10, shifted: false }),
+    )
+    expect(cursorStyle()).toContain('top: 60%')
+  })
+
+  it('SHIFT+jog steers instead of reeling the selected dots', () => {
+    const bus = createControlBus()
+    const { container } = steerPanel(bus)
+    // Select a dot — without SHIFT a jog would reel it.
+    act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 0 }))
+    const dotStyle = () =>
+      container.querySelector('[data-target-id="funk"]')!.getAttribute('style')
+    const before = dotStyle()
+
+    act(() =>
+      bus.publish({ kind: 'track_seek', deck: 'a', steps: 10, shifted: true }),
+    )
+
+    // The dot stayed put; the cursor moved instead.
+    expect(dotStyle()).toEqual(before)
+    expect(
+      container.querySelector('.ui-xypad__cursor')!.getAttribute('style'),
+    ).toContain('left: 60%')
   })
 
   it('sweeps the cursor around the target circle from the control bus', () => {
