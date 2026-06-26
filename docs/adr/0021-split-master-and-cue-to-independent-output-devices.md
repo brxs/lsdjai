@@ -11,9 +11,10 @@ master mix for the audience and a private cue feed for the DJ's headphones. The
 native Rust engine already renders both as separate stereo feeds every block
 (`render_with_cue`) into two rings (master + cue).
 
-But the device layer collapsed them onto **one** cpal output stream: master on
-channels 1/2 and cue on channels 3/4 of a single device, and only when that
-device reports ≥4 channels (`run_host_stream`). That topology came from
+But the device layer collapsed them onto **one** cpal output stream (the single
+combined stream, then `run_host_stream`): master on channels 1/2 and cue on
+channels 3/4 of a single device, and only when that device reports ≥4 channels.
+That topology came from
 [ADR-0017](0017-native-rust-audio-engine-superseding-web-audio.md), which
 superseded the Web-Audio two-sink design of
 [ADR-0006](0006-cue-output-via-a-second-audio-sink.md) and the FLX4-phones plan
@@ -42,10 +43,13 @@ We will run **two output streams** with a derived **dual-mode** topology:
   FLX4 chosen purely as a cue device, whose phones jack is 3/4 and whose 1/2 is
   the MASTER RCA). The main stream becomes master-only.
 
-Mode is **derived**, not a stored flag:
-`combined = (cue_name == "" || cue_name == main_name) && main_is_4ch`. The master
-and cue rings become independently swappable (`SwapMasterRing` / `SwapCueRing`),
-so a cue-device change in split mode never disturbs the master stream.
+Mode is **derived**, not a stored flag: `combined = cue_name == "" || cue_name ==
+main_name` (the shell's `is_combined`). Whether a combined cue is actually audible
+also needs a ≥4-channel main — that channel check lives one layer down in the
+device opener, so a stereo main with "same as main" yields a combined-but-silent
+cue (the documented behaviour). The master and cue rings become independently
+swappable (`SwapMasterRing` / `SwapCueRing`), so a cue-device change in split mode
+never disturbs the master stream.
 
 ## Consequences
 
@@ -61,8 +65,9 @@ so a cue-device change in split mode never disturbs the master stream.
   device's clock, producing occasional tiny cue-only glitches over minutes.
   Acceptable — cueing auditions *texture*, not beat alignment (ADR-0004/0006).
   A future refinement could pace the cue ring independently.
-- Channel spreading is now pure, unit-tested helpers (`spread_stereo` /
-  `spread_master_cue`) shared by both streams; the callbacks stay alloc-free.
+- Channel spreading is a single pure, unit-tested `spread` helper (a buffer plus
+  a small list of `(channel_offset, stereo_block)` placements) shared by both
+  streams; the callbacks stay alloc-free.
 - This **supersedes the cue-routing stance of ADR-0007** and natively revives the
   two-sink idea of ADR-0006. A new hardware checklist
   (`docs/split-cue-hardware-checklist.md`) covers what tests can't.

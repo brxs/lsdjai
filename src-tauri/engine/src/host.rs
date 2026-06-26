@@ -24,7 +24,7 @@
 //! 3. Publish a [`Snapshot`] (per-deck track status / loop slots) behind a
 //!    `Mutex` the IPC thread reads.
 //!
-//! The cpal device callback ([`crate::device::run_host_stream`]) ONLY drains the
+//! The cpal device callback ([`crate::device::open_main_stream`]) ONLY drains the
 //! output ring into the device buffer, counts an underrun if the ring is short,
 //! and sets FTZ/DAZ — trivially alloc-free, still under `assert_no_alloc`.
 //!
@@ -223,7 +223,7 @@ enum Command {
     /// the about-to-be-replaced main stream was draining). The new device stream
     /// is opened on the matching consumer BEFORE this is sent, so a failed open
     /// never reaches here and audio is undisturbed. Built off the render thread
-    /// (`Host::new_master_ring`) and moved in. The cue ring is left alone, so a
+    /// (`Host::new_output_ring`) and moved in. The cue ring is left alone, so a
     /// cue-device switch never disturbs the master and vice versa.
     SwapMasterRing(Producer<f32>),
     /// Switch the CUE output device: the cue counterpart of [`SwapMasterRing`].
@@ -326,8 +326,8 @@ impl OutputConsumer {
 }
 
 /// A freshly-built output ring producer (master OR cue) for an output-device
-/// switch. Built off the render thread ([`Host::new_master_ring`] /
-/// [`Host::new_cue_ring`]) and handed back to it via [`Host::install_master_ring`]
+/// switch. Built off the render thread ([`Host::new_output_ring`]) and handed
+/// back to it via [`Host::install_master_ring`]
 /// / [`Host::install_cue_ring`] once the new device stream is open on the matching
 /// consumer. Opaque: the producer only travels from the host into the render
 /// thread.

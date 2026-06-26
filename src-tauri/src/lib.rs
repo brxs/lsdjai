@@ -19,7 +19,7 @@
 //! moves them onto the sidecar transport thread. Until then they are held in
 //! managed state so they stay alive (dropping a producer would close its ring).
 //!
-//! We then start the cpal device via [`engine_device::run_host_stream`], which
+//! We then start the cpal device via [`engine_device::open_main_stream`], which
 //! drains the host's output ring in its callback. In a sandbox / headless CI
 //! there is often no exact-48000/f32 device; that path returns
 //! [`DeviceError::Unavailable`] and we continue with no stream — the host's render
@@ -342,6 +342,11 @@ fn set_cue_device(
     let main_name = audio.main_name.lock().unwrap_or_else(|p| p.into_inner()).clone();
     let was_combined = {
         let cue_name = audio.cue_name.lock().unwrap_or_else(|p| p.into_inner());
+        // Re-selecting the already-active cue device would tear down and rebuild
+        // the cue stream for no change (a needless cue glitch) — short-circuit.
+        if name == *cue_name {
+            return Ok(());
+        }
         is_combined(&main_name, &cue_name)
     };
     if is_combined(&main_name, &name) {
@@ -349,12 +354,23 @@ fn set_cue_device(
         // any split cue stream).
         reopen_main(&host, &audio, &main_name, &name)?;
     } else {
-        // Split: open/replace the cue stream first (so the cue never drops out),
-        // then — only when leaving combined — reopen the main stream master-only so
-        // the cue isn't also duplicated on its 3/4.
+        // Split: open/replace the cue stream on its own device — the user's actual
+        // intent, fatal if it fails. Once it returns the cue is live on the new
+        // device, so the switch has succeeded.
         reopen_cue_split(&host, &audio, &name)?;
         if was_combined {
-            reopen_main(&host, &audio, &main_name, &name)?;
+            // Leaving combined: reopen main master-only so the cue isn't left
+            // duplicated on the old main device's 3/4. Best-effort — the cue
+            // switch already succeeded and the master is untouched on failure
+            // (reopen_main swaps only on success), so we log rather than fail and
+            // leave `cue_name` consistent with the live cue. Any stray duplicate
+            // clears on the next main switch.
+            if let Err(e) = reopen_main(&host, &audio, &main_name, &name) {
+                eprintln!(
+                    "lsdj-app: cue moved to '{name}', but clearing it from the old \
+                     main device's 3/4 failed: {e}"
+                );
+            }
         }
     }
     *audio.cue_name.lock().unwrap_or_else(|p| p.into_inner()) = name;
@@ -474,4 +490,33 @@ pub fn run() {
                 app.state::<sidecar::Sidecars>().shutdown();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_combined;
+
+    /// The cue rides the main device (combined) when no separate cue device is
+    /// chosen — an empty cue name is the "same as main" sentinel.
+    #[test]
+    fn empty_cue_is_combined() {
+        assert!(is_combined("", "")); // default main + default cue
+        assert!(is_combined("DDJ-FLX4", "")); // named main, "same as main" cue
+    }
+
+    /// Naming the cue device the same as the main device is also combined (the
+    /// guard that stops the same physical device opening two streams).
+    #[test]
+    fn cue_equal_to_main_is_combined() {
+        assert!(is_combined("DDJ-FLX4", "DDJ-FLX4"));
+        assert!(is_combined("", "")); // both default → same device → combined
+    }
+
+    /// A cue device distinct from the main device is split (its own stream).
+    #[test]
+    fn distinct_cue_device_is_split() {
+        assert!(!is_combined("MacBook Speakers", "DDJ-FLX4"));
+        assert!(!is_combined("", "DDJ-FLX4")); // default main, a named cue device
+        assert!(!is_combined("DDJ-FLX4", "Built-in Output"));
+    }
 }

@@ -341,8 +341,9 @@ pub fn open_cue_stream(
 /// stream. The `engine` is MOVED into the audio callback.
 ///
 /// This is the original engine-in-callback path (Phase 1 / `device_run`). The
-/// Tauri app now drives audio through [`run_host_stream`] + [`crate::host`]
-/// instead, but this path stays for the `device_run` binary and hardware spikes.
+/// Tauri app now drives audio through [`open_main_stream`] / [`open_cue_stream`] +
+/// [`crate::host`] instead, but this path stays for the `device_run` binary and
+/// hardware spikes.
 ///
 /// On any sandbox/headless condition (no device, wrong rate) this returns
 /// [`DeviceError::Unavailable`] without hanging — the caller decides whether that
