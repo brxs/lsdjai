@@ -45,3 +45,4 @@ scaffolds the file from the template.
 | [0018](0018-native-macos-shell-tauri-with-python-sidecars.md) | Native macOS shell: Tauri with Python sidecars | Accepted |
 | [0019](0019-pcm-transport-from-python-sidecars-to-the-rust-engine.md) | PCM transport from the Python sidecars to the Rust audio engine | Accepted |
 | [0020](0020-rust-interface-state-store-and-mcp-server.md) | Rust as the single interface-state store, exposed via a native MCP server | Proposed |
+| [0021](0021-split-master-and-cue-to-independent-output-devices.md) | Split master and cue to independent output devices (dual-mode) | Accepted |

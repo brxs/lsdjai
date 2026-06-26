@@ -35,9 +35,14 @@ export type AppSettings = {
   cueMix: number
   beatView: BeatViewLayout
   accent: AccentTheme
-  /** Last-chosen native output device, by name (M-cutover). The device
-   * may be gone on reload, so applying it is best-effort. */
+  /** Last-chosen native MAIN output device, by name (master → ch 1/2). The
+   * device may be gone on reload, so applying it is best-effort. (Key kept as
+   * `outputDevice` for back-compat with settings saved before the cue split.) */
   outputDevice: string
+  /** Last-chosen headphone CUE output device, by name. Empty = "same as main"
+   * (the FLX4 phones jack on ch 3/4); a different name routes the cue to a
+   * second device. Best-effort on reload, like outputDevice. */
+  cueDevice: string
 }
 
 const STORAGE_KEY = 'lsdj:v1'
@@ -168,6 +173,9 @@ export function loadAppSettings(): Partial<AppSettings> {
   }
   if (typeof stored.outputDevice === 'string' && stored.outputDevice) {
     settings.outputDevice = stored.outputDevice
+  }
+  if (typeof stored.cueDevice === 'string' && stored.cueDevice) {
+    settings.cueDevice = stored.cueDevice
   }
   return settings
 }

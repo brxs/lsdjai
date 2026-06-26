@@ -37,11 +37,16 @@ type MixerStripProps = {
   onCrossfadeChange: (position: number) => void
   cueMix: number
   onCueMixChange: (position: number) => void
-  /** The chosen native output device by name (empty = system default);
-   * the engine routes the cue to its channels 3/4. */
-  outputDevice: string
-  /** Fired when a device switch succeeds — the app persists the choice. */
-  onOutputDeviceChange: (name: string) => void
+  /** The chosen MAIN output device by name (empty = system default; master →
+   * its ch 1/2). */
+  mainDevice: string
+  /** Fired when a main-device switch succeeds — the app persists the choice. */
+  onMainDeviceChange: (name: string) => void
+  /** The chosen CUE output device by name (empty = "same as main", the FLX4
+   * phones on ch 3/4; a different name routes cue to a second device). */
+  cueDevice: string
+  /** Fired when a cue-device switch succeeds — the app persists the choice. */
+  onCueDeviceChange: (name: string) => void
   /** Beat-phase offset between the decks (M20), null while either
    * clock is unconfident — the meter blanks. */
   getPhaseOffset: () => number | null
@@ -72,8 +77,10 @@ export function MixerStrip({
   onCrossfadeChange,
   cueMix,
   onCueMixChange,
-  outputDevice,
-  onOutputDeviceChange,
+  mainDevice,
+  onMainDeviceChange,
+  cueDevice,
+  onCueDeviceChange,
   getPhaseOffset,
 }: MixerStripProps) {
   const { t } = useTranslation()
@@ -226,8 +233,15 @@ export function MixerStrip({
           onChange={onCueMixChange}
         />
         <OutputDevicePicker
-          value={outputDevice}
-          onSelect={onOutputDeviceChange}
+          mode="main"
+          value={mainDevice}
+          onSelect={onMainDeviceChange}
+        />
+        <OutputDevicePicker
+          mode="cue"
+          value={cueDevice}
+          onSelect={onCueDeviceChange}
+          mainDeviceName={mainDevice}
         />
       </div>
 

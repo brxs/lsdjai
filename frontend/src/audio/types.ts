@@ -114,7 +114,8 @@ export type DeckChannel = {
 
 /** An output device the native engine can open. `cueCapable` is `channels >= 4`
  * — only a ≥4-channel device (e.g. the FLX4) can carry the headphone cue on
- * channels 3/4 while the master plays out 1/2. */
+ * channels 3/4 of the SAME device as the master ("same as main" / combined
+ * mode). Any device can carry the cue as a separate cue device (split mode). */
 export type OutputDevice = {
   name: string
   channels: number
@@ -152,11 +153,16 @@ export type AudioEngine = {
   /** Cue/master blend for the headphone feed: 0 = cue only, 1 = master. */
   setCueMix: (position: number) => void
   /** The output devices the engine can open, with their channel counts —
-   * a ≥4-channel device can carry the headphone cue on channels 3/4. */
+   * a ≥4-channel device can carry the combined cue on channels 3/4. */
   listOutputDevices: () => Promise<OutputDevice[]>
-  /** Switch the engine's output device by name. Rejects (audio left
-   * undisturbed) when the device can't be opened. */
-  setOutputDevice: (name: string) => Promise<void>
+  /** Switch the engine's MAIN output device by name (empty = system default;
+   * master → its channels 1/2). Rejects (audio left undisturbed) when the
+   * device can't be opened. */
+  setMainDevice: (name: string) => Promise<void>
+  /** Switch the headphone CUE output device by name. Empty = "same as main"
+   * (the FLX4 phones jack on channels 3/4); a different name routes the cue to
+   * a second device. Rejects (audio left undisturbed) when it can't be opened. */
+  setCueDevice: (name: string) => Promise<void>
   /** Master-bus RMS level, 0..~1 (what the speakers get). */
   getMasterLevel: () => number
   /** The limiter's current gain reduction in dB (≤ 0); 0 when idle. */

@@ -180,46 +180,80 @@ fn open_output(
     Ok((device, config, info))
 }
 
-/// Open the default output device at exactly 48000/stereo/f32, build the stream
-/// that drains the host's [`OutputConsumer`] in its callback, start it, and return
-/// the running stream. The callback is the ONLY real-time path: it does nothing
-/// but set FTZ/DAZ once and drain the output ring into the device buffer
-/// (zero-filling + counting an underrun on a short ring), all under
-/// `assert_no_alloc` — trivially alloc/lock/syscall free.
+/// Zero a wider interleaved device buffer, then lay each `(channel_offset, src)`
+/// interleaved-stereo block onto channels `[offset, offset+1]`. One primitive for
+/// every routing: master on 1/2 is `&[(0, master)]`; the FLX4 combined path is
+/// `&[(0, master), (2, cue)]`; a split cue on the FLX4 phones is `&[(2, cue)]`.
+/// A frame past a block's length (or an offset past the device) is left silent.
+/// `placements` is a small fixed stack slice, so this stays pure and alloc-free —
+/// RT-safe.
+fn spread(data: &mut [f32], dev_ch: usize, placements: &[(usize, &[f32])]) {
+    let frames = data.len() / dev_ch;
+    for f in 0..frames {
+        let base = f * dev_ch;
+        for c in 0..dev_ch {
+            data[base + c] = 0.0;
+        }
+        for &(offset, src) in placements {
+            if offset + 1 < dev_ch && 2 * f + 1 < src.len() {
+                data[base + offset] = src[2 * f];
+                data[base + offset + 1] = src[2 * f + 1];
+            }
+        }
+    }
+}
+
+/// Open `selected` at exactly 48000/f32, build a stream that drains `primary` onto
+/// channels 1/2 — and, when `secondary` is `Some` AND the device has ≥4 channels,
+/// also drains it onto channels 3/4 (the FLX4 combined master+cue path). On a
+/// narrower device the `secondary` is dropped: the stream is primary-only and the
+/// secondary ring stays undrained (its `push_all` overflow is discarded, so the
+/// render thread never stalls). Start it and return the running stream.
 ///
-/// This is the host-driven device path (Phase 2, step 2): the [`Engine`] renders
-/// on the host's dedicated render thread into the output ring; the callback only
-/// pulls from it. See [`crate::host`] for the decoupled-render-thread rationale
-/// and the latency trade-off this introduces.
+/// `primary_on_phones` flips the lone-primary placement onto channels 3/4 when the
+/// device has ≥4 channels — the FLX4 chosen as a SEPARATE cue device, whose phones
+/// jack is 3/4 (its 1/2 is the MASTER RCA). It is ignored when `secondary` is set
+/// (the combined path already owns 1/2 and 3/4) or on a stereo device.
+///
+/// The callback is the ONLY real-time path: it sets FTZ/DAZ once, drains the
+/// ring(s), and spreads into the device buffer, all under `assert_no_alloc` —
+/// trivially alloc/lock/syscall free. The [`Engine`] renders on the host's
+/// dedicated render thread into the rings; the callback only pulls from them (see
+/// [`crate::host`] for the decoupled-render-thread rationale and latency note).
 ///
 /// On any sandbox/headless condition this returns [`DeviceError::Unavailable`]
 /// without hanging — the host keeps running headlessly (its render thread fills
-/// the ring; with no device nothing drains it, which is fine).
-pub fn run_host_stream(
+/// the rings; with no device nothing drains them, which is fine).
+fn open_spread_stream(
     selected: Option<&str>,
-    mut output: OutputConsumer,
-    mut cue: OutputConsumer,
+    mut primary: OutputConsumer,
+    secondary: Option<OutputConsumer>,
+    primary_on_phones: bool,
 ) -> Result<AudioStream, DeviceError> {
     let (device, config, info) = open_output(selected)?;
     let device_channels = info.device_channels as usize;
 
-    // The cue feed routes to device channels 3/4 when the device has ≥4 channels
-    // (the FLX4 phones jack, ADR-0007's native replacement). On a stereo / 3-ch
-    // device there is nowhere to put it: the cue ring is simply not drained (the
-    // render thread's push_all drops its overflow, so nothing stalls).
-    let cue_routed = device_channels >= 4;
+    // The secondary (cue) feed needs channels 3/4 — only a ≥4-channel device (the
+    // FLX4) can carry it alongside the primary. Drop it on a narrower device.
+    let mut secondary = if device_channels >= 4 { secondary } else { None };
+    let secondary_routed = secondary.is_some();
+    // Where the primary lands: a standalone cue stream on a ≥4-channel device (the
+    // FLX4 chosen as a SEPARATE cue device) belongs on the phones channels 3/4
+    // (offset 2), not 1/2 (its MASTER RCA). Master, and a cue on a stereo device
+    // (laptop jack, Bluetooth), land on 1/2 (offset 0).
+    let primary_offset = if primary_on_phones && device_channels >= 4 { 2 } else { 0 };
 
     let mut first_call = true;
     // Per-callback scratch for wide (>2ch) devices: the rings hold interleaved
     // stereo, so on a wider device we drain stereo into these scratches and spread
-    // into the device buffer (extra channels zeroed). Sized ONCE here, off the RT
-    // path, for a generous worst-case block; the callback never resizes them.
+    // into the device buffer. Sized ONCE here, off the RT path, for a generous
+    // worst-case block; the callback never resizes them.
     let mut scratch: Vec<f32> = Vec::new();
-    let mut cue_scratch: Vec<f32> = Vec::new();
+    let mut secondary_scratch: Vec<f32> = Vec::new();
     if device_channels != CHANNELS as usize {
         scratch_reserve(&mut scratch, REQUESTED_BUFFER as usize * 4);
-        if cue_routed {
-            scratch_reserve(&mut cue_scratch, REQUESTED_BUFFER as usize * 4);
+        if secondary_routed {
+            scratch_reserve(&mut secondary_scratch, REQUESTED_BUFFER as usize * 4);
         }
     }
 
@@ -237,42 +271,24 @@ pub fn run_host_stream(
                     let dev_ch = device_channels;
                     if dev_ch == CHANNELS as usize {
                         // Stereo fast path: drain straight into the device buffer.
-                        output.drain_into(data);
+                        primary.drain_into(data);
                     } else {
                         // Wider device: drain stereo into scratch, then spread.
-                        let frames = data.len() / dev_ch;
-                        let want = frames * CHANNELS as usize;
+                        let want = (data.len() / dev_ch) * CHANNELS as usize;
                         let usable = scratch.len().min(want);
-                        output.drain_into(&mut scratch[..usable]);
-                        // Drain the cue into channels 3/4 when the device has room.
-                        let cue_usable = if cue_routed {
-                            let u = cue_scratch.len().min(want);
-                            cue.drain_into(&mut cue_scratch[..u]);
-                            u
+                        primary.drain_into(&mut scratch[..usable]);
+                        if let Some(secondary) = secondary.as_mut() {
+                            // Combined: primary on 1/2, secondary (cue) on 3/4.
+                            let su = secondary_scratch.len().min(want);
+                            secondary.drain_into(&mut secondary_scratch[..su]);
+                            spread(
+                                data,
+                                dev_ch,
+                                &[(0, &scratch[..usable]), (2, &secondary_scratch[..su])],
+                            );
                         } else {
-                            0
-                        };
-                        for f in 0..frames {
-                            let base = f * dev_ch;
-                            if f * CHANNELS as usize + 1 < usable {
-                                data[base] = scratch[2 * f];
-                                data[base + 1] = scratch[2 * f + 1];
-                            } else {
-                                data[base] = 0.0;
-                                data[base + 1] = 0.0;
-                            }
-                            // Cue → channels 3/4 (FLX4 phones); other channels zero.
-                            if cue_routed && f * CHANNELS as usize + 1 < cue_usable {
-                                data[base + 2] = cue_scratch[2 * f];
-                                data[base + 3] = cue_scratch[2 * f + 1];
-                                for c in 4..dev_ch {
-                                    data[base + c] = 0.0;
-                                }
-                            } else {
-                                for c in 2..dev_ch {
-                                    data[base + c] = 0.0;
-                                }
-                            }
+                            // Lone feed (master, or a split cue) at its channel pair.
+                            spread(data, dev_ch, &[(primary_offset, &scratch[..usable])]);
                         }
                     }
                 });
@@ -292,13 +308,42 @@ pub fn run_host_stream(
     })
 }
 
+/// Open the MAIN output device (`main`, or the default when `None`) draining the
+/// master ring onto channels 1/2. When `cue` is `Some` (combined mode — the FLX4)
+/// the cue ring also drains onto channels 3/4, provided the device has ≥4
+/// channels; otherwise the stream is master-only and the cue rides its own stream
+/// ([`open_cue_stream`]).
+pub fn open_main_stream(
+    main: Option<&str>,
+    master: OutputConsumer,
+    cue: Option<OutputConsumer>,
+) -> Result<AudioStream, DeviceError> {
+    // Master always on channels 1/2 (the FLX4's MASTER RCA when it is the main
+    // device); never on the phones channels.
+    open_spread_stream(main, master, cue, false)
+}
+
+/// Open the CUE output device (`cue_dev`, or the default when `None`) draining the
+/// cue ring — split mode, a second independently chosen device. On a stereo cue
+/// device the cue plays out its channels 1/2 (laptop jack, Bluetooth); on a
+/// ≥4-channel cue device it plays out channels 3/4 (the FLX4 phones jack, whose
+/// 1/2 is the MASTER RCA). Independent of the main stream, so opening / replacing
+/// it never disturbs the master.
+pub fn open_cue_stream(
+    cue_dev: Option<&str>,
+    cue: OutputConsumer,
+) -> Result<AudioStream, DeviceError> {
+    open_spread_stream(cue_dev, cue, None, true)
+}
+
 /// Open the default output device at exactly 48000/stereo/f32, build the stream
 /// that renders `engine` in its callback, start it, and return the running
 /// stream. The `engine` is MOVED into the audio callback.
 ///
 /// This is the original engine-in-callback path (Phase 1 / `device_run`). The
-/// Tauri app now drives audio through [`run_host_stream`] + [`crate::host`]
-/// instead, but this path stays for the `device_run` binary and hardware spikes.
+/// Tauri app now drives audio through [`open_main_stream`] / [`open_cue_stream`] +
+/// [`crate::host`] instead, but this path stays for the `device_run` binary and
+/// hardware spikes.
 ///
 /// On any sandbox/headless condition (no device, wrong rate) this returns
 /// [`DeviceError::Unavailable`] without hanging — the caller decides whether that
@@ -418,5 +463,71 @@ pub(crate) fn set_ftz_daz() {
         std::arch::asm!("mrs {}, fpcr", out(reg) fpcr);
         fpcr |= 1 << 24;
         std::arch::asm!("msr fpcr, {}", in(reg) fpcr);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spread;
+
+    /// A lone block at offset 0 lands on channels 1/2 and zeroes the rest of each
+    /// frame (master, or a split cue on a stereo/wide non-FLX4 device).
+    #[test]
+    fn spread_offset_0_lands_on_channels_1_2() {
+        let src = [0.1, 0.2, 0.3, 0.4]; // two stereo frames
+        let dev_ch = 4;
+        let mut data = vec![9.0f32; 2 * dev_ch]; // pre-fill to prove zeroing
+        spread(&mut data, dev_ch, &[(0, &src)]);
+        assert_eq!(data, vec![0.1, 0.2, 0.0, 0.0, 0.3, 0.4, 0.0, 0.0]);
+    }
+
+    /// A lone block at offset 2 lands on channels 3/4 with 1/2 silent — how a
+    /// split cue stream reaches the FLX4 phones jack (its 1/2 is the MASTER RCA).
+    #[test]
+    fn spread_offset_2_lands_on_channels_3_4() {
+        let cue = [0.7, 0.8]; // one stereo frame
+        let dev_ch = 4;
+        let mut data = vec![9.0f32; dev_ch];
+        spread(&mut data, dev_ch, &[(2, &cue)]);
+        assert_eq!(data, vec![0.0, 0.0, 0.7, 0.8]);
+    }
+
+    /// A device block longer than the source silences the trailing frames (the
+    /// overflow guard for an unexpectedly large block).
+    #[test]
+    fn spread_zeroes_frames_past_the_source() {
+        let src = [0.5, 0.6]; // one stereo frame only
+        let dev_ch = 2;
+        let mut data = vec![9.0f32; 2 * dev_ch]; // two frames
+        spread(&mut data, dev_ch, &[(0, &src)]);
+        assert_eq!(data, vec![0.5, 0.6, 0.0, 0.0]);
+    }
+
+    /// Two placements (the FLX4 combined path): master on 1/2, cue on 3/4, and
+    /// channels ≥4 zeroed.
+    #[test]
+    fn spread_combined_lands_master_1_2_cue_3_4() {
+        let master = [0.1, 0.2]; // one stereo frame
+        let cue = [0.7, 0.8];
+        let dev_ch = 6;
+        let mut data = vec![9.0f32; dev_ch];
+        spread(&mut data, dev_ch, &[(0, &master), (2, &cue)]);
+        assert_eq!(data, vec![0.1, 0.2, 0.7, 0.8, 0.0, 0.0]);
+    }
+
+    /// Placements run dry independently: a short cue still silences only channels
+    /// 3/4, leaving master on 1/2 intact.
+    #[test]
+    fn spread_combined_silences_a_short_placement_only() {
+        let master = [0.1, 0.2, 0.3, 0.4]; // two frames
+        let cue = [0.7, 0.8]; // one frame — second frame's cue runs dry
+        let dev_ch = 4;
+        let mut data = vec![9.0f32; 2 * dev_ch];
+        spread(&mut data, dev_ch, &[(0, &master), (2, &cue)]);
+        assert_eq!(
+            data,
+            vec![0.1, 0.2, 0.7, 0.8, 0.3, 0.4, 0.0, 0.0],
+            "frame 0 carries master+cue; frame 1 carries master with cue zeroed",
+        );
     }
 }

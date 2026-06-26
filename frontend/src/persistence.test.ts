@@ -98,6 +98,17 @@ describe('persistence', () => {
     })
   })
 
+  it('round-trips the main (outputDevice) and cue (cueDevice) device names', () => {
+    updateAppSettings({ outputDevice: 'MacBook Speakers' })
+    updateAppSettings({ cueDevice: 'DDJ-FLX4' })
+    const loaded = loadAppSettings()
+    expect(loaded.outputDevice).toBe('MacBook Speakers')
+    expect(loaded.cueDevice).toBe('DDJ-FLX4')
+    // An empty name is "system default" / "same as main" — not persisted.
+    updateAppSettings({ cueDevice: '' })
+    expect(loadAppSettings().cueDevice).toBeUndefined()
+  })
+
   it('round-trips the beat view layout and drops garbage (M22)', () => {
     updateAppSettings({ beatView: 'top' })
     expect(loadAppSettings().beatView).toBe('top')

@@ -20,7 +20,8 @@ function makeEngine(overrides: Partial<AudioEngine> = {}): AudioEngine {
     setCrossfade: vi.fn(),
     setCueMix: vi.fn(),
     listOutputDevices: vi.fn(async () => DEVICES),
-    setOutputDevice: vi.fn(async () => {}),
+    setMainDevice: vi.fn(async () => {}),
+    setCueDevice: vi.fn(async () => {}),
     startRecording: vi.fn(async () => {}),
     stopRecording: vi.fn(async () => new Blob()),
     getMasterLevel: vi.fn(() => 0),
@@ -31,70 +32,77 @@ function makeEngine(overrides: Partial<AudioEngine> = {}): AudioEngine {
 
 function renderPicker(
   engine: AudioEngine,
-  props: { value?: string; onSelect?: (name: string) => void } = {},
+  props: {
+    mode?: 'main' | 'cue'
+    value?: string
+    onSelect?: (name: string) => void
+    mainDeviceName?: string
+  } = {},
 ) {
   return render(
     <AudioEngineProvider engine={engine}>
-      <OutputDevicePicker value={props.value ?? ''} onSelect={props.onSelect ?? (() => {})} />
+      <OutputDevicePicker
+        mode={props.mode ?? 'main'}
+        value={props.value ?? ''}
+        onSelect={props.onSelect ?? (() => {})}
+        mainDeviceName={props.mainDeviceName}
+      />
     </AudioEngineProvider>,
   )
 }
 
-describe('OutputDevicePicker', () => {
-  it('lists the engine devices on mount, flagging cue-capable ones', async () => {
+describe('OutputDevicePicker — main', () => {
+  it('lists the engine devices by name on mount, under "System default"', async () => {
     const engine = makeEngine()
-    renderPicker(engine)
+    renderPicker(engine, { mode: 'main' })
 
     await waitFor(() => expect(engine.listOutputDevices).toHaveBeenCalled())
-    // System default plus both devices, the 4-channel one marked cue-ready.
     await screen.findByRole('option', { name: 'System default' })
-    expect(screen.getByRole('option', { name: 'Built-in Output — no cue (needs 4ch)' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'DDJ-FLX4 — cue ready' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Built-in Output' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'DDJ-FLX4' })).toBeInTheDocument()
   })
 
-  it('switches the engine and reports the choice up on a successful select', async () => {
+  it('switches the main device and reports the choice up on success', async () => {
     const engine = makeEngine()
     const onSelect = vi.fn()
-    renderPicker(engine, { onSelect })
-    await screen.findByRole('option', { name: 'DDJ-FLX4 — cue ready' })
+    renderPicker(engine, { mode: 'main', onSelect })
+    await screen.findByRole('option', { name: 'DDJ-FLX4' })
 
-    fireEvent.change(screen.getByLabelText('Output device'), {
+    fireEvent.change(screen.getByLabelText('Main output'), {
       target: { value: 'DDJ-FLX4' },
     })
 
-    expect(engine.setOutputDevice).toHaveBeenCalledWith('DDJ-FLX4')
+    expect(engine.setMainDevice).toHaveBeenCalledWith('DDJ-FLX4')
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith('DDJ-FLX4'))
   })
 
   it('routes "System default" to the engine (empty name) and reports it up', async () => {
     // The default option is the empty-string sentinel; the engine reads that as
-    // the system default device and reopens it — so it DOES reach setOutputDevice
+    // the system default device and reopens it — so it DOES reach setMainDevice
     // (no spurious "device '' not found"), and the cleared choice is reported up.
     const engine = makeEngine()
     const onSelect = vi.fn()
-    renderPicker(engine, { value: 'DDJ-FLX4', onSelect })
-    await screen.findByRole('option', { name: 'DDJ-FLX4 — cue ready' })
+    renderPicker(engine, { mode: 'main', value: 'DDJ-FLX4', onSelect })
+    await screen.findByRole('option', { name: 'DDJ-FLX4' })
 
-    fireEvent.change(screen.getByLabelText('Output device'), {
-      target: { value: '' },
-    })
+    fireEvent.change(screen.getByLabelText('Main output'), { target: { value: '' } })
 
-    expect(engine.setOutputDevice).toHaveBeenCalledWith('')
+    expect(engine.setMainDevice).toHaveBeenCalledWith('')
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith(''))
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('reverts and surfaces an error when the switch is rejected', async () => {
     const engine = makeEngine({
-      setOutputDevice: vi.fn(async () => {
+      setMainDevice: vi.fn(async () => {
         throw new Error('device busy')
       }),
     })
     const onSelect = vi.fn()
-    renderPicker(engine, { value: '', onSelect })
-    await screen.findByRole('option', { name: 'DDJ-FLX4 — cue ready' })
+    renderPicker(engine, { mode: 'main', value: '', onSelect })
+    await screen.findByRole('option', { name: 'DDJ-FLX4' })
 
-    fireEvent.change(screen.getByLabelText('Output device'), {
+    fireEvent.change(screen.getByLabelText('Main output'), {
       target: { value: 'DDJ-FLX4' },
     })
 
@@ -104,26 +112,78 @@ describe('OutputDevicePicker', () => {
       expect(screen.getByRole('alert')).toHaveTextContent('device busy'),
     )
     expect(onSelect).not.toHaveBeenCalled()
-    expect(screen.getByLabelText('Output device')).toHaveValue('')
+    expect(screen.getByLabelText('Main output')).toHaveValue('')
   })
 
   it('refreshes the device list each time the menu reopens', async () => {
     const engine = makeEngine()
-    renderPicker(engine)
+    renderPicker(engine, { mode: 'main' })
     await waitFor(() => expect(engine.listOutputDevices).toHaveBeenCalledTimes(1))
 
-    fireEvent.mouseDown(screen.getByLabelText('Output device'))
+    fireEvent.mouseDown(screen.getByLabelText('Main output'))
     expect(engine.listOutputDevices).toHaveBeenCalledTimes(2)
   })
 
   it('keeps a persisted-but-absent device visible as the current value', async () => {
     const engine = makeEngine()
-    renderPicker(engine, { value: 'Ghost Interface' })
+    renderPicker(engine, { mode: 'main', value: 'Ghost Interface' })
     await screen.findByRole('option', { name: 'System default' })
 
     // The saved device is gone from the engine list but still shown by name,
     // so the selection doesn't silently snap to the default.
     expect(screen.getByRole('option', { name: 'Ghost Interface' })).toBeInTheDocument()
-    expect(screen.getByLabelText('Output device')).toHaveValue('Ghost Interface')
+    expect(screen.getByLabelText('Main output')).toHaveValue('Ghost Interface')
+  })
+})
+
+describe('OutputDevicePicker — cue', () => {
+  it('offers "Phones on main (ch 3/4)" when the main device can carry combined cue', async () => {
+    const engine = makeEngine()
+    renderPicker(engine, { mode: 'cue', mainDeviceName: 'DDJ-FLX4' })
+
+    await screen.findByRole('option', { name: 'Phones on main (ch 3/4)' })
+    // Any device is selectable as a separate cue device, by plain name.
+    expect(screen.getByRole('option', { name: 'Built-in Output' })).toBeInTheDocument()
+  })
+
+  it('flags "needs a 4-ch main" when the main device is stereo', async () => {
+    const engine = makeEngine()
+    renderPicker(engine, { mode: 'cue', mainDeviceName: 'Built-in Output' })
+
+    await screen.findByRole('option', {
+      name: 'Phones on main — needs a 4-ch main',
+    })
+  })
+
+  it('switches the cue device and reports the choice up on success', async () => {
+    const engine = makeEngine()
+    const onSelect = vi.fn()
+    renderPicker(engine, { mode: 'cue', mainDeviceName: 'DDJ-FLX4', onSelect })
+    await screen.findByRole('option', { name: 'Built-in Output' })
+
+    fireEvent.change(screen.getByLabelText('Cue output'), {
+      target: { value: 'Built-in Output' },
+    })
+
+    expect(engine.setCueDevice).toHaveBeenCalledWith('Built-in Output')
+    expect(engine.setMainDevice).not.toHaveBeenCalled()
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith('Built-in Output'))
+  })
+
+  it('routes "same as main" to the engine as the empty sentinel', async () => {
+    const engine = makeEngine()
+    const onSelect = vi.fn()
+    renderPicker(engine, {
+      mode: 'cue',
+      value: 'Built-in Output',
+      mainDeviceName: 'DDJ-FLX4',
+      onSelect,
+    })
+    await screen.findByRole('option', { name: 'Phones on main (ch 3/4)' })
+
+    fireEvent.change(screen.getByLabelText('Cue output'), { target: { value: '' } })
+
+    expect(engine.setCueDevice).toHaveBeenCalledWith('')
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith(''))
   })
 })

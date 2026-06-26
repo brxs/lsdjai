@@ -43,11 +43,15 @@ function App() {
   const [cueMix, setCueMix] = useState(
     () => loadAppSettings().cueMix ?? INITIAL_CUE_MIX,
   )
-  // The chosen native output device by name (empty = system default); the
-  // engine routes the headphone cue to its channels 3/4. App owns the
-  // persisted choice; the picker owns the live device list and switch.
-  const [outputDevice, setOutputDevice] = useState(
+  // The chosen native MAIN output device by name (empty = system default;
+  // master → its ch 1/2) and the headphone CUE device (empty = "same as main",
+  // the FLX4 phones on ch 3/4; a different name routes cue to a second device).
+  // App owns the persisted choices; each picker owns its live list and switch.
+  const [mainDevice, setMainDevice] = useState(
     () => loadAppSettings().outputDevice ?? '',
+  )
+  const [cueDevice, setCueDevice] = useState(
+    () => loadAppSettings().cueDevice ?? '',
   )
   // The beat view's home (M22): centre stacked, top bar, or off.
   const [beatView, setBeatView] = useState<BeatViewLayout>(
@@ -80,17 +84,25 @@ function App() {
   useEffect(() => {
     engine.setCrossfade(crossfade)
     engine.setCueMix(cueMix)
-    if (outputDevice) void engine.setOutputDevice(outputDevice).catch(() => {})
+    // Apply persisted device choices best-effort (either may be gone since last
+    // run). Main first, so a "same as main" cue resolves against the right
+    // device on the engine side.
+    if (mainDevice) void engine.setMainDevice(mainDevice).catch(() => {})
+    if (cueDevice) void engine.setCueDevice(cueDevice).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine])
 
-  // The one place a successful output-device switch lands: state + persist.
-  // The picker has already performed the switch on the engine; we only record
-  // the choice (so a rejected switch never reaches here and the selection
-  // reverts to the last good value).
-  const handleOutputDevice = useCallback((name: string) => {
-    setOutputDevice(name)
+  // The one place a successful device switch lands: state + persist. The picker
+  // has already performed the switch on the engine; we only record the choice
+  // (so a rejected switch never reaches here and the selection reverts to the
+  // last good value). Main persists under the legacy `outputDevice` key.
+  const handleMainDevice = useCallback((name: string) => {
+    setMainDevice(name)
     updateAppSettings({ outputDevice: name })
+  }, [])
+  const handleCueDevice = useCallback((name: string) => {
+    setCueDevice(name)
+    updateAppSettings({ cueDevice: name })
   }, [])
 
   useEffect(() => {
@@ -514,8 +526,10 @@ function App() {
             onCrossfadeChange={handleCrossfade}
             cueMix={cueMix}
             onCueMixChange={handleCueMix}
-            outputDevice={outputDevice}
-            onOutputDeviceChange={handleOutputDevice}
+            mainDevice={mainDevice}
+            onMainDeviceChange={handleMainDevice}
+            cueDevice={cueDevice}
+            onCueDeviceChange={handleCueDevice}
             getPhaseOffset={getPhaseOffset}
           />
         </div>
