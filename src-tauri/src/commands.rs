@@ -282,6 +282,26 @@ pub fn set_cue_mix(state: tauri::State<'_, Host>, position: f32) {
     state.set_cue_mix(position);
 }
 
+/// Preview a decoded buffer into the headphone/cue feed (ADR-0027). The payload is
+/// raw interleaved-stereo f32 PCM (the webview decodes + resamples a WAV, like
+/// [`load_track`]); no header — the preview is engine-wide, not per-deck, and never
+/// reaches the master.
+#[tauri::command]
+pub fn audition_play(
+    state: tauri::State<'_, Host>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    let payload = raw_payload(&request)?;
+    state.audition_play(pcm_from_le_bytes(payload));
+    Ok(())
+}
+
+/// Stop the headphone preview (ADR-0027).
+#[tauri::command]
+pub fn audition_stop(state: tauri::State<'_, Host>) {
+    state.audition_stop();
+}
+
 /// Start recording the master bus (exactly the speaker feed).
 #[tauri::command]
 pub fn start_recording(state: tauri::State<'_, Host>) {

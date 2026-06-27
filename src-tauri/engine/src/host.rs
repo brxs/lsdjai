@@ -188,6 +188,12 @@ enum Command {
     SetDeckPlaying(usize, bool),
     SetCue(usize, bool),
     SetCueMix(f32),
+    /// Preview a decoded buffer into the cue/headphone feed (ADR-0027); replaces
+    /// any current preview. Fire-and-forget like `LoadTrack` — the `Vec` is built
+    /// off the render thread and the only verdict is "started".
+    AuditionPlay(Vec<f32>),
+    /// Stop the cue preview (ADR-0027).
+    AuditionStop,
     LoadTrack(usize, Vec<f32>),
     UnloadTrack(usize),
     PlayTrack(usize),
@@ -533,6 +539,18 @@ impl Host {
         self.send(Command::SetCueMix(position));
     }
 
+    /// Preview a decoded interleaved-stereo buffer into the headphone/cue feed
+    /// (ADR-0027). `samples` is built/owned by the caller off the render thread and
+    /// MOVED into the command; replaces any current preview.
+    pub fn audition_play(&self, samples: Vec<f32>) {
+        self.send(Command::AuditionPlay(samples));
+    }
+
+    /// Stop the headphone preview (ADR-0027).
+    pub fn audition_stop(&self) {
+        self.send(Command::AuditionStop);
+    }
+
     /// Load a decoded track onto a deck. `samples` is built/owned by the caller
     /// off the render thread and MOVED into the command; the render thread
     /// installs it and drops the previously-loaded buffer there, off the callback.
@@ -831,6 +849,8 @@ impl RenderLoop {
             Command::SetDeckPlaying(d, playing) => self.engine.set_deck_playing(d, playing),
             Command::SetCue(d, on) => self.engine.set_cue(d, on),
             Command::SetCueMix(p) => self.engine.set_cue_mix(p),
+            Command::AuditionPlay(samples) => self.engine.audition_play(samples),
+            Command::AuditionStop => self.engine.audition_stop(),
             Command::LoadTrack(d, samples) => self.engine.load_track(d, samples),
             Command::UnloadTrack(d) => self.engine.unload_track(d),
             Command::PlayTrack(d) => self.engine.play_track(d),

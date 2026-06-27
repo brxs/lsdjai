@@ -236,6 +236,13 @@ function App() {
       (deck === 'a' ? deckA : deckB).loadSampleToSlot(wav, oneShot, label),
     [deckA, deckB],
   )
+  // Preview a library item in the phones before committing it to a deck
+  // (ADR-0027): the engine routes it to the cue feed only, never the master.
+  const handlePreview = useCallback(
+    (wav: ArrayBuffer) => engine.auditionPlay(wav),
+    [engine],
+  )
+  const handleStopPreview = useCallback(() => engine.auditionStop(), [engine])
 
   // Beat-matching (M20, ADR-0014): SYNC matches a track deck to the
   // other deck's effective tempo — gated stream BPM, or grid BPM ×
@@ -585,6 +592,8 @@ function App() {
         onImportPresets={handleImportPresets}
         onLoadTrack={handleLoadTrack}
         onLoadSample={handleLoadSample}
+        onPreview={handlePreview}
+        onStopPreview={handleStopPreview}
       />
     </main>
   )

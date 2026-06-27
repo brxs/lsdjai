@@ -44,6 +44,8 @@
     "loadTo": "Load {{name}} to deck {{deck}}",
     "highlight": "Select {{name}}",
     "remove": "Remove {{name}}",
+    "preview": "Preview {{name}} in headphones",
+    "previewStop": "Stop preview",
     "undecodable": "{{title}} could not be decoded",
     "generate": {
       "title": "Title",

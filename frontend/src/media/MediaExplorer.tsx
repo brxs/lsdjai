@@ -246,6 +246,11 @@ type MediaExplorerProps = {
     oneShot: boolean,
     label: string,
   ) => Promise<boolean>
+  /** Preview a decoded WAV in the headphones before committing it to a deck
+   * (ADR-0027) — routed to the cue feed only, never the master. */
+  onPreview: (wav: ArrayBuffer) => Promise<void>
+  /** Stop the headphone preview (ADR-0027). */
+  onStopPreview: () => void
 }
 
 /** The Media Explorer (M19, ADR-0013): one pane below the booth that
@@ -260,6 +265,8 @@ export function MediaExplorer({
   onImportPresets,
   onLoadTrack,
   onLoadSample,
+  onPreview,
+  onStopPreview,
 }: MediaExplorerProps) {
   const { t } = useTranslation()
   const [tab, setTab] = useState<MediaTab>('crates')
@@ -294,8 +301,13 @@ export function MediaExplorer({
   // keeps its own inside CrateBrowser (mounted only while visible, so
   // exactly one list answers the hardware at a time).
   const [highlight, setHighlight] = useState(0)
-  // The take whose full prompt the 🔍 button has expanded, or null. One at a time.
+  // The take whose full prompt is expanded, or null. One at a time.
   const [expandedId, setExpandedId] = useState<number | null>(null)
+  // The item currently auditioning in the headphones (ADR-0027), or null. One at
+  // a time — starting another preview, loading, or unmounting stops it.
+  const [previewingId, setPreviewingId] = useState<number | null>(null)
+  // Never leave a preview ringing in the phones after the pane unmounts.
+  useEffect(() => onStopPreview, [onStopPreview])
   // A ref, not state: two composes batched into one render (Enter +
   // click) must not mint the same id.
   const nextIdRef = useRef(1)
@@ -327,10 +339,60 @@ export function MediaExplorer({
       ? null
       : readySamples[Math.min(highlight, readySamples.length - 1)].id
 
+  function stopPreview() {
+    onStopPreview()
+    setPreviewingId(null)
+  }
+
+  // Audition a take in the phones (ADR-0027): toggle it off if it's the one
+  // playing, otherwise fetch its WAV (the same in-memory-or-disk path as a load)
+  // and start previewing. Routed to the cue feed only, never the master.
+  async function cueTrack(track: GeneratedTrack & { state: 'ready' }) {
+    if (previewingId === track.id) {
+      stopPreview()
+      return
+    }
+    setGenerateError(null)
+    try {
+      const label = trackLabel(track)
+      let wav = track.wav
+      if (!wav) {
+        if (!track.file) throw new Error(t('media.undecodable', { title: label }))
+        wav = await invoke<ArrayBuffer>('read_generated_song', { name: track.file })
+      }
+      await onPreview(wav.slice(0))
+      setPreviewingId(track.id)
+    } catch (error) {
+      setGenerateError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function cueSample(sample: GeneratedSample & { state: 'ready' }) {
+    if (previewingId === sample.id) {
+      stopPreview()
+      return
+    }
+    setSampleError(null)
+    try {
+      const label = sampleLabel(sample)
+      let wav = sample.wav
+      if (!wav) {
+        if (!sample.file) throw new Error(t('media.undecodable', { title: label }))
+        wav = await invoke<ArrayBuffer>('read_generated_sample', { name: sample.file })
+      }
+      await onPreview(wav.slice(0))
+      setPreviewingId(sample.id)
+    } catch (error) {
+      setSampleError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   async function loadGeneratedTrack(
     deck: DeckId,
     track: GeneratedTrack & { state: 'ready' },
   ) {
+    // Committing to a deck ends the preview — the deck takes over.
+    if (previewingId != null) stopPreview()
     setGenerateError(null)
     try {
       // In memory for a take composed this session; otherwise read the bytes back
@@ -405,6 +467,8 @@ export function MediaExplorer({
     deck: DeckId,
     sample: GeneratedSample & { state: 'ready' },
   ) {
+    // Committing to a deck ends the preview — the deck takes over.
+    if (previewingId != null) stopPreview()
     setSampleError(null)
     try {
       // In memory for a clip composed this session; otherwise read the bytes back
@@ -921,6 +985,19 @@ export function MediaExplorer({
                         ? t('media.generate.imported')
                         : t(`media.generate.engines.${track.model}`)}
                     </span>
+                    {track.state === 'ready' && (
+                      <Button
+                        aria-label={
+                          previewingId === track.id
+                            ? t('media.previewStop')
+                            : t('media.preview', { name: rowLabel })
+                        }
+                        lit={previewingId === track.id}
+                        onClick={() => void cueTrack(track)}
+                      >
+                        🎧
+                      </Button>
+                    )}
                     {track.state === 'ready' &&
                       loadButtons(
                         (deck) => void loadGeneratedTrack(deck, track),
@@ -1061,6 +1138,19 @@ export function MediaExplorer({
                         sample.oneShot ? 'media.samples.oneShot' : 'media.samples.loop',
                       )}`}
                     </span>
+                    {sample.state === 'ready' && (
+                      <Button
+                        aria-label={
+                          previewingId === sample.id
+                            ? t('media.previewStop')
+                            : t('media.preview', { name: rowLabel })
+                        }
+                        lit={previewingId === sample.id}
+                        onClick={() => void cueSample(sample)}
+                      >
+                        🎧
+                      </Button>
+                    )}
                     {sample.state === 'ready' &&
                       loadButtons((deck) => void loadSample(deck, sample), rowLabel)}
                     {sample.state === 'ready' && (

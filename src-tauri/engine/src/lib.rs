@@ -198,6 +198,13 @@ pub struct Engine {
     /// the deck's base frame at the channel head; a one-shot / layer overlays on
     /// top — see `LoopBank::mix_frame`.
     loops: Vec<LoopBank>,
+    /// A single engine-wide preview ("audition") source (ADR-0027): a decoded
+    /// sample/track played into the HEADPHONE/cue feed only — never the master —
+    /// so the booth can hear a library item before loading it onto a deck. It
+    /// loops the whole buffer until `audition_stop`, summed onto the cue output
+    /// after the cue/master blend so it stays audible in the phones wherever the
+    /// cue knob sits. Built off the RT path (`audition_play`); `render` only reads.
+    audition: Option<BufferSource>,
     graph: MixGraph,
     telemetry: Arc<Telemetry>,
 }
@@ -211,6 +218,7 @@ impl Engine {
             decks: (0..DECK_COUNT).map(|_| None).collect(),
             parked_rings: (0..DECK_COUNT).map(|_| None).collect(),
             loops: (0..DECK_COUNT).map(|_| LoopBank::new()).collect(),
+            audition: None,
             graph: MixGraph::new(),
             telemetry: Arc::new(Telemetry::new()),
         }
@@ -349,6 +357,30 @@ impl Engine {
     /// master). Non-RT.
     pub fn set_cue_mix(&mut self, position: f32) {
         self.graph.set_cue_mix(position);
+    }
+
+    /// Audition a decoded interleaved-stereo buffer @ 48 k into the HEADPHONE/cue
+    /// feed (ADR-0027): a preview of a library item before it is loaded onto a
+    /// deck. Replaces any current preview; the whole buffer loops until
+    /// [`Engine::audition_stop`], so the UI's "previewing" state stays truthful
+    /// (it sounds until explicitly stopped). Never touches the master. Non-RT (the
+    /// buffer allocation lands here, off the render thread — `render` only reads).
+    pub fn audition_play(&mut self, samples: Vec<f32>) {
+        let mut source = BufferSource::new(samples);
+        source.play();
+        let len = source.status().duration_frames;
+        // Loop the whole buffer so the preview keeps sounding; a near-empty buffer
+        // can't install a region (then it just plays out once and goes silent).
+        if len > 0 {
+            source.set_loop(0, len);
+        }
+        self.audition = Some(source);
+    }
+
+    /// Stop and drop the preview (ADR-0027). A no-op when nothing is auditioning.
+    /// Non-RT.
+    pub fn audition_stop(&mut self) {
+        self.audition = None;
     }
 
     // --- Slice 4a: the playback deck (M19/M20/M21/M23, ADR-0013…0016) ---
@@ -792,9 +824,18 @@ impl Engine {
             let base = f * CHANNELS as usize;
             master_out[base] = ol;
             master_out[base + 1] = or;
+            // Advance the preview every frame (so its position is independent of
+            // whether a cue device is attached), then sum it onto the cue feed
+            // only — the preview is heard in the phones, never the master.
+            let audition = self.audition.as_mut().map(|s| s.pop_frame());
             if let Some(cue) = cue_out.as_deref_mut() {
-                cue[base] = out.cue.0;
-                cue[base + 1] = out.cue.1;
+                let (mut cl, mut cr) = out.cue;
+                if let Some((al, ar)) = audition {
+                    cl = (cl + al).clamp(-MASTER_CEILING, MASTER_CEILING);
+                    cr = (cr + ar).clamp(-MASTER_CEILING, MASTER_CEILING);
+                }
+                cue[base] = cl;
+                cue[base + 1] = cr;
             }
 
             let peak = ol.abs().max(or.abs());
@@ -2489,6 +2530,35 @@ mod tests {
         assert!(engine.loop_slots(0)[0].filled, "the slot fills");
         assert!(engine.play_loop(0, 0, true), "the sample layers on top of the track");
         assert!(engine.loop_slots(0)[0].playing, "the layer is sounding");
+    }
+
+    /// (ADR-0027) A preview is heard in the headphone/cue feed but NEVER the
+    /// master: `audition_play` feeds only the cue output (no deck is on air, so
+    /// the master stays silent), and `audition_stop` returns the cue to silence.
+    #[test]
+    fn audition_previews_into_the_cue_feed_only() {
+        let mut engine = Engine::new();
+        let _deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+
+        const FRAMES: usize = 256;
+        // A buffer longer than one block, so the looping preview stays audible.
+        engine.audition_play(vec![0.5f32; FRAMES * CHANNELS as usize * 4]);
+
+        let mut master = vec![0.0f32; FRAMES * CHANNELS as usize];
+        let mut cue = vec![0.0f32; FRAMES * CHANNELS as usize];
+        engine.render_with_cue(&mut master, &mut cue, FRAMES);
+        let master_peak = master.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        let cue_peak = cue.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(master_peak < 1e-6, "the preview never reaches the master");
+        assert!(cue_peak > 0.4, "the preview is audible in the cue feed");
+
+        engine.audition_stop();
+        let mut master2 = vec![0.0f32; FRAMES * CHANNELS as usize];
+        let mut cue2 = vec![0.0f32; FRAMES * CHANNELS as usize];
+        engine.render_with_cue(&mut master2, &mut cue2, FRAMES);
+        let cue_peak2 = cue2.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(cue_peak2 < 1e-6, "stopping the preview silences the cue feed");
     }
 
     /// (S4b-6) `render` stays correct with a loop in path on one deck and a live

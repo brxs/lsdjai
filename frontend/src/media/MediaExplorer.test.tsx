@@ -16,6 +16,8 @@ type Handlers = {
     oneShot: boolean,
     label: string,
   ) => Promise<boolean>
+  onPreview?: (wav: ArrayBuffer) => Promise<void>
+  onStopPreview?: () => void
 }
 
 function renderExplorer(
@@ -32,6 +34,8 @@ function renderExplorer(
         onImportPresets={vi.fn()}
         onLoadTrack={handlers.onLoadTrack ?? vi.fn(async () => true)}
         onLoadSample={handlers.onLoadSample ?? vi.fn(async () => true)}
+        onPreview={handlers.onPreview ?? vi.fn(async () => {})}
+        onStopPreview={handlers.onStopPreview ?? vi.fn()}
       />
     </ControlBusProvider>,
   )
@@ -121,6 +125,23 @@ describe('MediaExplorer', () => {
         .getAllByText('Track (SA3 medium)')
         .some((element) => element.classList.contains('media__meta')),
     ).toBe(true)
+  })
+
+  it('previews a take in the headphones and toggles it off', async () => {
+    stubFetch()
+    const onPreview = vi.fn(async () => {})
+    const onStopPreview = vi.fn()
+    renderExplorer({ onPreview, onStopPreview })
+    await composeTrack('dub')
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Preview dub #1 in headphones' }),
+    )
+    await act(async () => {})
+    expect(onPreview).toHaveBeenCalledWith(expect.any(ArrayBuffer))
+    // The button flips to a stop affordance; a second press stops the preview.
+    fireEvent.click(screen.getByRole('button', { name: 'Stop preview' }))
+    expect(onStopPreview).toHaveBeenCalled()
   })
 
   it('routes Magenta tracks to the render engine within its cap', async () => {

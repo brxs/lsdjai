@@ -51,3 +51,4 @@ scaffolds the file from the template.
 | [0024](0024-key-detection-in-the-rust-audio-engine-behind-an-honesty-gate.md) | Key detection in the Rust audio engine, behind an honesty gate | Accepted |
 | [0025](0025-beat-detection-in-the-rust-audio-engine.md) | Beat detection in the Rust audio engine | Accepted |
 | [0026](0026-lane-driven-variable-chunk-segmentation.md) | Lane-driven variable chunk segmentation for the modulation timeline | Accepted |
+| [0027](0027-headphone-preview-for-library-items.md) | Headphone preview ("audition") for library items | Accepted |
