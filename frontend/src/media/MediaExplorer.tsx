@@ -301,6 +301,9 @@ export function MediaExplorer({
   // keeps its own inside CrateBrowser (mounted only while visible, so
   // exactly one list answers the hardware at a time).
   const [highlight, setHighlight] = useState(0)
+  // The take whose prompt is expanded to full text, or null. One at a time; the
+  // rest stay truncated to one line.
+  const [expandedId, setExpandedId] = useState<number | null>(null)
   // The item currently auditioning in the headphones (ADR-0027), or null. One at
   // a time — starting another preview, loading, or unmounting stops it.
   const [previewingId, setPreviewingId] = useState<number | null>(null)
@@ -978,12 +981,22 @@ export function MediaExplorer({
                         <span className="media__name-tag">{`#${track.id}`}</span>
                       )}
                       {track.state === 'ready' && track.prompt != null && (
-                        <span
-                          className="media__prompt"
+                        <button
+                          type="button"
+                          className={`media__prompt${
+                            expandedId === track.id ? ' media__prompt--expanded' : ''
+                          }`}
+                          aria-expanded={expandedId === track.id}
+                          aria-label={t('media.generate.inspect', { name: rowLabel })}
                           title={prettyPrompt(track.prompt)}
+                          onClick={() =>
+                            setExpandedId((current) =>
+                              current === track.id ? null : track.id,
+                            )
+                          }
                         >
                           {prettyPrompt(track.prompt)}
-                        </span>
+                        </button>
                       )}
                     </span>
                     <span className="media__meta">
@@ -1122,12 +1135,22 @@ export function MediaExplorer({
                         <span className="media__name-tag">{`#${sample.id}`}</span>
                       )}
                       {sample.state === 'ready' && sample.prompt != null && (
-                        <span
-                          className="media__prompt"
+                        <button
+                          type="button"
+                          className={`media__prompt${
+                            expandedId === sample.id ? ' media__prompt--expanded' : ''
+                          }`}
+                          aria-expanded={expandedId === sample.id}
+                          aria-label={t('media.generate.inspect', { name: rowLabel })}
                           title={prettyPrompt(sample.prompt)}
+                          onClick={() =>
+                            setExpandedId((current) =>
+                              current === sample.id ? null : sample.id,
+                            )
+                          }
                         >
                           {prettyPrompt(sample.prompt)}
-                        </span>
+                        </button>
                       )}
                     </span>
                     <span className="media__meta">

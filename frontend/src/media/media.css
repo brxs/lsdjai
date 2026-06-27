@@ -124,15 +124,33 @@
 
 /* The prompt rides the same line as the title, muted and monospaced so it reads
    as secondary; it fills the leftover width and truncates, keeping every row to
-   one line. The full text is on the element's title (hover) tooltip. */
+   one line. It's a button — clicking expands it to the full text in place. */
 .media__prompt {
   flex: 1 1 0;
   min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
   font: 400 var(--text-s) var(--font-mono);
   color: var(--color-text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.media__prompt:hover {
+  color: var(--color-text);
+}
+
+/* Expanded: drop the one-line clamp and show the whole prompt (JSON newlines
+   kept), wrapping within the row. */
+.media__prompt--expanded {
+  white-space: pre-wrap;
+  overflow: visible;
+  overflow-wrap: anywhere;
 }
 
 /* A quiet divider between the title (and its #id) and the prompt preview. */

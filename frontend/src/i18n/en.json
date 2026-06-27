@@ -62,6 +62,7 @@
       "action": "Compose",
       "openFolder": "Open songs folder",
       "imported": "Imported",
+      "inspect": "Show the full prompt for {{name}}",
       "pending": "{{title}} — composing…",
       "failed": "Track generation failed: {{message}}",
       "saveFailed": "Couldn't save {{title}} to the songs folder: {{message}}",

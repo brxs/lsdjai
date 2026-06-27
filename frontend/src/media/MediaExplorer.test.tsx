@@ -511,7 +511,7 @@ describe('MediaExplorer', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Trash is unavailable')
   })
 
-  it('shows the prompt inline on the row, with the full text on hover', async () => {
+  it('shows the prompt inline on the row and expands it on click', async () => {
     const prompt = 'deep rolling dub techno with tape hiss and a long modular intro'
     const invoke = vi.fn(async (cmd: string) => {
       if (cmd === 'list_generated_songs') {
@@ -522,12 +522,21 @@ describe('MediaExplorer', () => {
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
     fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
-    // The prompt rides the same line as the title (CSS truncates it to one row);
-    // the full text is on the title tooltip rather than behind a toggle.
-    await screen.findByText('Dub Reverie', { selector: '.media__name-text' })
-    const promptLine = document.querySelector('.media__prompt')
+    // Inline on the title's line (CSS truncates it to one row), with the full
+    // text on the hover tooltip; collapsed at first.
+    const promptLine = await screen.findByRole('button', {
+      name: 'Show the full prompt for Dub Reverie #1',
+    })
     expect(promptLine).toHaveTextContent(prompt)
     expect(promptLine).toHaveAttribute('title', prompt)
+    expect(promptLine).toHaveAttribute('aria-expanded', 'false')
+    // Clicking the truncated prompt expands it to the full text; clicking again
+    // collapses it back to one line.
+    fireEvent.click(promptLine)
+    expect(promptLine).toHaveAttribute('aria-expanded', 'true')
+    expect(promptLine.className).toContain('media__prompt--expanded')
+    fireEvent.click(promptLine)
+    expect(promptLine).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('pretty-prints a JSON prompt in the inline prompt line', async () => {
