@@ -6,6 +6,7 @@ import { createControlBus, type ControlBus } from '../control/bus'
 import { ControlBusProvider } from '../control/ControlBusProvider'
 import type { StylePreset } from '../presets'
 import { MediaExplorer } from './MediaExplorer'
+import { MEDIA_DEFAULT_HEIGHT } from './mediaTray'
 
 type Handlers = {
   onLoadPreset?: (deck: DeckId, preset: StylePreset) => void
@@ -18,12 +19,15 @@ type Handlers = {
   ) => Promise<boolean>
   onPreview?: (wav: ArrayBuffer) => Promise<void>
   onStopPreview?: () => void
+  onToggle?: () => void
+  onResize?: (height: number, commit: boolean) => void
 }
 
 function renderExplorer(
   handlers: Handlers = {},
   presets: StylePreset[] = [],
   bus: ControlBus = createControlBus(),
+  open = true,
 ) {
   render(
     <ControlBusProvider bus={bus}>
@@ -36,6 +40,10 @@ function renderExplorer(
         onLoadSample={handlers.onLoadSample ?? vi.fn(async () => true)}
         onPreview={handlers.onPreview ?? vi.fn(async () => {})}
         onStopPreview={handlers.onStopPreview ?? vi.fn()}
+        open={open}
+        onToggle={handlers.onToggle ?? vi.fn()}
+        height={MEDIA_DEFAULT_HEIGHT}
+        onResize={handlers.onResize ?? vi.fn()}
       />
     </ControlBusProvider>,
   )
@@ -87,6 +95,32 @@ describe('MediaExplorer', () => {
     expect(
       screen.getByText("No presets yet — save a deck's style below its pad"),
     ).toBeInTheDocument()
+  })
+
+  it('toggles the tray via the header chevron', () => {
+    const onToggle = vi.fn()
+    renderExplorer({ onToggle })
+    // Open: the chevron offers to collapse, and the resize grip is present.
+    const toggle = screen.getByRole('button', { name: 'Collapse media explorer' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('separator', { name: 'Resize media explorer' })).toBeInTheDocument()
+    fireEvent.click(toggle)
+    expect(onToggle).toHaveBeenCalledTimes(1)
+  })
+
+  it('hides the content and grip when collapsed', () => {
+    renderExplorer({}, [], createControlBus(), false)
+    // Closed: the chevron offers to expand, the content is hidden from a11y,
+    // and there is no resize grip to drag.
+    expect(
+      screen.getByRole('button', { name: 'Expand media explorer' }),
+    ).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('separator')).toBeNull()
+    expect(
+      screen.getByText("No presets yet — save a deck's style below its pad").closest(
+        '.media__content',
+      ),
+    ).toHaveAttribute('aria-hidden', 'true')
   })
 
   it('composes an SA3 track and loads it onto a deck', async () => {

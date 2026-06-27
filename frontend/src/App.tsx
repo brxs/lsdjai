@@ -10,6 +10,10 @@ import { useControlBus } from './control/busContext'
 import { MidiControls } from './control/MidiControls'
 import { useMidi } from './control/useMidi'
 import { MediaExplorer } from './media/MediaExplorer'
+import {
+  MEDIA_DEFAULT_HEIGHT,
+  clampMediaHeight,
+} from './media/mediaTray'
 import { DeckColumn } from './deck/DeckColumn'
 import { useDeck } from './deck/useDeck'
 import { BeatView } from './mixer/BeatView'
@@ -65,6 +69,29 @@ function App() {
     updateAppSettings({ beatView: layout })
   }, [])
 
+  // The media tray's drawer state (open + height): App owns it so the in-panel
+  // toggle and the Cmd/Ctrl+M shortcut share one source of truth, and both
+  // persist across reloads.
+  const [mediaOpen, setMediaOpen] = useState(
+    () => loadAppSettings().mediaOpen ?? true,
+  )
+  const [mediaHeight, setMediaHeight] = useState(
+    () => loadAppSettings().mediaHeight ?? MEDIA_DEFAULT_HEIGHT,
+  )
+  const handleMediaToggle = useCallback(() => {
+    setMediaOpen((open) => {
+      const next = !open
+      updateAppSettings({ mediaOpen: next })
+      return next
+    })
+  }, [])
+  // Live during a resize drag (state only); `commit` persists once on release.
+  const handleMediaResize = useCallback((height: number, commit: boolean) => {
+    const clamped = clampMediaHeight(height)
+    setMediaHeight(clamped)
+    if (commit) updateAppSettings({ mediaHeight: clamped })
+  }, [])
+
   // Master accent (LSDJai): the chosen hue rides on <html data-accent>,
   // where the theme blocks in tokens.css pick it up. Persisted like the
   // other app settings; default Acid Lime.
@@ -115,6 +142,25 @@ function App() {
     window.addEventListener('keydown', handleShortcutKey)
     return () => window.removeEventListener('keydown', handleShortcutKey)
   }, [])
+
+  // Cmd/Ctrl+M toggles the media tray. Separate from handleShortcutKey, which
+  // is a bare-letter focus router that bails on modifiers. preventDefault also
+  // suppresses the macOS Cmd+M window-minimize default.
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === 'm'
+      ) {
+        event.preventDefault()
+        handleMediaToggle()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [handleMediaToggle])
 
   // The one place a crossfade move is defined: audio bus + state + persist.
   // Every source — slider, keyboard, hardware — lands here.
@@ -614,6 +660,10 @@ function App() {
         onLoadSample={handleLoadSample}
         onPreview={handlePreview}
         onStopPreview={handleStopPreview}
+        open={mediaOpen}
+        onToggle={handleMediaToggle}
+        height={mediaHeight}
+        onResize={handleMediaResize}
       />
     </main>
   )
