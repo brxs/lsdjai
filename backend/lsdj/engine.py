@@ -15,23 +15,34 @@ FRAME_SECONDS = 0.04
 FRAMES_PER_CHUNK = 25
 CHUNK_SECONDS = FRAMES_PER_CHUNK * FRAME_SECONDS
 
-# Models this app knows how to drive; commands are validated against this.
+# The official models the in-app manager offers to download. This is the
+# installable catalog, NOT a discovery gate: `available_models()` discovers any
+# model folder on disk (drop-in models, finetunes), so this tuple only seeds the
+# "what can I install?" list, not "what can I load?".
 KNOWN_MODELS = ("mrt2_small", "mrt2_base")
 
 
 def available_models() -> list[str]:
-    """KNOWN_MODELS whose files are actually on disk (mrt2_base is an
-    optional download), so the UI only offers models that can load."""
+    """Every model folder actually on disk, discovered by its files.
+
+    A loadable Magenta model is a `<name>/` dir holding `<name>.mlxfn` +
+    `<name>_state.safetensors`; any such folder is offered (so drop-in models
+    appear), regardless of KNOWN_MODELS. Note this scans a model's *own* files,
+    not the shared `resources/` a load also needs — the model manager reports
+    that separately (see the Rust `model_status`)."""
     from magenta_rt import paths
 
+    models_dir = paths.models_dir()
+    if not models_dir.is_dir():
+        return []
     present = []
-    for name in KNOWN_MODELS:
-        model_dir = paths.models_dir() / name
+    for model_dir in models_dir.iterdir():
+        name = model_dir.name
         if (model_dir / f"{name}.mlxfn").is_file() and (
             model_dir / f"{name}_state.safetensors"
         ).is_file():
             present.append(name)
-    return present
+    return sorted(present)
 
 
 # Embeddings are reused across pad-cursor moves; least-recently-used texts

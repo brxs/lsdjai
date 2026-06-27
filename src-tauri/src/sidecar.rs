@@ -562,12 +562,14 @@ fn accept_with_timeout(
     }
 }
 
-/// Build the command that launches the Python sidecar for a deck, pointed at the
-/// loopback `port`. Overridable via `LSDJ_SIDECAR_CMD` (whitespace-split) so
-/// dev (`uv run python -m lsdj.sidecar`) and the packaged PyInstaller binary
-/// (part 6) differ without a recompile; arguments `--deck`/`--model`/`--port`
-/// are always appended.
-pub fn sidecar_command(deck_id: &str, model: &str, port: u16) -> io::Result<Command> {
+/// The base sidecar launch command — program + base args + CWD — with NO mode
+/// flags. Overridable via `LSDJ_SIDECAR_CMD` (whitespace-split) so dev
+/// (`uv run python -m lsdj.sidecar`) and the packaged PyInstaller binary (part 6)
+/// differ without a recompile. The deck path ([`sidecar_command`]) and the model
+/// manager's installer (issue #43: `--init-resources` / `--download-model`) both
+/// build on this, so the resolution lives in one place — a download is NOT a
+/// deck, so it must not inherit `--deck`/`--model`/`--port`.
+pub fn sidecar_base_command() -> io::Result<Command> {
     let overridden = std::env::var("LSDJ_SIDECAR_CMD");
     let spec = overridden
         .clone()
@@ -578,6 +580,18 @@ pub fn sidecar_command(deck_id: &str, model: &str, port: u16) -> io::Result<Comm
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty LSDJ_SIDECAR_CMD"))?;
     let mut cmd = Command::new(program);
     cmd.args(parts);
+    if overridden.is_err() {
+        // The default `uv run` needs the backend project dir as its CWD; a packaged
+        // build sets LSDJ_SIDECAR_CMD (the frozen binary) and controls CWD.
+        cmd.current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend"));
+    }
+    Ok(cmd)
+}
+
+/// Build the command that launches the Python sidecar for a deck, pointed at the
+/// loopback `port` — the base command plus the deck-mode flags.
+pub fn sidecar_command(deck_id: &str, model: &str, port: u16) -> io::Result<Command> {
+    let mut cmd = sidecar_base_command()?;
     cmd.args([
         "--deck",
         deck_id,
@@ -586,11 +600,6 @@ pub fn sidecar_command(deck_id: &str, model: &str, port: u16) -> io::Result<Comm
         "--port",
         &port.to_string(),
     ]);
-    if overridden.is_err() {
-        // The default `uv run` needs the backend project dir as its CWD; a packaged
-        // build sets LSDJ_SIDECAR_CMD (the frozen binary) and controls CWD.
-        cmd.current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend"));
-    }
     Ok(cmd)
 }
 

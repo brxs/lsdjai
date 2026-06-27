@@ -9,7 +9,9 @@
 # identical, so the spike's findings hold: ~931 MB ONEDIR, weights kept external.
 #
 # Output: dist/lsdj_infer/lsdj_infer (+ _internal/). Spawned by the Rust
-# shell as `lsdj_infer --deck <a|b> --model <name> --port <n>`.
+# shell as `lsdj_infer --deck <a|b> --model <name> --port <n>` for a deck, and
+# as `lsdj_infer --init-resources` / `--download-model <name>` for the in-app
+# model manager (issue #43).
 #
 # Usage: scripts/freeze-sidecar.sh   (needs `just setup` — backend .venv with
 # pyinstaller + the inference deps).
@@ -45,6 +47,11 @@ rm -rf "$OUT"
   --collect-submodules ai_edge_litert \
   --collect-binaries ai_edge_litert \
   --copy-metadata magenta_rt \
+  --collect-all huggingface_hub \
+  --collect-all fsspec \
+  --hidden-import click \
+  --copy-metadata huggingface_hub \
+  --copy-metadata fsspec \
   "$BACKEND/lsdj/sidecar.py"
 
 # THE METALLIB WALL (Spike B): MLX's get_colocated_mtllib_path looks for

@@ -103,23 +103,104 @@ export type LibraryKind = 'songs' | 'samples'
 export function subscribeLibraryChanged(
   onChange: (library: LibraryKind) => void,
 ): () => void {
-  const ev = (globalThis as { __TAURI__?: { event?: TauriEventApi } }).__TAURI__?.event
+  return listenTo<{ library?: LibraryKind }>('library://changed', (payload) => {
+    if (payload.library === 'songs' || payload.library === 'samples') onChange(payload.library)
+  })
+}
+
+// --- Model manager (issue #43) ---------------------------------------------
+
+/** A model family the manager installs (Rust `models::Family`). */
+export type ModelFamily = 'magenta' | 'sa3'
+
+/** One installed Magenta model in `model_status` (serde camelCase). */
+export type InstalledModel = {
+  name: string
+  sizeBytes: number
+  /** Files present but the shared resources a load needs are not. */
+  needsResources: boolean
+}
+
+/** SA3's four readiness states (Rust `models`/`sa3.readiness`). */
+export type Sa3State = 'missing' | 'venv_missing' | 'not_warmed' | 'ready'
+
+/** The model-manager status for both families (Rust `models::ModelStatus`). */
+export type ModelStatus = {
+  magenta: {
+    modelsDir: string
+    resourcesPresent: boolean
+    installable: string[]
+    installed: InstalledModel[]
+  }
+  sa3: { state: Sa3State; sizeBytes: number; checkout: string | null }
+  /** The in-flight install, so the manager reflects it after a close/reopen even
+   * though the live `model://progress` events were missed while unmounted. */
+  installing: { family: ModelFamily; name: string } | null
+}
+
+/** A live install-progress event (Rust `models::ModelProgress`). */
+export type ModelProgress = {
+  family: ModelFamily
+  name: string
+  stage: string
+  message: string | null
+  file: string | null
+}
+
+function eventApi(): TauriEventApi | null {
+  return (globalThis as { __TAURI__?: { event?: TauriEventApi } }).__TAURI__?.event ?? null
+}
+
+/** Subscribe to a Tauri event; a no-op (and safe unsubscribe) without the event
+ * bridge, so tests that stub only `core` are unaffected. */
+function listenTo<T>(event: string, onEvent: (payload: T) => void): () => void {
+  const ev = eventApi()
   if (!ev) return () => {}
   let unlisten: (() => void) | null = null
   let cancelled = false
-  void ev
-    .listen('library://changed', (e) => {
-      const library = (e.payload as { library?: LibraryKind }).library
-      if (library === 'songs' || library === 'samples') onChange(library)
-    })
-    .then((un) => {
-      if (cancelled) un()
-      else unlisten = un
-    })
+  void ev.listen(event, (e) => onEvent(e.payload as T)).then((un) => {
+    if (cancelled) un()
+    else unlisten = un
+  })
   return () => {
     cancelled = true
     unlisten?.()
   }
+}
+
+/** Fetch the model-manager status (both families). */
+export function modelStatus(): Promise<ModelStatus> {
+  return invoke<ModelStatus>('model_status')
+}
+
+/** Start installing a model (Magenta needs `name`; SA3 ignores it). Resolves once
+ * the install has STARTED; progress arrives via `subscribeModelProgress` and a
+ * final `models://changed`. */
+export function installModel(family: ModelFamily, name?: string): Promise<void> {
+  return invoke('install_model', { family, name: name ?? null })
+}
+
+/** Cancel the in-flight install (kills the child + cleans partials). */
+export function cancelInstall(): Promise<void> {
+  return invoke('cancel_install')
+}
+
+/** Reveal a family's folder in the OS file manager (for inspecting or removing
+ * models natively — the watcher reflects a native delete live). Magenta opens its
+ * models dir; SA3 opens its checkout. */
+export function openModelFolder(family: ModelFamily): Promise<void> {
+  return invoke('open_model_folder', { family })
+}
+
+/** Subscribe to `models://changed` (the models-dir watcher / an install finishing):
+ * re-fetch `model_status` and the deck picker's `/api/models`. */
+export function subscribeModelsChanged(onChange: () => void): () => void {
+  return listenTo<unknown>('models://changed', () => onChange())
+}
+
+/** Subscribe to live install progress (`model://progress`). */
+export function subscribeModelProgress(onProgress: (p: ModelProgress) => void): () => void {
+  return listenTo<ModelProgress>('model://progress', onProgress)
 }
 
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }

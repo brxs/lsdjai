@@ -67,12 +67,12 @@ with the Developer ID + the same entitlements, or sign the whole `.app` tree wit
 bundle (Spike B measured ~23 s cold, ~1 s thereafter); notarization is what keeps
 that a one-time cost rather than a per-launch block.
 
-## 4. First-run model download (preserving `just setup`)
+## 4. First-run model install (the in-app model manager)
 
-The weights live outside the bundle at `$MAGENTA_HOME/magenta-rt-v2` (default
-`~/Documents/Magenta`; see [`CLAUDE.md`](../CLAUDE.md)). `just setup` runs
-`uv run mrt models init` + `uv run mrt models download mrt2_small`. The packaged
-app preserves this flow on first run:
+The weights live outside the bundle at `$MAGENTA_HOME/magenta-rt-v2` (default the
+app-owned `~/Library/Application Support/LSDJai`; see [`CLAUDE.md`](../CLAUDE.md)).
+There is no terminal install path — models install **in-app** from the settings
+drawer (issue #43). The packaged app follows this flow on first run:
 
 1. On launch, check whether `$MAGENTA_HOME/magenta-rt-v2/<model>` exists.
 2. If absent, show the first-run download screen instead of the decks (the
@@ -84,3 +84,28 @@ app preserves this flow on first run:
 The check + the download orchestration reuse the `mrt models` CLI the backend
 already wraps — no new inference code. Wiring this screen is tracked on the
 checklist (it needs the live model tooling to verify).
+
+**Realised by the in-app model manager (issue #43).** This first-run flow is now
+the model manager (a settings-drawer panel), so the same machinery serves both a
+fresh install and later top-ups:
+
+- The packaged download runs the frozen sidecar in a non-deck mode —
+  `lsdj_infer --init-resources` then `lsdj_infer --download-model <name>` — which
+  reuses the `magenta_rt.cli.models_commands` code path and emits JSON progress
+  the Rust shell relays to the UI. The init step is what makes a freshly
+  downloaded model *loadable*: a model's two files (`<name>.mlxfn` +
+  `<name>_state.safetensors`) are not enough without the shared
+  `resources/musiccoca` + `resources/spectrostream`.
+- That download path pulls `huggingface_hub` / `fsspec` / `click`, which the deck
+  sidecar never imports, so they are collected explicitly in
+  [`scripts/freeze-sidecar.sh`](../scripts/freeze-sidecar.sh) (`--collect-all
+  huggingface_hub`, `--collect-all fsspec`, `--hidden-import click`). A missing
+  collection only fails at runtime in the packaged app — hence the checklist
+  item below, which static analysis cannot cover.
+- Stable Audio 3 installs in-app too, into the app-owned data dir
+  (`~/Library/Application Support/LSDJai/stable-audio-3`, the resolver's first
+  candidate): the Rust shell fetches the pinned source
+  ([`sa3-pin.json`](../sa3-pin.json)) as a tarball (`curl`), extracts it (`tar`),
+  and runs [`scripts/sa3-install.sh`](../scripts/sa3-install.sh) — build+warm
+  steps with no git, no tty, no system Python 3.11 (`install.sh -y --python
+  3.11`). Both families' weights move there with `just migrate-models`.

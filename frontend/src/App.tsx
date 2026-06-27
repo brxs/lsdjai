@@ -26,6 +26,9 @@ import {
   type BeatViewLayout,
 } from './persistence'
 import { Logo } from './ui/Logo'
+import { Drawer } from './ui/Drawer'
+import { Button } from './ui/Button'
+import { ModelManager } from './models/ModelManager'
 import type { StylePreset } from './presets'
 import { combinedRamWarning } from './ramWarning'
 import { phaseOffsetBeats } from './audio/track'
@@ -75,6 +78,9 @@ function App() {
     setAccent(value)
     updateAppSettings({ accent: value })
   }, [])
+
+  // The settings drawer (issue #43): the appearance pickers + the model manager.
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   // Hand the restored mix positions to the engine once — it holds them
   // until the bus is built on first play. Later moves go through the
@@ -443,24 +449,6 @@ function App() {
               {t('app.ramWarning', ramWarning)}
             </p>
           )}
-          <BeatViewPicker
-            label={t('beatview.layout')}
-            value={beatView}
-            options={(['center', 'vertical', 'top', 'off'] as const).map((layout) => ({
-              value: layout,
-              label: t(`beatview.layouts.${layout}`),
-            }))}
-            onChange={handleBeatView}
-          />
-          <AccentPicker
-            label={t('accent.label')}
-            value={accent}
-            options={(['lime', 'violet', 'cyan'] as const).map((option) => ({
-              value: option,
-              label: t(`accent.options.${option}`),
-            }))}
-            onChange={handleAccent}
-          />
           <MidiControls
             status={midi.status}
             deviceName={midi.deviceName}
@@ -469,8 +457,40 @@ function App() {
             onSelectDevice={midi.selectDevice}
             readMonitor={midi.readMonitor}
           />
+          <Button onClick={() => setSettingsOpen(true)}>{t('settings.open')}</Button>
         </div>
       </header>
+      <Drawer
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        title={t('settings.title')}
+        closeLabel={t('settings.close')}
+      >
+        <section className="modelmgr__section">
+          <h3 className="modelmgr__heading">{t('settings.appearance')}</h3>
+          <div className="settings-appearance">
+            <BeatViewPicker
+              label={t('beatview.layout')}
+              value={beatView}
+              options={(['center', 'vertical', 'top', 'off'] as const).map((layout) => ({
+                value: layout,
+                label: t(`beatview.layouts.${layout}`),
+              }))}
+              onChange={handleBeatView}
+            />
+            <AccentPicker
+              label={t('accent.label')}
+              value={accent}
+              options={(['lime', 'violet', 'cyan'] as const).map((option) => ({
+                value: option,
+                label: t(`accent.options.${option}`),
+              }))}
+              onChange={handleAccent}
+            />
+          </div>
+        </section>
+        <ModelManager />
+      </Drawer>
       {beatView === 'top' && (
         <BeatView
           getSourceA={deckA.getZoomSource}

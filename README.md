@@ -26,7 +26,7 @@ pads and finished tracks come from Stable Audio 3. See
 
 - Apple Silicon Mac (MLX backend)
 - [uv](https://docs.astral.sh/uv/)
-- ~13 GB disk for model weights (downloaded on first setup: Magenta
+- ~13 GB disk for model weights (downloaded in-app on demand: Magenta
   ~4.5 GB for both deck models, Stable Audio 3 ~8 GB including the
   medium track model)
 - macOS 11+ — LSDJai ships as a native app (Tauri + a Rust audio engine +
@@ -39,17 +39,17 @@ All common tasks live in the [`justfile`](justfile) — run `just` to list them.
 ## Setup
 
 ```sh
-just setup   # backend deps, all model weights (~13 GB), frontend deps + build
+just setup   # backend deps, frontend deps + build (no model weights)
 ```
 
-Magenta models land in `~/Documents/Magenta/magenta-rt-v2` (override with
-`MAGENTA_HOME`): both deck models, the default `mrt2_small` and the heavier,
-higher-quality `mrt2_base`, selectable per deck in the UI — the app warns
-when the combined selection looks tight for your RAM. Stable Audio 3 —
-generated pads and tracks — is cloned to `~/Repos/stable-audio-3` (override
-with `SA3_MLX_HOME`; an existing checkout is reused) and its weights are
-pre-warmed so no request ever pays for a download; `just setup-sa3` re-runs
-that half alone.
+**Models install in the app**, not the terminal. Launch with `just tauri-dev`,
+open the settings drawer, and install what you need from the model manager — both
+families download with live progress. Magenta deck models (`mrt2_small` and the
+heavier, higher-quality `mrt2_base`, selectable per deck — the app warns when the
+combined selection looks tight for your RAM) and Stable Audio 3 (generated pads
+and tracks) land in the app-owned `~/Library/Application Support/LSDJai`
+(`MAGENTA_HOME` / `SA3_MLX_HOME` override the locations). `just migrate-models`
+relocates an existing install into that folder without re-downloading.
 
 ## Run
 
