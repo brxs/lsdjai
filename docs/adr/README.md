@@ -50,3 +50,4 @@ scaffolds the file from the template.
 | [0023](0023-midi-note-and-drum-conditioning-over-the-deck-control-channel.md) | MIDI note and drum conditioning over the deck control channel | Proposed |
 | [0024](0024-key-detection-in-the-rust-audio-engine-behind-an-honesty-gate.md) | Key detection in the Rust audio engine, behind an honesty gate | Proposed |
 | [0025](0025-beat-detection-in-the-rust-audio-engine.md) | Beat detection in the Rust audio engine | Proposed |
+| [0026](0026-lane-driven-variable-chunk-segmentation.md) | Lane-driven variable chunk segmentation for the modulation timeline | Proposed |
