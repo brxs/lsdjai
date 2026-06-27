@@ -8,12 +8,14 @@ let changedCb: (() => void) | null = null
 let progressCb: ((event: ModelProgress) => void) | null = null
 const modelStatus = vi.fn<() => Promise<ModelStatus>>()
 const installModel = vi.fn<(family: string, name?: string) => Promise<void>>(async () => {})
+const updateModel = vi.fn<(family: string) => Promise<void>>(async () => {})
 const cancelInstall = vi.fn(async () => {})
 const openModelFolder = vi.fn<(family: string) => Promise<void>>(async () => {})
 
 vi.mock('../audio/nativeEngine', () => ({
   modelStatus: () => modelStatus(),
   installModel: (family: string, name?: string) => installModel(family, name),
+  updateModel: (family: string) => updateModel(family),
   cancelInstall: () => cancelInstall(),
   openModelFolder: (family: string) => openModelFolder(family),
   subscribeModelsChanged: (cb: () => void) => {
@@ -36,7 +38,14 @@ function status(overrides: Partial<ModelStatus> = {}): ModelStatus {
       installable: ['mrt2_small', 'mrt2_base'],
       installed: [{ name: 'mrt2_small', sizeBytes: 2_000_000_000, needsResources: false }],
     },
-    sa3: { state: 'missing', sizeBytes: 0, checkout: null },
+    sa3: {
+      state: 'missing',
+      sizeBytes: 0,
+      checkout: null,
+      installedSource: null,
+      pinnedSource: { repo: 'https://github.com/brxs/stable-audio-3', commit: 'pinned1' },
+      updateAvailable: false,
+    },
     installing: null,
     ...overrides,
   }
@@ -109,7 +118,16 @@ describe('ModelManager', () => {
 
   it('reveals each family folder for native inspection', async () => {
     modelStatus.mockResolvedValue(
-      status({ sa3: { state: 'ready', sizeBytes: 5_000_000_000, checkout: '/sa3' } }),
+      status({
+        sa3: {
+          state: 'ready',
+          sizeBytes: 5_000_000_000,
+          checkout: '/sa3',
+          installedSource: { repo: 'https://github.com/brxs/stable-audio-3', commit: 'pinned1' },
+          pinnedSource: { repo: 'https://github.com/brxs/stable-audio-3', commit: 'pinned1' },
+          updateAvailable: false,
+        },
+      }),
     )
     render(<ModelManager />)
     await screen.findByText('mrt2_small')
@@ -135,6 +153,43 @@ describe('ModelManager', () => {
     // No error banner, and the in-flight state is cleared (Cancel gone).
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.queryByText('Cancel')).toBeNull()
+  })
+
+  it('offers an in-place update when the installed SA3 source drifted from the pin', async () => {
+    modelStatus.mockResolvedValue(
+      status({
+        sa3: {
+          state: 'ready',
+          sizeBytes: 5_000_000_000,
+          checkout: '/sa3',
+          installedSource: { repo: 'https://github.com/brxs/stable-audio-3', commit: 'oldsha' },
+          pinnedSource: { repo: 'https://github.com/brxs/stable-audio-3', commit: 'newsha' },
+          updateAvailable: true,
+        },
+      }),
+    )
+    render(<ModelManager />)
+    await screen.findByText('Update available — a newer version is pinned')
+    fireEvent.click(screen.getByText('Update'))
+    expect(updateModel).toHaveBeenCalledWith('sa3')
+  })
+
+  it('shows no update action when the installed SA3 matches the pin', async () => {
+    modelStatus.mockResolvedValue(
+      status({
+        sa3: {
+          state: 'ready',
+          sizeBytes: 5_000_000_000,
+          checkout: '/sa3',
+          installedSource: { repo: 'https://github.com/brxs/stable-audio-3', commit: 'pinned1' },
+          pinnedSource: { repo: 'https://github.com/brxs/stable-audio-3', commit: 'pinned1' },
+          updateAvailable: false,
+        },
+      }),
+    )
+    render(<ModelManager />)
+    await screen.findByText('mrt2_small')
+    expect(screen.queryByText('Update')).toBeNull()
   })
 
   it('reports an install error', async () => {

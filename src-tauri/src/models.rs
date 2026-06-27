@@ -39,6 +39,12 @@ const SA3_READY: &str = "ready";
 
 const WARMED_STAMP: &str = ".lsdj-warmed";
 
+// Records the source (`sa3-pin.json` repo + commit) the in-app installer fetched,
+// so `model_status` can tell when the installed checkout has drifted from a bumped
+// pin and offer an in-app update. Written by Rust after a fetch (the shell
+// installer doesn't know the commit). Lives beside `.lsdj-warmed` in optimized/mlx.
+const SOURCE_STAMP: &str = ".lsdj-source.json";
+
 // --- Path resolution (mirrors backend/lsdj/paths.py + sa3.py) --------------
 
 fn home_dir() -> PathBuf {
@@ -160,6 +166,69 @@ fn sa3_status() -> (&'static str, Option<PathBuf>) {
     }
 }
 
+/// The source an SA3 checkout was installed from (or the one currently pinned):
+/// the `sa3-pin.json` repo + commit. Serialised to the model-manager UI so it can
+/// show what's installed vs what's available, and persisted in the checkout's
+/// source stamp.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Sa3Source {
+    repo: String,
+    commit: String,
+}
+
+fn source_stamp_path(checkout: &Path) -> PathBuf {
+    checkout.join("optimized").join("mlx").join(SOURCE_STAMP)
+}
+
+/// The source recorded in a checkout's stamp, or `None` when absent (a checkout
+/// installed before stamping existed, or placed by hand) or unreadable.
+fn read_source_stamp(checkout: &Path) -> Option<Sa3Source> {
+    let data = std::fs::read_to_string(source_stamp_path(checkout)).ok()?;
+    serde_json::from_str(&data).ok()
+}
+
+/// Record what was fetched into the checkout. Best-effort: a failed write just
+/// means the next `model_status` treats the checkout as updatable.
+fn write_source_stamp(checkout: &Path, source: &Sa3Source) {
+    if let Ok(json) = serde_json::to_string_pretty(source) {
+        let _ = std::fs::write(source_stamp_path(checkout), json);
+    }
+}
+
+/// The currently pinned source (`sa3-pin.json`).
+fn pinned_source() -> Sa3Source {
+    let pin = sa3_pin();
+    Sa3Source {
+        repo: pin.repo,
+        commit: pin.commit,
+    }
+}
+
+/// Two commits match when either is a prefix of the other (tolerates short vs.
+/// full SHAs); repos match after trimming a trailing slash.
+fn sources_match(a: &Sa3Source, b: &Sa3Source) -> bool {
+    let repo_eq = a.repo.trim_end_matches('/') == b.repo.trim_end_matches('/');
+    let commit_eq = !a.commit.is_empty()
+        && !b.commit.is_empty()
+        && (a.commit.starts_with(&b.commit) || b.commit.starts_with(&a.commit));
+    repo_eq && commit_eq
+}
+
+/// Whether an in-app update should be offered: a present checkout whose recorded
+/// source differs from the pin — or one with no stamp at all (we can't prove it
+/// matches, so it's updatable). A missing install is never "update available"
+/// (that's a plain install). Pure, so the policy is unit-tested.
+fn sa3_update_available(installed: Option<&Sa3Source>, pinned: &Sa3Source, present: bool) -> bool {
+    if !present {
+        return false;
+    }
+    match installed {
+        Some(src) => !sources_match(src, pinned),
+        None => true,
+    }
+}
+
 /// Sum of file sizes under `path`, following file symlinks (HF weights symlink
 /// into the shared cache; the target size is the meaningful "how big is this").
 /// Best-effort: unreadable entries are skipped, and a symlinked directory is not
@@ -262,6 +331,14 @@ pub struct Sa3Status {
     state: &'static str,
     size_bytes: u64,
     checkout: Option<String>,
+    /// The source the installed checkout was fetched from (`None` when the
+    /// checkout predates stamping or was placed by hand).
+    installed_source: Option<Sa3Source>,
+    /// The source currently pinned (`sa3-pin.json`).
+    pinned_source: Sa3Source,
+    /// True when an installed checkout differs from the pin (or is unstamped) —
+    /// the manager offers an in-place update.
+    update_available: bool,
 }
 
 /// The in-flight install in the status snapshot, so a reopened manager reflects
@@ -298,6 +375,10 @@ fn status(active: Option<(Family, String)>) -> ModelStatus {
         .collect();
     let (sa3_state, sa3_checkout) = sa3_status();
     let sa3_size = sa3_checkout.as_ref().map(|c| sa3_checkout_size(c)).unwrap_or(0);
+    let pinned = pinned_source();
+    let installed_source = sa3_checkout.as_ref().and_then(|c| read_source_stamp(c));
+    let update_available =
+        sa3_update_available(installed_source.as_ref(), &pinned, sa3_state != SA3_MISSING);
     ModelStatus {
         magenta: MagentaStatus {
             models_dir: models_dir.to_string_lossy().into_owned(),
@@ -309,6 +390,9 @@ fn status(active: Option<(Family, String)>) -> ModelStatus {
             state: sa3_state,
             size_bytes: sa3_size,
             checkout: sa3_checkout.map(|c| c.to_string_lossy().into_owned()),
+            installed_source,
+            pinned_source: pinned,
+            update_available,
         },
         installing: active.map(|(family, name)| ActiveInstall {
             family,
@@ -413,7 +497,13 @@ impl InstallManager {
     /// `model://progress` events and a final `models://changed` tells the UI to
     /// re-fetch status. Errors immediately if an install is already running or a
     /// Magenta name is unknown.
-    pub fn install(&self, app: AppHandle, family: Family, name: Option<String>) -> Result<(), String> {
+    pub fn install(
+        &self,
+        app: AppHandle,
+        family: Family,
+        name: Option<String>,
+        update: bool,
+    ) -> Result<(), String> {
         if family == Family::Magenta {
             let name = name.as_deref().ok_or("a model name is required")?;
             if !INSTALLABLE_MODELS.contains(&name) {
@@ -443,7 +533,7 @@ impl InstallManager {
                 };
                 let result = match family {
                     Family::Magenta => install_magenta(&progress, &shared, &name),
-                    Family::Sa3 => install_sa3(&progress, &shared),
+                    Family::Sa3 => install_sa3(&progress, &shared, update),
                 };
                 *shared.current_child.lock().unwrap_or_else(|p| p.into_inner()) = None;
                 match result {
@@ -615,16 +705,23 @@ fn run_download(progress: &Progress, shared: &InstallShared, cmd: Command) -> Re
     result.map_err(|exit_err| last_error.unwrap_or(exit_err))
 }
 
-fn install_sa3(progress: &Progress, shared: &InstallShared) -> Result<(), String> {
+fn install_sa3(progress: &Progress, shared: &InstallShared, update: bool) -> Result<(), String> {
     let (_state, existing) = sa3_status();
-    let checkout = match existing {
+    let (checkout, fetched) = match existing {
         // Resume an existing checkout (venv_missing / not_warmed / ready) — the
-        // installer is idempotent (the `.lsdj-warmed` stamp gates re-warming).
-        Some(checkout) => checkout,
-        None => fetch_sa3_checkout(progress, shared)?,
+        // installer is idempotent (the `.lsdj-warmed` stamp gates re-warming). An
+        // explicit update instead re-fetches the pinned source, swapping it in
+        // (fetch_sa3_checkout backs up and restores on failure) and re-building.
+        Some(checkout) if !update => (checkout, false),
+        _ => (fetch_sa3_checkout(progress, shared)?, true),
     };
     cancelled(shared)?;
-    run_sa3_installer(progress, shared, &checkout, &sa3_install_script())
+    run_sa3_installer(progress, shared, &checkout, &sa3_install_script())?;
+    if fetched {
+        // Stamp the fetched source so a later pin bump shows as "update available".
+        write_source_stamp(&checkout, &pinned_source());
+    }
+    Ok(())
 }
 
 /// Run the SA3 build+warm script (`install.sh -y --python 3.11` + warm). Takes
@@ -721,7 +818,25 @@ pub fn install_model(
     family: Family,
     name: Option<String>,
 ) -> Result<(), String> {
-    installer.install(app, family, name)
+    installer.install(app, family, name, false)
+}
+
+/// Update an installed family in place to the pinned source. For SA3 this
+/// re-fetches the pinned checkout (swapping it in) and rebuilds + re-warms;
+/// progress and completion arrive on the same `model://progress` /
+/// `models://changed` channels as an install.
+#[tauri::command]
+pub fn update_model(
+    installer: tauri::State<'_, InstallManager>,
+    app: AppHandle,
+    family: Family,
+) -> Result<(), String> {
+    // Update is SA3-only: it re-fetches the pinned checkout. Magenta models are
+    // versioned individually and have no pinned-source/update path.
+    if family != Family::Sa3 {
+        return Err("update is only supported for Stable Audio 3".into());
+    }
+    installer.install(app, family, None, true)
 }
 
 #[tauri::command]
@@ -792,6 +907,51 @@ mod tests {
         let pin = sa3_pin();
         assert!(pin.repo.starts_with("https://"));
         assert!(!pin.commit.is_empty());
+    }
+
+    #[test]
+    fn source_stamp_round_trips() {
+        let tmp = std::env::temp_dir().join(format!("lsdj-stamp-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("optimized").join("mlx")).unwrap();
+        // Absent before writing.
+        assert_eq!(read_source_stamp(&tmp), None);
+        let src = Sa3Source {
+            repo: "https://github.com/brxs/stable-audio-3".into(),
+            commit: "abc123def456".into(),
+        };
+        write_source_stamp(&tmp, &src);
+        assert_eq!(read_source_stamp(&tmp), Some(src));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn update_available_reflects_source_drift() {
+        let pin = Sa3Source {
+            repo: "https://github.com/brxs/stable-audio-3".into(),
+            commit: "36ef97776ee12375".into(),
+        };
+        // A missing install is a plain install, never "update available".
+        assert!(!sa3_update_available(None, &pin, false));
+        // Present but unstamped (legacy / hand-placed) — can't prove a match.
+        assert!(sa3_update_available(None, &pin, true));
+        // Exact match.
+        assert!(!sa3_update_available(Some(&pin.clone()), &pin, true));
+        // Short-SHA stamp vs full-SHA pin (prefix) counts as a match.
+        let short = Sa3Source { repo: pin.repo.clone(), commit: "36ef977".into() };
+        assert!(!sa3_update_available(Some(&short), &pin, true));
+        // A different commit, or a different repo (e.g. after reverting to
+        // upstream), is updatable.
+        let other_commit = Sa3Source { repo: pin.repo.clone(), commit: "deadbeef".into() };
+        assert!(sa3_update_available(Some(&other_commit), &pin, true));
+        let other_repo = Sa3Source {
+            repo: "https://github.com/Stability-AI/stable-audio-3".into(),
+            commit: pin.commit.clone(),
+        };
+        assert!(sa3_update_available(Some(&other_repo), &pin, true));
+        // A trailing slash on the repo is ignored.
+        let slash = Sa3Source { repo: format!("{}/", pin.repo), commit: pin.commit.clone() };
+        assert!(!sa3_update_available(Some(&slash), &pin, true));
     }
 
     #[test]

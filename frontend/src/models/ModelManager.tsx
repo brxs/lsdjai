@@ -10,6 +10,7 @@ import {
   openModelFolder,
   subscribeModelProgress,
   subscribeModelsChanged,
+  updateModel,
   type ModelFamily,
   type ModelProgress,
   type ModelStatus,
@@ -66,6 +67,16 @@ export function ModelManager() {
     // Show "installing" before the first progress event lands.
     setProgress({ family, name: name ?? '', stage: 'download', message: null, file: null })
     installModel(family, name).catch((e: unknown) => {
+      setProgress(null)
+      setError(String(e))
+    })
+  }, [])
+
+  const onUpdate = useCallback((family: ModelFamily) => {
+    setError(null)
+    // An update re-fetches the pinned source; surface progress from the fetch on.
+    setProgress({ family, name: '', stage: 'fetch', message: null, file: null })
+    updateModel(family).catch((e: unknown) => {
       setProgress(null)
       setError(String(e))
     })
@@ -183,6 +194,9 @@ export function ModelManager() {
               {t(`modelManager.sa3State.${sa3.state}`)}
               {sa3Present && sa3.sizeBytes > 0 ? ` · ${formatBytes(sa3.sizeBytes)}` : ''}
             </div>
+            {sa3Ready && sa3.updateAvailable && (
+              <div className="modelmgr__meta modelmgr__meta--warn">{t('modelManager.updateAvailable')}</div>
+            )}
             {sa3Label && <div className="modelmgr__progress">{sa3Label}</div>}
           </div>
           <div className="modelmgr__actions">
@@ -191,6 +205,10 @@ export function ModelManager() {
               !sa3Ready ? (
                 <Button variant="primary" onClick={() => onInstall('sa3')} disabled={isInstalling}>
                   {t('modelManager.install')}
+                </Button>
+              ) : sa3.updateAvailable ? (
+                <Button variant="primary" onClick={() => onUpdate('sa3')} disabled={isInstalling}>
+                  {t('modelManager.update')}
                 </Button>
               ) : null,
             )}

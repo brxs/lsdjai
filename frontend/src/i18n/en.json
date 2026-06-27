@@ -265,6 +265,8 @@
     "needsResources": "Needs shared resources — repair to enable loading",
     "install": "Install",
     "repair": "Repair",
+    "update": "Update",
+    "updateAvailable": "Update available — a newer version is pinned",
     "installing": "Installing…",
     "cancel": "Cancel",
     "openFolder": "Open folder",
