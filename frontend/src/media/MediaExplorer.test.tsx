@@ -100,27 +100,35 @@ describe('MediaExplorer', () => {
   it('toggles the tray via the header chevron', () => {
     const onToggle = vi.fn()
     renderExplorer({ onToggle })
-    // Open: the chevron offers to collapse, and the resize grip is present.
+    // Open: the chevron offers to collapse (with a shortcut hint), and the
+    // resize grip is present.
     const toggle = screen.getByRole('button', { name: 'Collapse media explorer' })
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(toggle.getAttribute('title')).toContain('Collapse media explorer')
     expect(screen.getByRole('separator', { name: 'Resize media explorer' })).toBeInTheDocument()
     fireEvent.click(toggle)
     expect(onToggle).toHaveBeenCalledTimes(1)
   })
 
-  it('hides the content and grip when collapsed', () => {
-    renderExplorer({}, [], createControlBus(), false)
-    // Closed: the chevron offers to expand, the content is hidden from a11y,
-    // and there is no resize grip to drag.
-    expect(
-      screen.getByRole('button', { name: 'Expand media explorer' }),
-    ).toHaveAttribute('aria-expanded', 'false')
+  it('collapses to a slim bar that toggles when clicked anywhere', () => {
+    const onToggle = vi.fn()
+    renderExplorer({ onToggle }, [], createControlBus(), false)
+    // Closed: the whole bar is the expand button (no separate chevron control),
+    // it carries a shortcut-hint tooltip, the tabs are gone, the content is
+    // hidden from a11y, and there is no resize grip to drag.
+    const bar = screen.getByRole('button', { name: 'Expand media explorer' })
+    expect(bar).toHaveAttribute('aria-expanded', 'false')
+    expect(bar.getAttribute('title')).toContain('Expand media explorer')
+    expect(screen.queryByRole('tab')).toBeNull()
     expect(screen.queryByRole('separator')).toBeNull()
     expect(
       screen.getByText("No presets yet — save a deck's style below its pad").closest(
         '.media__content',
       ),
     ).toHaveAttribute('aria-hidden', 'true')
+    // Clicking the bar (here, its title label) expands it — not just a chevron.
+    fireEvent.click(screen.getByText('Media explorer'))
+    expect(onToggle).toHaveBeenCalledTimes(1)
   })
 
   it('composes an SA3 track and loads it onto a deck', async () => {

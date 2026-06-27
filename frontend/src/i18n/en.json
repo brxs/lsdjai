@@ -36,6 +36,8 @@
     "title": "Media explorer",
     "collapse": "Collapse media explorer",
     "expand": "Expand media explorer",
+    "collapseHint": "Collapse media explorer ({{shortcut}})",
+    "expandHint": "Expand media explorer ({{shortcut}})",
     "resize": "Resize media explorer",
     "tabs": {
       "crates": "Presets",

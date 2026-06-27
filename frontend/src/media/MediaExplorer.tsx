@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { PointerEvent as ReactPointerEvent } from 'react'
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { DeckId } from '../audio/types'
@@ -20,6 +23,10 @@ import { Select } from '../ui/Select'
 import { TextField } from '../ui/TextField'
 import { randomSongTitle } from './songTitle'
 import './media.css'
+
+// The tray toggle's shortcut, shown in its tooltip. ⌘ on macOS (the primary
+// target), Ctrl elsewhere — matches the Cmd/Ctrl+M handler in App.
+const TOGGLE_SHORTCUT = /Mac/i.test(navigator.userAgent) ? '⌘M' : 'Ctrl+M'
 
 type MediaTab = 'crates' | 'generate' | 'samples' | 'folder'
 type TrackEngine = 'sfx' | 'music' | 'track' | 'magenta'
@@ -889,6 +896,27 @@ export function MediaExplorer({
     window.addEventListener('pointerup', onUp)
   }
 
+  const collapseHint = t('media.collapseHint', { shortcut: TOGGLE_SHORTCUT })
+  const expandHint = t('media.expandHint', { shortcut: TOGGLE_SHORTCUT })
+  // Collapsed, the whole header bar is the expand target (click or Enter/Space);
+  // open, the header is inert chrome and only the chevron button toggles.
+  const collapsedBarProps = open
+    ? {}
+    : {
+        role: 'button' as const,
+        tabIndex: 0,
+        'aria-expanded': false,
+        'aria-label': t('media.expand'),
+        title: expandHint,
+        onClick: onToggle,
+        onKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            onToggle()
+          }
+        },
+      }
+
   return (
     <Panel
       className={`media${open ? '' : ' media--collapsed'}`}
@@ -903,29 +931,34 @@ export function MediaExplorer({
           onPointerDown={startResize}
         />
       )}
-      <div className="media__header">
+      <div className="media__header" {...collapsedBarProps}>
         <h2 className="media__title">{t('media.title')}</h2>
-        <div className="media__tabs" role="tablist">
-          {(['crates', 'generate', 'samples', 'folder'] as const).map((name) => (
-            <Button
-              key={name}
-              lit={tab === name}
-              role="tab"
-              aria-selected={tab === name}
-              aria-label={t(`media.tabs.${name}`)}
-              onClick={() => {
-                setTab(name)
-                setHighlight(0)
-              }}
-            >
-              {t(`media.tabs.${name}`)}
-            </Button>
-          ))}
-        </div>
+        {/* Collapsed, the tray is a slim labelled bar (the whole bar toggles):
+            the tabs and per-tab actions fold away, leaving just the title and a
+            plain expand chevron. */}
+        {open && (
+          <div className="media__tabs" role="tablist">
+            {(['crates', 'generate', 'samples', 'folder'] as const).map((name) => (
+              <Button
+                key={name}
+                lit={tab === name}
+                role="tab"
+                aria-selected={tab === name}
+                aria-label={t(`media.tabs.${name}`)}
+                onClick={() => {
+                  setTab(name)
+                  setHighlight(0)
+                }}
+              >
+                {t(`media.tabs.${name}`)}
+              </Button>
+            ))}
+          </div>
+        )}
         {/* The right cluster: per-tab utility actions (Open Folder, so far)
             sit next to the collapse toggle, which is always present. */}
         <div className="media__header-end">
-          {(tab === 'generate' || tab === 'samples') && (
+          {open && (tab === 'generate' || tab === 'samples') && (
             <div className="media__header-actions">
               <Button
                 onClick={() =>
@@ -940,13 +973,20 @@ export function MediaExplorer({
               </Button>
             </div>
           )}
-          <Button
-            onClick={onToggle}
-            aria-expanded={open}
-            aria-label={t(open ? 'media.collapse' : 'media.expand')}
-          >
-            {open ? '▾' : '▸'}
-          </Button>
+          {open ? (
+            <Button
+              onClick={onToggle}
+              aria-expanded={true}
+              aria-label={t('media.collapse')}
+              title={collapseHint}
+            >
+              ▾
+            </Button>
+          ) : (
+            <span className="media__chevron" aria-hidden="true">
+              ▴
+            </span>
+          )}
         </div>
       </div>
 
