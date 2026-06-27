@@ -1304,10 +1304,11 @@ mod tests {
     }
 
     /// `load_generated_loop` round-trips the engine's verdict through the spawned
-    /// render thread: a one-shot pad onto a fresh (Realtime) deck is accepted and
-    /// fills the slot; the same load onto a Playback deck is refused. Before the
-    /// reply channel this was fire-and-forget — a refusal was silent and the
-    /// webview could only guess by polling, surfacing as a phantom decode failure.
+    /// render thread: a one-shot pad is accepted and fills the slot on a fresh
+    /// (Realtime) deck — AND on a Playback deck, since a loaded sample is a
+    /// self-contained overlay that layers over the track (ADR-0022). The reply
+    /// channel (vs the old fire-and-forget) is what lets the webview show the real
+    /// verdict instead of guessing "could not be decoded".
     #[test]
     fn load_generated_loop_reports_its_verdict() {
         let (host, _output, _cue_output, _handles) = Host::new();
@@ -1328,8 +1329,8 @@ mod tests {
         }
         assert!(filled, "the accepted pad fills the slot in the snapshot");
 
-        // Switching the deck to Playback makes the same load refused — the verdict
-        // the webview now shows honestly instead of "could not be decoded".
+        // Switching the deck to Playback no longer refuses the load — the sample
+        // layers over the track, so the verdict comes back accepted there too.
         host.load_track(0, ramp_track(10_000));
         for _ in 0..200 {
             if host.track_status(0).is_some() {
@@ -1338,9 +1339,18 @@ mod tests {
             thread::sleep(Duration::from_millis(2));
         }
         assert!(
-            !host.load_generated_loop(0, 1, pad, true),
-            "a Playback deck refuses a generated pad",
+            host.load_generated_loop(0, 1, pad, true),
+            "a Playback deck accepts a generated pad too",
         );
+        let mut filled_on_playback = false;
+        for _ in 0..200 {
+            if host.loop_slots(0)[1].filled {
+                filled_on_playback = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(filled_on_playback, "the pad fills a slot on the Playback deck");
 
         drop(host);
     }

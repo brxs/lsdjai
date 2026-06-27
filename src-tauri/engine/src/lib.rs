@@ -192,10 +192,11 @@ pub struct Engine {
     /// engine just stops draining it until the deck returns to Realtime.
     parked_rings: Vec<Option<RingConsumer>>,
     /// Per-deck freeze-loop / generated-loop / one-shot bank (M13/M18,
-    /// ADR-0009/0012). Realtime-only: a Playback deck's bank stays empty (the
-    /// capture API is gated on Realtime). The active loop (if any) replaces the
-    /// deck's live frame at the channel head; a one-shot overlays on top — see
-    /// `LoopBank::mix_frame`.
+    /// ADR-0009/0012). A *freeze* originates only on a Realtime deck (capture needs
+    /// the live history), but a *loaded sample* is a self-contained buffer that
+    /// loads and plays in either mode (ADR-0022). The active loop (if any) replaces
+    /// the deck's base frame at the channel head; a one-shot / layer overlays on
+    /// top — see `LoopBank::mix_frame`.
     loops: Vec<LoopBank>,
     graph: MixGraph,
     telemetry: Arc<Telemetry>,
@@ -530,19 +531,18 @@ impl Engine {
     }
 
     /// Play loop `slot` on a deck (M13/M18, `playLoop` in `engine.ts`): a one-shot
-    /// overlays and ends itself; a loop either REPLACES the live stream (`layer =
-    /// false`, a freeze — held at the channel head while the live ring keeps being
-    /// fed/drained underneath, ADR-0009) or LAYERS on top of it (`layer = true`, a
-    /// loaded sample — summed and stacking, ADR-0022). Returns `false` if the slot is
-    /// empty. A no-op (returns `false`) on a Playback deck.
+    /// overlays and ends itself; a loop either REPLACES the base (`layer = false`, a
+    /// freeze — held at the channel head while whatever is underneath keeps being
+    /// fed/drained, ADR-0009) or LAYERS on top of it (`layer = true`, a loaded
+    /// sample — summed and stacking, ADR-0022). The overlay sums onto whatever the
+    /// deck plays — the live ring OR a Playback track — so a loaded sample sounds in
+    /// either mode (a freeze still only originates on a Realtime deck, since capture
+    /// needs the live history). Returns `false` if the slot is empty.
     ///
     /// # Panics
     /// Panics if `deck_index >= DECK_COUNT`.
     pub fn play_loop(&mut self, deck_index: usize, slot: usize, layer: bool) -> bool {
         assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
-        if !self.is_realtime(deck_index) {
-            return false;
-        }
         self.loops[deck_index].play(slot, layer)
     }
 
@@ -591,8 +591,10 @@ impl Engine {
     /// `loadGeneratedLoop` in `engine.ts`). `samples` is decoded f32 @ 48 k (an SA3
     /// pad; the shell decodes the WAV — no WAV decoder this slice, like
     /// `load_track`). `one_shot` plays ONCE then stops; otherwise it loops like a
-    /// freeze loop (the seam is folded). Returns `false` on an out-of-range slot. A
-    /// no-op (returns `false`) on a Playback deck.
+    /// freeze loop (the seam is folded). Returns `false` on an out-of-range slot.
+    /// Mode-agnostic: a loaded sample is a self-contained buffer (no live-ring
+    /// dependency), so it loads onto a Playback deck too and layers over the track
+    /// when played — the Samples tab works whatever the deck is doing (ADR-0022).
     ///
     /// # Panics
     /// Panics if `deck_index >= DECK_COUNT`.
@@ -604,9 +606,6 @@ impl Engine {
         one_shot: bool,
     ) -> bool {
         assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
-        if !self.is_realtime(deck_index) {
-            return false;
-        }
         self.loops[deck_index].load_generated(slot, samples, one_shot)
     }
 
@@ -671,11 +670,6 @@ impl Engine {
             Some(DeckSource::Realtime(ring)) => Some(ring),
             _ => None,
         }
-    }
-
-    /// Whether the deck is in Realtime mode (a loop/sample feature applies).
-    fn is_realtime(&self, deck_index: usize) -> bool {
-        matches!(self.decks[deck_index], Some(DeckSource::Realtime(_)))
     }
 
     /// Play/stop the live (Realtime) deck stream: gate whether `render` drains
@@ -2456,11 +2450,11 @@ mod tests {
         assert!(!engine.loop_slots(0)[2].filled);
     }
 
-    /// (S4b-5) The whole Slice-4b family is inert on a Playback deck: capture,
-    /// play, load, and sample are no-ops; the slots stay empty (track-buffer
-    /// slicing is a parked Later idea, ADR-0013).
+    /// (S4b-5) A *freeze* still needs the live ring, so capture stays inert on a
+    /// Playback deck — the played history holds the dead stream (ADR-0013), and a
+    /// refused capture fills no slot.
     #[test]
-    fn loop_features_are_inert_on_a_playback_deck() {
+    fn freeze_capture_is_inert_on_a_playback_deck() {
         let mut engine = Engine::new();
         let mut deck_a = engine.create_deck(0);
         let _deck_b = engine.create_deck(1);
@@ -2475,12 +2469,26 @@ mod tests {
         // Capture is refused (the played history holds the dead stream; ADR-0013).
         assert!(!engine.capture_loop(0, 0, 1.0), "capture_loop is a no-op on Playback");
         assert!(engine.capture_sample(0, STYLE_SAMPLE_SECONDS).is_none(), "no style sample on Playback");
-        // load_generated_loop and play_loop refuse too.
+        assert!(engine.loop_slots(0).iter().all(|s| !s.filled && !s.playing), "no slot filled by a refused capture");
+    }
+
+    /// (S4b-5b) A *loaded sample*, unlike a freeze, is a self-contained buffer with
+    /// no ring dependency, so it loads and layers on a Playback deck too — the
+    /// Samples tab works whatever the deck is doing, summing over the track
+    /// (ADR-0022). The reported "could not load the sample" error was this guard.
+    #[test]
+    fn a_loaded_sample_layers_on_a_playback_deck() {
+        let mut engine = Engine::new();
+        let _deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+        engine.load_track(0, ramp_track(48_000));
+        assert!(engine.get_track_status(0).is_some(), "deck A is Playback");
+
         let pad = vec![0.1f32; (SAMPLE_RATE as usize / 2) * CHANNELS as usize];
-        assert!(!engine.load_generated_loop(0, 0, pad, false), "no generated loop on Playback");
-        assert!(!engine.play_loop(0, 0, false), "no play on a Playback deck");
-        // The slots never filled.
-        assert!(engine.loop_slots(0).iter().all(|s| !s.filled && !s.playing), "slots stay empty");
+        assert!(engine.load_generated_loop(0, 0, pad, false), "a sample loads onto a Playback deck");
+        assert!(engine.loop_slots(0)[0].filled, "the slot fills");
+        assert!(engine.play_loop(0, 0, true), "the sample layers on top of the track");
+        assert!(engine.loop_slots(0)[0].playing, "the layer is sounding");
     }
 
     /// (S4b-6) `render` stays correct with a loop in path on one deck and a live

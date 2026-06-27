@@ -237,8 +237,9 @@ type MediaExplorerProps = {
    * mode (ADR-0013). Resolves false when the audio doesn't decode. */
   onLoadTrack: (deck: DeckId, wav: ArrayBuffer, title: string) => Promise<boolean>
   /** Load a saved sample into a deck loop slot (ADR-0022) — the first free
-   * slot, as a loop or one-shot per the sample. Resolves false when every slot
-   * is full, the deck isn't a live Realtime deck, or the body doesn't decode. */
+   * slot, as a loop or one-shot per the sample, layering over whatever the deck
+   * plays (live or a track). Resolves false when every slot is full or the body
+   * doesn't decode. */
   onLoadSample: (
     deck: DeckId,
     wav: ArrayBuffer,

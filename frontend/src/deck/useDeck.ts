@@ -1305,8 +1305,9 @@ export function useDeck(deckId: DeckId): DeckControls {
           }
           const wav = await response.arrayBuffer()
           if (stale()) return
-          // The engine reports whether it took the pad; a refusal (a deck that
-          // isn't a live/Realtime deck) is honestly named, not blamed on decoding.
+          // The engine reports whether it took the pad; a refusal is honestly
+          // named, not blamed on decoding. (A loaded sample layers on any deck
+          // now, so this only trips on a malformed slot — ADR-0022.)
           if (!(await channel.loadGeneratedLoop(slot, wav, oneShot))) {
             throw new Error('the deck could not load the generated pad')
           }
@@ -1353,8 +1354,8 @@ export function useDeck(deckId: DeckId): DeckControls {
    * Samples-tab counterpart of a deck capture/generate. Reuses `generateToPad`'s
    * install tail (find a free slot → decode + fold into the slot → mark filled),
    * minus the network half. `oneShot` comes from the sample's registry row.
-   * Resolves false when every slot is full, the deck isn't a live Realtime deck, or
-   * the body doesn't decode — the engine's honest verdict, surfaced via
+   * Resolves false when every slot is full or the body doesn't decode — a loaded
+   * sample now layers on any deck regardless of mode (ADR-0022), surfaced via
    * `generateError`. */
   const loadSampleToSlot = useCallback(
     async (wav: ArrayBuffer, oneShot: boolean, label: string): Promise<boolean> => {
