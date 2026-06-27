@@ -511,7 +511,7 @@ describe('MediaExplorer', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Trash is unavailable')
   })
 
-  it('shows the prompt inline and expands the full text on click', async () => {
+  it('shows the prompt inline on the row, with the full text on hover', async () => {
     const prompt = 'deep rolling dub techno with tape hiss and a long modular intro'
     const invoke = vi.fn(async (cmd: string) => {
       if (cmd === 'list_generated_songs') {
@@ -522,19 +522,12 @@ describe('MediaExplorer', () => {
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
     fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
-    const promptLine = await screen.findByRole('button', {
-      name: 'Show the full prompt for Dub Reverie #1',
-    })
-    // The prompt now rides its own line for context (CSS truncates it), collapsed
-    // at first; the toggle is the text itself rather than a separate 🔍 button.
+    // The prompt rides the same line as the title (CSS truncates it to one row);
+    // the full text is on the title tooltip rather than behind a toggle.
+    await screen.findByText('Dub Reverie', { selector: '.media__name-text' })
+    const promptLine = document.querySelector('.media__prompt')
     expect(promptLine).toHaveTextContent(prompt)
-    expect(promptLine).toHaveAttribute('aria-expanded', 'false')
-    fireEvent.click(promptLine)
-    expect(promptLine).toHaveAttribute('aria-expanded', 'true')
-    expect(promptLine.className).toContain('media__prompt--expanded')
-    // Clicking again collapses it.
-    fireEvent.click(promptLine)
-    expect(promptLine).toHaveAttribute('aria-expanded', 'false')
+    expect(promptLine).toHaveAttribute('title', prompt)
   })
 
   it('pretty-prints a JSON prompt in the inline prompt line', async () => {
@@ -548,11 +541,8 @@ describe('MediaExplorer', () => {
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
     fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
-    const lupe = await screen.findByRole('button', {
-      name: 'Show the full prompt for My Take #1',
-    })
-    fireEvent.click(lupe)
-    // The inspector shows the prompt re-indented, not the minified original.
+    await screen.findByText('My Take', { selector: '.media__name-text' })
+    // The prompt is re-indented, not the minified original.
     const expected = JSON.stringify(JSON.parse(minified), null, 2)
     expect(document.querySelector('.media__prompt')?.textContent).toBe(expected)
   })

@@ -301,8 +301,6 @@ export function MediaExplorer({
   // keeps its own inside CrateBrowser (mounted only while visible, so
   // exactly one list answers the hardware at a time).
   const [highlight, setHighlight] = useState(0)
-  // The take whose full prompt is expanded, or null. One at a time.
-  const [expandedId, setExpandedId] = useState<number | null>(null)
   // The item currently auditioning in the headphones (ADR-0027), or null. One at
   // a time — starting another preview, loading, or unmounting stops it.
   const [previewingId, setPreviewingId] = useState<number | null>(null)
@@ -979,6 +977,14 @@ export function MediaExplorer({
                       {track.state === 'ready' && composed && (
                         <span className="media__name-tag">{`#${track.id}`}</span>
                       )}
+                      {track.state === 'ready' && track.prompt != null && (
+                        <span
+                          className="media__prompt"
+                          title={prettyPrompt(track.prompt)}
+                        >
+                          {prettyPrompt(track.prompt)}
+                        </span>
+                      )}
                     </span>
                     <span className="media__meta">
                       {track.model == null
@@ -1010,23 +1016,6 @@ export function MediaExplorer({
                       >
                         ✕
                       </Button>
-                    )}
-                    {track.state === 'ready' && track.prompt != null && (
-                      <button
-                        type="button"
-                        className={`media__prompt${
-                          expandedId === track.id ? ' media__prompt--expanded' : ''
-                        }`}
-                        aria-expanded={expandedId === track.id}
-                        aria-label={t('media.generate.inspect', { name: rowLabel })}
-                        onClick={() =>
-                          setExpandedId((current) =>
-                            current === track.id ? null : track.id,
-                          )
-                        }
-                      >
-                        {prettyPrompt(track.prompt)}
-                      </button>
                     )}
                   </li>
                 )
@@ -1132,6 +1121,14 @@ export function MediaExplorer({
                       {sample.state === 'ready' && composed && (
                         <span className="media__name-tag">{`#${sample.id}`}</span>
                       )}
+                      {sample.state === 'ready' && sample.prompt != null && (
+                        <span
+                          className="media__prompt"
+                          title={prettyPrompt(sample.prompt)}
+                        >
+                          {prettyPrompt(sample.prompt)}
+                        </span>
+                      )}
                     </span>
                     <span className="media__meta">
                       {`${sampleModelLabel(sample.model)} · ${t(
@@ -1160,23 +1157,6 @@ export function MediaExplorer({
                       >
                         ✕
                       </Button>
-                    )}
-                    {sample.state === 'ready' && sample.prompt != null && (
-                      <button
-                        type="button"
-                        className={`media__prompt${
-                          expandedId === sample.id ? ' media__prompt--expanded' : ''
-                        }`}
-                        aria-expanded={expandedId === sample.id}
-                        aria-label={t('media.generate.inspect', { name: rowLabel })}
-                        onClick={() =>
-                          setExpandedId((current) =>
-                            current === sample.id ? null : sample.id,
-                          )
-                        }
-                      >
-                        {prettyPrompt(sample.prompt)}
-                      </button>
                     )}
                   </li>
                 )

@@ -78,8 +78,7 @@
 .media__item {
   display: flex;
   align-items: center;
-  /* The expanded full prompt wraps onto its own full-width line below the row. */
-  flex-wrap: wrap;
+  /* One line per row: the prompt preview shrinks/ellipsises rather than wrap. */
   gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-s);
@@ -123,18 +122,12 @@
   cursor: pointer;
 }
 
-/* The prompt rides its own full-width line below the row, always visible but
-   truncated to one line so it gives context at a glance; clicking the line
-   expands it to the full prompt (the old 🔍 toggle, now the text itself). */
+/* The prompt rides the same line as the title, muted and monospaced so it reads
+   as secondary; it fills the leftover width and truncates, keeping every row to
+   one line. The full text is on the element's title (hover) tooltip. */
 .media__prompt {
-  flex-basis: 100%;
-  width: 100%;
-  margin: 0;
-  padding: var(--space-1) var(--space-2);
-  border: none;
-  background: none;
-  cursor: pointer;
-  text-align: left;
+  flex: 1 1 0;
+  min-width: 0;
   font: 400 var(--text-s) var(--font-mono);
   color: var(--color-text-muted);
   white-space: nowrap;
@@ -142,14 +135,11 @@
   text-overflow: ellipsis;
 }
 
-.media__prompt:hover {
-  color: var(--color-text);
-}
-
-.media__prompt--expanded {
-  white-space: pre-wrap;
-  overflow: visible;
-  overflow-wrap: anywhere;
+/* A quiet divider between the title (and its #id) and the prompt preview. */
+.media__prompt::before {
+  content: '·';
+  margin-right: var(--space-1);
+  color: var(--color-text-silkscreen);
 }
 
 /* A quiet spinner while a take composes, so a long render reads as working,
