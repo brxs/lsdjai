@@ -87,6 +87,9 @@
   --text-s: 0.72rem;
   --text-m: 0.85rem;
   --text-l: 1.1rem;
+  /* Shared line box for inline controls (buttons, fields, selects) so they line
+     up to the same height regardless of their font size. */
+  --control-line: 1.1rem;
 
   /* Silkscreen labels: uppercase micro-type. Space Mono has no 600 weight,
      so 700 is the bold; tracking is lighter since mono is already wide. */
