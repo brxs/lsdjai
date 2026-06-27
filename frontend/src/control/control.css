@@ -18,6 +18,29 @@
   color: var(--color-text);
 }
 
+/* The status chip as the connect/retry button: strip the native button chrome
+   so it reads as the chip, but stays focusable and shows it's clickable. */
+.midi__status--action {
+  border: none;
+  background: none;
+  /* Bottom-aligned in the status bar, the chip's text would sit below the
+     neighbouring buttons' text; lift it by their border + bottom padding so the
+     label rides the same control line. */
+  padding: 0 0 calc(var(--space-2) + 1px);
+  cursor: pointer;
+}
+
+.midi__status--action:hover,
+.midi__status--action:focus-visible {
+  color: var(--color-text);
+}
+
+.midi__status--action:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-s);
+}
+
 .midi__led {
   width: var(--space-2);
   height: var(--space-2);

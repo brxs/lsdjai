@@ -1,17 +1,8 @@
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { AudioEngineProvider } from '../audio/AudioEngineProvider'
 import type { AudioEngine } from '../audio/types'
-import { createControlBus, type ControlBus } from '../control/bus'
-import { ControlBusProvider } from '../control/ControlBusProvider'
 import { MixerStrip, type ChannelControls } from './MixerStrip'
 
 function makeEngine(overrides: Partial<AudioEngine> = {}): AudioEngine {
@@ -52,31 +43,20 @@ function makeChannel(overrides: Partial<ChannelControls> = {}): ChannelControls 
 
 type MixerOverrides = {
   channels?: Record<'a' | 'b', ChannelControls>
-  bus?: ControlBus
   onCueMixChange?: (position: number) => void
-  mainDevice?: string
-  onMainDeviceChange?: (name: string) => void
-  cueDevice?: string
-  onCueDeviceChange?: (name: string) => void
 }
 
 function renderMixer(engine: AudioEngine, overrides: MixerOverrides = {}) {
   return render(
     <AudioEngineProvider engine={engine}>
-      <ControlBusProvider bus={overrides.bus ?? createControlBus()}>
-        <MixerStrip
-          channels={overrides.channels ?? { a: makeChannel(), b: makeChannel() }}
-          crossfade={0.5}
-          onCrossfadeChange={() => {}}
-          cueMix={0.5}
-          onCueMixChange={overrides.onCueMixChange ?? (() => {})}
-          mainDevice={overrides.mainDevice ?? ''}
-          onMainDeviceChange={overrides.onMainDeviceChange ?? (() => {})}
-          cueDevice={overrides.cueDevice ?? ''}
-          onCueDeviceChange={overrides.onCueDeviceChange ?? (() => {})}
-          getPhaseOffset={() => null}
-        />
-      </ControlBusProvider>
+      <MixerStrip
+        channels={overrides.channels ?? { a: makeChannel(), b: makeChannel() }}
+        crossfade={0.5}
+        onCrossfadeChange={() => {}}
+        cueMix={0.5}
+        onCueMixChange={overrides.onCueMixChange ?? (() => {})}
+        getPhaseOffset={() => null}
+      />
     </AudioEngineProvider>,
   )
 }
@@ -103,58 +83,6 @@ describe('MixerStrip channels', () => {
     fireEvent.change(screen.getAllByLabelText('Volume')[1], { target: { value: '0.3' } })
     expect(b.onSetVolume).toHaveBeenCalledWith(0.3)
     expect(a.onSetVolume).not.toHaveBeenCalled()
-  })
-})
-
-describe('MixerStrip recording', () => {
-  it('records the master bus and downloads the WAV on stop', async () => {
-    const engine = makeEngine()
-    const objectUrl = vi
-      .spyOn(URL, 'createObjectURL')
-      .mockReturnValue('blob:fake')
-    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
-    try {
-      renderMixer(engine)
-
-      fireEvent.click(screen.getByRole('button', { name: 'Record' }))
-      await waitFor(() =>
-        expect(screen.getByRole('button', { name: 'Stop recording' })).toBeVisible(),
-      )
-      expect(engine.startRecording).toHaveBeenCalled()
-      expect(engine.resume).toHaveBeenCalled()
-
-      fireEvent.click(screen.getByRole('button', { name: 'Stop recording' }))
-      await waitFor(() => expect(engine.stopRecording).toHaveBeenCalled())
-      await waitFor(() => expect(objectUrl).toHaveBeenCalled())
-      expect(screen.getByRole('button', { name: 'Record' })).toBeVisible()
-    } finally {
-      vi.restoreAllMocks()
-    }
-  })
-
-  it('surfaces a recording failure instead of swallowing it', async () => {
-    const engine = makeEngine({
-      startRecording: vi.fn(async () => {
-        throw new Error('no audio context')
-      }),
-    })
-    renderMixer(engine)
-    fireEvent.click(screen.getByRole('button', { name: 'Record' }))
-    await waitFor(() =>
-      expect(screen.getByRole('alert')).toHaveTextContent('no audio context'),
-    )
-  })
-
-  it('toggles recording from the control bus', async () => {
-    const engine = makeEngine()
-    const bus = createControlBus()
-    renderMixer(engine, { bus })
-
-    act(() => bus.publish({ kind: 'record_toggle' }))
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Stop recording' })).toBeVisible(),
-    )
-    expect(engine.startRecording).toHaveBeenCalled()
   })
 })
 
@@ -207,19 +135,4 @@ describe('MixerStrip headphone cue', () => {
     expect(autoA).toHaveAttribute('aria-pressed', 'true')
     expect(autoB).toHaveAttribute('aria-pressed', 'false')
   })
-
-  it('shows the limiter gain reduction only while it is working', () => {
-    vi.useFakeTimers()
-    try {
-      const engine = makeEngine({ getMasterGainReduction: vi.fn(() => -3.2) })
-      renderMixer(engine)
-      const stat = screen.getByText('Limiter').parentElement!
-      expect(stat).toHaveTextContent('—')
-      act(() => void vi.advanceTimersByTime(300))
-      expect(stat).toHaveTextContent('-3.2 dB')
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
 })

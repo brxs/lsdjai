@@ -18,7 +18,9 @@ import { DeckColumn } from './deck/DeckColumn'
 import { useDeck } from './deck/useDeck'
 import { BeatView } from './mixer/BeatView'
 import { MixerStrip, type ChannelControls } from './mixer/MixerStrip'
+import { RecordControl } from './mixer/RecordControl'
 import { AccentPicker } from './ui/AccentPicker'
+import { OutputDevicePicker } from './ui/OutputDevicePicker'
 import { BeatViewPicker } from './ui/BeatViewPicker'
 import {
   deletePreset,
@@ -506,6 +508,7 @@ function App() {
             onSelectDevice={midi.selectDevice}
             readMonitor={midi.readMonitor}
           />
+          <RecordControl />
           <Button onClick={() => setSettingsOpen(true)}>{t('settings.open')}</Button>
         </div>
       </header>
@@ -535,6 +538,22 @@ function App() {
                 label: t(`accent.options.${option}`),
               }))}
               onChange={handleAccent}
+            />
+          </div>
+        </section>
+        <section className="modelmgr__section">
+          <h3 className="modelmgr__heading">{t('settings.audio')}</h3>
+          <div className="settings-audio">
+            <OutputDevicePicker
+              mode="main"
+              value={mainDevice}
+              onSelect={handleMainDevice}
+            />
+            <OutputDevicePicker
+              mode="cue"
+              value={cueDevice}
+              onSelect={handleCueDevice}
+              mainDeviceName={mainDevice}
             />
           </div>
         </section>
@@ -602,10 +621,6 @@ function App() {
             onCrossfadeChange={handleCrossfade}
             cueMix={cueMix}
             onCueMixChange={handleCueMix}
-            mainDevice={mainDevice}
-            onMainDeviceChange={handleMainDevice}
-            cueDevice={cueDevice}
-            onCueDeviceChange={handleCueDevice}
             getPhaseOffset={getPhaseOffset}
           />
         </div>
