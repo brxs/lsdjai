@@ -139,7 +139,7 @@ describe('CrateBrowser', () => {
   it('imports a crates file and surfaces a bad one', async () => {
     const onImport = vi.fn()
     renderBrowser([], { onImport })
-    const input = screen.getByLabelText('Crates file')
+    const input = screen.getByLabelText('Presets file')
 
     const good = new File([serialisePresets([FUNK])], 'crates.json')
     fireEvent.change(input, { target: { files: [good] } })
