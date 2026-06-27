@@ -228,15 +228,11 @@ function App() {
     [deckA, deckB, bus],
   )
 
-  // Track items flip the deck to playback; the live-stream item is the
-  // way back (ADR-0013: loading decides the mode).
+  // Track items flip the deck to playback; the way back lives on the deck
+  // itself ("Back to live", ADR-0013: loading decides the mode).
   const handleLoadTrack = useCallback(
     (deck: DeckId, wav: ArrayBuffer, title: string) =>
       (deck === 'a' ? deckA : deckB).loadTrack(wav, title),
-    [deckA, deckB],
-  )
-  const handleLoadLive = useCallback(
-    (deck: DeckId) => (deck === 'a' ? deckA : deckB).leavePlayback(),
     [deckA, deckB],
   )
   // Load a saved sample into a deck's loop-slot bank (ADR-0022) — the Samples-tab
@@ -246,6 +242,13 @@ function App() {
       (deck === 'a' ? deckA : deckB).loadSampleToSlot(wav, oneShot, label),
     [deckA, deckB],
   )
+  // Preview a library item in the phones before committing it to a deck
+  // (ADR-0027): the engine routes it to the cue feed only, never the master.
+  const handlePreview = useCallback(
+    (wav: ArrayBuffer) => engine.auditionPlay(wav),
+    [engine],
+  )
+  const handleStopPreview = useCallback(() => engine.auditionStop(), [engine])
 
   // Beat-matching (M20, ADR-0014): SYNC matches a track deck to the
   // other deck's effective tempo — gated stream BPM, or grid BPM ×
@@ -608,8 +611,9 @@ function App() {
         onDeletePreset={handleDeletePreset}
         onImportPresets={handleImportPresets}
         onLoadTrack={handleLoadTrack}
-        onLoadLive={handleLoadLive}
         onLoadSample={handleLoadSample}
+        onPreview={handlePreview}
+        onStopPreview={handleStopPreview}
       />
     </main>
   )

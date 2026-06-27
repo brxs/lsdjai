@@ -34,6 +34,8 @@ function makeEngine(): AudioEngine {
     getContextTime: vi.fn(() => 0),
     setCrossfade: vi.fn(),
     setCueMix: vi.fn(),
+    auditionPlay: vi.fn(async () => {}),
+    auditionStop: vi.fn(),
     listOutputDevices: vi.fn(async () => []),
     setMainDevice: vi.fn(async () => {}),
     setCueDevice: vi.fn(async () => {}),

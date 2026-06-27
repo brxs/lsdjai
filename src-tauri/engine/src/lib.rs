@@ -192,11 +192,19 @@ pub struct Engine {
     /// engine just stops draining it until the deck returns to Realtime.
     parked_rings: Vec<Option<RingConsumer>>,
     /// Per-deck freeze-loop / generated-loop / one-shot bank (M13/M18,
-    /// ADR-0009/0012). Realtime-only: a Playback deck's bank stays empty (the
-    /// capture API is gated on Realtime). The active loop (if any) replaces the
-    /// deck's live frame at the channel head; a one-shot overlays on top — see
-    /// `LoopBank::mix_frame`.
+    /// ADR-0009/0012). A *freeze* originates only on a Realtime deck (capture needs
+    /// the live history), but a *loaded sample* is a self-contained buffer that
+    /// loads and plays in either mode (ADR-0022). The active loop (if any) replaces
+    /// the deck's base frame at the channel head; a one-shot / layer overlays on
+    /// top — see `LoopBank::mix_frame`.
     loops: Vec<LoopBank>,
+    /// A single engine-wide preview ("audition") source (ADR-0027): a decoded
+    /// sample/track played into the HEADPHONE/cue feed only — never the master —
+    /// so the booth can hear a library item before loading it onto a deck. It
+    /// loops the whole buffer until `audition_stop`, summed onto the cue output
+    /// after the cue/master blend so it stays audible in the phones wherever the
+    /// cue knob sits. Built off the RT path (`audition_play`); `render` only reads.
+    audition: Option<BufferSource>,
     graph: MixGraph,
     telemetry: Arc<Telemetry>,
 }
@@ -210,6 +218,7 @@ impl Engine {
             decks: (0..DECK_COUNT).map(|_| None).collect(),
             parked_rings: (0..DECK_COUNT).map(|_| None).collect(),
             loops: (0..DECK_COUNT).map(|_| LoopBank::new()).collect(),
+            audition: None,
             graph: MixGraph::new(),
             telemetry: Arc::new(Telemetry::new()),
         }
@@ -348,6 +357,30 @@ impl Engine {
     /// master). Non-RT.
     pub fn set_cue_mix(&mut self, position: f32) {
         self.graph.set_cue_mix(position);
+    }
+
+    /// Audition a decoded interleaved-stereo buffer @ 48 k into the HEADPHONE/cue
+    /// feed (ADR-0027): a preview of a library item before it is loaded onto a
+    /// deck. Replaces any current preview; the whole buffer loops until
+    /// [`Engine::audition_stop`], so the UI's "previewing" state stays truthful
+    /// (it sounds until explicitly stopped). Never touches the master. Non-RT (the
+    /// buffer allocation lands here, off the render thread — `render` only reads).
+    pub fn audition_play(&mut self, samples: Vec<f32>) {
+        let mut source = BufferSource::new(samples);
+        source.play();
+        let len = source.status().duration_frames;
+        // Loop the whole buffer so the preview keeps sounding; a near-empty buffer
+        // can't install a region (then it just plays out once and goes silent).
+        if len > 0 {
+            source.set_loop(0, len);
+        }
+        self.audition = Some(source);
+    }
+
+    /// Stop and drop the preview (ADR-0027). A no-op when nothing is auditioning.
+    /// Non-RT.
+    pub fn audition_stop(&mut self) {
+        self.audition = None;
     }
 
     // --- Slice 4a: the playback deck (M19/M20/M21/M23, ADR-0013…0016) ---
@@ -530,19 +563,18 @@ impl Engine {
     }
 
     /// Play loop `slot` on a deck (M13/M18, `playLoop` in `engine.ts`): a one-shot
-    /// overlays and ends itself; a loop either REPLACES the live stream (`layer =
-    /// false`, a freeze — held at the channel head while the live ring keeps being
-    /// fed/drained underneath, ADR-0009) or LAYERS on top of it (`layer = true`, a
-    /// loaded sample — summed and stacking, ADR-0022). Returns `false` if the slot is
-    /// empty. A no-op (returns `false`) on a Playback deck.
+    /// overlays and ends itself; a loop either REPLACES the base (`layer = false`, a
+    /// freeze — held at the channel head while whatever is underneath keeps being
+    /// fed/drained, ADR-0009) or LAYERS on top of it (`layer = true`, a loaded
+    /// sample — summed and stacking, ADR-0022). The overlay sums onto whatever the
+    /// deck plays — the live ring OR a Playback track — so a loaded sample sounds in
+    /// either mode (a freeze still only originates on a Realtime deck, since capture
+    /// needs the live history). Returns `false` if the slot is empty.
     ///
     /// # Panics
     /// Panics if `deck_index >= DECK_COUNT`.
     pub fn play_loop(&mut self, deck_index: usize, slot: usize, layer: bool) -> bool {
         assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
-        if !self.is_realtime(deck_index) {
-            return false;
-        }
         self.loops[deck_index].play(slot, layer)
     }
 
@@ -591,8 +623,10 @@ impl Engine {
     /// `loadGeneratedLoop` in `engine.ts`). `samples` is decoded f32 @ 48 k (an SA3
     /// pad; the shell decodes the WAV — no WAV decoder this slice, like
     /// `load_track`). `one_shot` plays ONCE then stops; otherwise it loops like a
-    /// freeze loop (the seam is folded). Returns `false` on an out-of-range slot. A
-    /// no-op (returns `false`) on a Playback deck.
+    /// freeze loop (the seam is folded). Returns `false` on an out-of-range slot.
+    /// Mode-agnostic: a loaded sample is a self-contained buffer (no live-ring
+    /// dependency), so it loads onto a Playback deck too and layers over the track
+    /// when played — the Samples tab works whatever the deck is doing (ADR-0022).
     ///
     /// # Panics
     /// Panics if `deck_index >= DECK_COUNT`.
@@ -604,9 +638,6 @@ impl Engine {
         one_shot: bool,
     ) -> bool {
         assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
-        if !self.is_realtime(deck_index) {
-            return false;
-        }
         self.loops[deck_index].load_generated(slot, samples, one_shot)
     }
 
@@ -671,11 +702,6 @@ impl Engine {
             Some(DeckSource::Realtime(ring)) => Some(ring),
             _ => None,
         }
-    }
-
-    /// Whether the deck is in Realtime mode (a loop/sample feature applies).
-    fn is_realtime(&self, deck_index: usize) -> bool {
-        matches!(self.decks[deck_index], Some(DeckSource::Realtime(_)))
     }
 
     /// Play/stop the live (Realtime) deck stream: gate whether `render` drains
@@ -798,9 +824,18 @@ impl Engine {
             let base = f * CHANNELS as usize;
             master_out[base] = ol;
             master_out[base + 1] = or;
+            // Advance the preview every frame (so its position is independent of
+            // whether a cue device is attached), then sum it onto the cue feed
+            // only — the preview is heard in the phones, never the master.
+            let audition = self.audition.as_mut().map(|s| s.pop_frame());
             if let Some(cue) = cue_out.as_deref_mut() {
-                cue[base] = out.cue.0;
-                cue[base + 1] = out.cue.1;
+                let (mut cl, mut cr) = out.cue;
+                if let Some((al, ar)) = audition {
+                    cl = (cl + al).clamp(-MASTER_CEILING, MASTER_CEILING);
+                    cr = (cr + ar).clamp(-MASTER_CEILING, MASTER_CEILING);
+                }
+                cue[base] = cl;
+                cue[base + 1] = cr;
             }
 
             let peak = ol.abs().max(or.abs());
@@ -2456,11 +2491,11 @@ mod tests {
         assert!(!engine.loop_slots(0)[2].filled);
     }
 
-    /// (S4b-5) The whole Slice-4b family is inert on a Playback deck: capture,
-    /// play, load, and sample are no-ops; the slots stay empty (track-buffer
-    /// slicing is a parked Later idea, ADR-0013).
+    /// (S4b-5) A *freeze* still needs the live ring, so capture stays inert on a
+    /// Playback deck — the played history holds the dead stream (ADR-0013), and a
+    /// refused capture fills no slot.
     #[test]
-    fn loop_features_are_inert_on_a_playback_deck() {
+    fn freeze_capture_is_inert_on_a_playback_deck() {
         let mut engine = Engine::new();
         let mut deck_a = engine.create_deck(0);
         let _deck_b = engine.create_deck(1);
@@ -2475,12 +2510,55 @@ mod tests {
         // Capture is refused (the played history holds the dead stream; ADR-0013).
         assert!(!engine.capture_loop(0, 0, 1.0), "capture_loop is a no-op on Playback");
         assert!(engine.capture_sample(0, STYLE_SAMPLE_SECONDS).is_none(), "no style sample on Playback");
-        // load_generated_loop and play_loop refuse too.
+        assert!(engine.loop_slots(0).iter().all(|s| !s.filled && !s.playing), "no slot filled by a refused capture");
+    }
+
+    /// (S4b-5b) A *loaded sample*, unlike a freeze, is a self-contained buffer with
+    /// no ring dependency, so it loads and layers on a Playback deck too — the
+    /// Samples tab works whatever the deck is doing, summing over the track
+    /// (ADR-0022). The reported "could not load the sample" error was this guard.
+    #[test]
+    fn a_loaded_sample_layers_on_a_playback_deck() {
+        let mut engine = Engine::new();
+        let _deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+        engine.load_track(0, ramp_track(48_000));
+        assert!(engine.get_track_status(0).is_some(), "deck A is Playback");
+
         let pad = vec![0.1f32; (SAMPLE_RATE as usize / 2) * CHANNELS as usize];
-        assert!(!engine.load_generated_loop(0, 0, pad, false), "no generated loop on Playback");
-        assert!(!engine.play_loop(0, 0, false), "no play on a Playback deck");
-        // The slots never filled.
-        assert!(engine.loop_slots(0).iter().all(|s| !s.filled && !s.playing), "slots stay empty");
+        assert!(engine.load_generated_loop(0, 0, pad, false), "a sample loads onto a Playback deck");
+        assert!(engine.loop_slots(0)[0].filled, "the slot fills");
+        assert!(engine.play_loop(0, 0, true), "the sample layers on top of the track");
+        assert!(engine.loop_slots(0)[0].playing, "the layer is sounding");
+    }
+
+    /// (ADR-0027) A preview is heard in the headphone/cue feed but NEVER the
+    /// master: `audition_play` feeds only the cue output (no deck is on air, so
+    /// the master stays silent), and `audition_stop` returns the cue to silence.
+    #[test]
+    fn audition_previews_into_the_cue_feed_only() {
+        let mut engine = Engine::new();
+        let _deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+
+        const FRAMES: usize = 256;
+        // A buffer longer than one block, so the looping preview stays audible.
+        engine.audition_play(vec![0.5f32; FRAMES * CHANNELS as usize * 4]);
+
+        let mut master = vec![0.0f32; FRAMES * CHANNELS as usize];
+        let mut cue = vec![0.0f32; FRAMES * CHANNELS as usize];
+        engine.render_with_cue(&mut master, &mut cue, FRAMES);
+        let master_peak = master.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        let cue_peak = cue.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(master_peak < 1e-6, "the preview never reaches the master");
+        assert!(cue_peak > 0.4, "the preview is audible in the cue feed");
+
+        engine.audition_stop();
+        let mut master2 = vec![0.0f32; FRAMES * CHANNELS as usize];
+        let mut cue2 = vec![0.0f32; FRAMES * CHANNELS as usize];
+        engine.render_with_cue(&mut master2, &mut cue2, FRAMES);
+        let cue_peak2 = cue2.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(cue_peak2 < 1e-6, "stopping the preview silences the cue feed");
     }
 
     /// (S4b-6) `render` stays correct with a loop in path on one deck and a live

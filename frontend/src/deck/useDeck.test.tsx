@@ -158,6 +158,8 @@ function makeFakeEngine(overrides: Partial<AudioEngine> = {}) {
     resume: vi.fn(async () => {}),
     setCrossfade: vi.fn(),
     setCueMix: vi.fn(),
+    auditionPlay: vi.fn(async () => {}),
+    auditionStop: vi.fn(),
     listOutputDevices: vi.fn(async () => []),
     setMainDevice: vi.fn(async () => {}),
     setCueDevice: vi.fn(async () => {}),

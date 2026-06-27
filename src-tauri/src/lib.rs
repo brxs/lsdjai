@@ -464,6 +464,8 @@ pub fn run() {
             commands::set_on_air,
             commands::set_cue,
             commands::set_cue_mix,
+            commands::audition_play,
+            commands::audition_stop,
             commands::start_recording,
             commands::stop_recording,
             commands::list_audio_files,

@@ -35,16 +35,17 @@
   "media": {
     "title": "Media explorer",
     "tabs": {
-      "crates": "Crates",
+      "crates": "Presets",
       "generate": "Generate",
       "samples": "Samples",
       "folder": "Folder"
     },
-    "live": "Live stream",
     "loadShort": "→ {{deck}}",
     "loadTo": "Load {{name}} to deck {{deck}}",
     "highlight": "Select {{name}}",
     "remove": "Remove {{name}}",
+    "preview": "Preview {{name}} in headphones",
+    "previewStop": "Stop preview",
     "undecodable": "{{title}} could not be decoded",
     "generate": {
       "title": "Title",
@@ -89,7 +90,7 @@
     }
   },
   "crates": {
-    "title": "Crates",
+    "title": "Presets",
     "empty": "No presets yet — save a deck's style below its pad",
     "highlight": "Select preset {{name}}",
     "loadTo": "Load {{name}} to deck {{deck}}",
@@ -97,7 +98,7 @@
     "delete": "Remove preset {{name}}",
     "export": "Export",
     "import": "Import",
-    "importFile": "Crates file",
+    "importFile": "Presets file",
     "importFailed": "Import failed: {{message}}"
   },
   "mixer": {

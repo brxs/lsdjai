@@ -175,6 +175,12 @@ export type AudioEngine = {
   setCrossfade: (position: number) => void
   /** Cue/master blend for the headphone feed: 0 = cue only, 1 = master. */
   setCueMix: (position: number) => void
+  /** Preview a decoded WAV into the headphone/cue feed before loading it onto a
+   * deck (ADR-0027): heard in the phones only, never the master, looping until
+   * stopped. Replaces any current preview. */
+  auditionPlay: (wav: ArrayBuffer) => Promise<void>
+  /** Stop the headphone preview (ADR-0027). */
+  auditionStop: () => void
   /** The output devices the engine can open, with their channel counts —
    * a ≥4-channel device can carry the combined cue on channels 3/4. */
   listOutputDevices: () => Promise<OutputDevice[]>

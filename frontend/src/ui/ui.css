@@ -6,6 +6,8 @@
 
 .ui-button {
   font: 600 var(--text-s) var(--font-ui);
+  /* Match the field/select line box so a button lines up with them in height. */
+  line-height: var(--control-line);
   text-transform: uppercase;
   letter-spacing: var(--silkscreen-spacing);
   padding: var(--space-2) var(--space-3);
@@ -92,16 +94,51 @@
 
 .ui-field__input {
   font: 400 var(--text-m) var(--font-ui);
+  line-height: var(--control-line);
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-s);
   border: 1px solid var(--color-border);
   background: var(--color-surface-inset);
   color: var(--color-text);
+  /* Strip native field metrics and pin the box to the same height a button
+     resolves to, so a bare <input> (which keeps a native min-height even with
+     appearance:none) lines up with the selects and the Compose button. */
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  height: var(--control-height);
 }
 
 .ui-field__input:focus {
   outline: 1px solid var(--color-accent);
   outline-offset: -1px;
+}
+
+/* The base rule already strips the native appearance; the select just needs its
+   own caret (drawn from a token colour) and room for it. */
+.ui-select {
+  position: relative;
+  display: flex;
+  flex: 1;
+}
+
+.ui-select .ui-field__input {
+  flex: 1;
+  /* Leave room for the caret so a long option never slides under it. */
+  padding-right: calc(var(--space-3) + var(--space-4));
+}
+
+.ui-select__arrow {
+  position: absolute;
+  top: 50%;
+  right: var(--space-3);
+  width: 0;
+  height: 0;
+  transform: translateY(-50%);
+  border-left: 0.3rem solid transparent;
+  border-right: 0.3rem solid transparent;
+  border-top: 0.35rem solid var(--color-text-silkscreen);
+  pointer-events: none;
 }
 
 /* ---------- pickers: swatch + icon toggle groups ---------- */

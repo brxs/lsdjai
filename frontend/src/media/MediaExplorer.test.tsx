@@ -10,13 +10,14 @@ import { MediaExplorer } from './MediaExplorer'
 type Handlers = {
   onLoadPreset?: (deck: DeckId, preset: StylePreset) => void
   onLoadTrack?: (deck: DeckId, wav: ArrayBuffer, title: string) => Promise<boolean>
-  onLoadLive?: (deck: DeckId) => void
   onLoadSample?: (
     deck: DeckId,
     wav: ArrayBuffer,
     oneShot: boolean,
     label: string,
   ) => Promise<boolean>
+  onPreview?: (wav: ArrayBuffer) => Promise<void>
+  onStopPreview?: () => void
 }
 
 function renderExplorer(
@@ -32,8 +33,9 @@ function renderExplorer(
         onDeletePreset={vi.fn()}
         onImportPresets={vi.fn()}
         onLoadTrack={handlers.onLoadTrack ?? vi.fn(async () => true)}
-        onLoadLive={handlers.onLoadLive ?? vi.fn()}
         onLoadSample={handlers.onLoadSample ?? vi.fn(async () => true)}
+        onPreview={handlers.onPreview ?? vi.fn(async () => {})}
+        onStopPreview={handlers.onStopPreview ?? vi.fn()}
       />
     </ControlBusProvider>,
   )
@@ -87,15 +89,6 @@ describe('MediaExplorer', () => {
     ).toBeInTheDocument()
   })
 
-  it('offers the live stream as a loadable item — the exit from playback', () => {
-    const onLoadLive = vi.fn()
-    renderExplorer({ onLoadLive })
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Load Live stream to deck A' }),
-    )
-    expect(onLoadLive).toHaveBeenCalledWith('a')
-  })
-
   it('composes an SA3 track and loads it onto a deck', async () => {
     const fetchMock = stubFetch()
     const onLoadTrack = vi.fn(async () => true)
@@ -132,6 +125,23 @@ describe('MediaExplorer', () => {
         .getAllByText('Track (SA3 medium)')
         .some((element) => element.classList.contains('media__meta')),
     ).toBe(true)
+  })
+
+  it('previews a take in the headphones and toggles it off', async () => {
+    stubFetch()
+    const onPreview = vi.fn(async () => {})
+    const onStopPreview = vi.fn()
+    renderExplorer({ onPreview, onStopPreview })
+    await composeTrack('dub')
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Preview dub #1 in headphones' }),
+    )
+    await act(async () => {})
+    expect(onPreview).toHaveBeenCalledWith(expect.any(ArrayBuffer))
+    // The button flips to a stop affordance; a second press stops the preview.
+    fireEvent.click(screen.getByRole('button', { name: 'Stop preview' }))
+    expect(onStopPreview).toHaveBeenCalled()
   })
 
   it('routes Magenta tracks to the render engine within its cap', async () => {
@@ -182,6 +192,8 @@ describe('MediaExplorer', () => {
     await composeTrack('first')
     await composeTrack('second')
 
+    // Newest sits at the top, so the rotary starts on 'second #2'; one step
+    // down lands on the older 'first #1'.
     act(() => bus.publish({ kind: 'browse_scroll', steps: 1 }))
     await act(async () => {
       bus.publish({ kind: 'browse_load', deck: 'a' })
@@ -189,7 +201,7 @@ describe('MediaExplorer', () => {
     expect(onLoadTrack).toHaveBeenCalledWith(
       'a',
       expect.any(ArrayBuffer),
-      'second #2',
+      'first #1',
     )
   })
 
@@ -298,7 +310,11 @@ describe('MediaExplorer', () => {
     vi.stubGlobal('__TAURI__', { core: { invoke }, event: { listen } })
     renderExplorer()
     fireEvent.click(screen.getByRole('tab', { name: 'Samples' }))
-    expect(await screen.findByText('one')).toBeInTheDocument()
+    // Scope to the name cell: a take whose title equals its prompt now shows the
+    // text twice (the name and the always-visible prompt line).
+    expect(
+      await screen.findByText('one', { selector: '.media__name-text' }),
+    ).toBeInTheDocument()
     expect(screen.getByText('#1')).toBeInTheDocument()
 
     // A deck saves a second sample → the watcher fires → the tab re-lists.
@@ -309,9 +325,11 @@ describe('MediaExplorer', () => {
     await act(async () => {
       onChange?.({ payload: { library: 'samples' } })
     })
-    expect(await screen.findByText('two')).toBeInTheDocument()
+    expect(
+      await screen.findByText('two', { selector: '.media__name-text' }),
+    ).toBeInTheDocument()
     // The pre-existing row kept its identity across the reload (no id churn).
-    expect(screen.getByText('one')).toBeInTheDocument()
+    expect(screen.getByText('one', { selector: '.media__name-text' })).toBeInTheDocument()
     expect(screen.getByText('#1')).toBeInTheDocument()
     expect(screen.getByText('#2')).toBeInTheDocument()
   })
@@ -410,7 +428,11 @@ describe('MediaExplorer', () => {
     renderExplorer()
     fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
     // The composed take comes back as its title + a kept-visible #id tag…
-    expect(await screen.findByText('late night dub')).toBeInTheDocument()
+    // (scoped to the name: this take's title equals its prompt, which the prompt
+    // line also renders.)
+    expect(
+      await screen.findByText('late night dub', { selector: '.media__name-text' }),
+    ).toBeInTheDocument()
     expect(screen.getByText('#1')).toBeInTheDocument()
     // …and the hand-added one is marked Imported (no model).
     expect(screen.getByText('mixtape')).toBeInTheDocument()
@@ -489,7 +511,7 @@ describe('MediaExplorer', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Trash is unavailable')
   })
 
-  it('reveals the full prompt behind the 🔍 button and toggles it off', async () => {
+  it('shows the prompt inline on the row and expands it on click', async () => {
     const prompt = 'deep rolling dub techno with tape hiss and a long modular intro'
     const invoke = vi.fn(async (cmd: string) => {
       if (cmd === 'list_generated_songs') {
@@ -500,19 +522,24 @@ describe('MediaExplorer', () => {
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
     fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
-    const lupe = await screen.findByRole('button', {
+    // Inline on the title's line (CSS truncates it to one row), with the full
+    // text on the hover tooltip; collapsed at first.
+    const promptLine = await screen.findByRole('button', {
       name: 'Show the full prompt for Dub Reverie #1',
     })
-    // The full prompt block isn't rendered until asked (the row only shows the title).
-    expect(document.querySelector('.media__prompt')).toBeNull()
-    fireEvent.click(lupe)
-    expect(document.querySelector('.media__prompt')).toHaveTextContent(prompt)
-    // Clicking again collapses it.
-    fireEvent.click(lupe)
-    expect(document.querySelector('.media__prompt')).toBeNull()
+    expect(promptLine).toHaveTextContent(prompt)
+    expect(promptLine).toHaveAttribute('title', prompt)
+    expect(promptLine).toHaveAttribute('aria-expanded', 'false')
+    // Clicking the truncated prompt expands it to the full text; clicking again
+    // collapses it back to one line.
+    fireEvent.click(promptLine)
+    expect(promptLine).toHaveAttribute('aria-expanded', 'true')
+    expect(promptLine.className).toContain('media__prompt--expanded')
+    fireEvent.click(promptLine)
+    expect(promptLine).toHaveAttribute('aria-expanded', 'false')
   })
 
-  it('pretty-prints a JSON prompt in the 🔍 inspector', async () => {
+  it('pretty-prints a JSON prompt in the inline prompt line', async () => {
     const minified = '{"title":"X","bpm":120}'
     const invoke = vi.fn(async (cmd: string) => {
       if (cmd === 'list_generated_songs') {
@@ -523,11 +550,8 @@ describe('MediaExplorer', () => {
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
     fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
-    const lupe = await screen.findByRole('button', {
-      name: 'Show the full prompt for My Take #1',
-    })
-    fireEvent.click(lupe)
-    // The inspector shows the prompt re-indented, not the minified original.
+    await screen.findByText('My Take', { selector: '.media__name-text' })
+    // The prompt is re-indented, not the minified original.
     const expected = JSON.stringify(JSON.parse(minified), null, 2)
     expect(document.querySelector('.media__prompt')?.textContent).toBe(expected)
   })

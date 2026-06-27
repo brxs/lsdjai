@@ -26,18 +26,13 @@
   gap: var(--space-1);
 }
 
-.media__live {
+/* Utility actions sit at the end of the header row (Open Folder for now), pushed
+   right so they clear the tabs and reclaim the line the live row used to take. */
+.media__header-actions {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   margin-left: auto;
-}
-
-.media__live-label {
-  font: var(--silkscreen);
-  letter-spacing: var(--silkscreen-spacing);
-  text-transform: uppercase;
-  color: var(--color-text-silkscreen);
 }
 
 .media__generate,
@@ -45,13 +40,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-}
-
-/* A utility action (Open songs folder) on its own line above the compose form, so it
-   isn't mistaken for part of the prompt/title inputs. */
-.media__generate-toolbar {
-  display: flex;
-  justify-content: flex-end;
 }
 
 .media__generate-row {
@@ -90,8 +78,7 @@
 .media__item {
   display: flex;
   align-items: center;
-  /* The expanded full prompt wraps onto its own full-width line below the row. */
-  flex-wrap: wrap;
+  /* One line per row: the prompt preview shrinks/ellipsises rather than wrap. */
   gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-s);
@@ -135,15 +122,67 @@
   cursor: pointer;
 }
 
-/* The 🔍-expanded full prompt: its own full-width line below the row. */
+/* The prompt rides the same line as the title, muted and monospaced so it reads
+   as secondary; it fills the leftover width and truncates, keeping every row to
+   one line. It's a button — clicking expands it to the full text in place. */
 .media__prompt {
-  flex-basis: 100%;
+  flex: 1 1 0;
+  min-width: 0;
   margin: 0;
-  padding: var(--space-1) var(--space-2);
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
   font: 400 var(--text-s) var(--font-mono);
   color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.media__prompt:hover {
+  color: var(--color-text);
+}
+
+/* Expanded: drop the one-line clamp and show the whole prompt (JSON newlines
+   kept), wrapping within the row. */
+.media__prompt--expanded {
   white-space: pre-wrap;
+  overflow: visible;
   overflow-wrap: anywhere;
+}
+
+/* A quiet divider between the title (and its #id) and the prompt preview. */
+.media__prompt::before {
+  content: '·';
+  margin-right: var(--space-1);
+  color: var(--color-text-silkscreen);
+}
+
+/* A quiet spinner while a take composes, so a long render reads as working,
+   not stuck. Decorative — the row text already says "composing…". */
+.media__spinner {
+  flex: none;
+  align-self: center;
+  width: 0.7rem;
+  height: 0.7rem;
+  border: 2px solid var(--color-border-strong);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: media-spin 0.8s linear infinite;
+}
+
+@keyframes media-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .media__spinner {
+    animation: none;
+  }
 }
 
 .media__meta {

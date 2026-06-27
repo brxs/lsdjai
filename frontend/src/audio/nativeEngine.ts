@@ -595,6 +595,17 @@ export function createNativeEngine(): AudioEngine {
     resume: () => Promise.resolve(),
     setCrossfade: (position) => coalesce('set_crossfade', 'set_crossfade', { position }),
     setCueMix: (position) => coalesce('set_cue_mix', 'set_cue_mix', { position }),
+    // A library preview routed to the phones only (ADR-0027): decode like a track
+    // load, then ship the raw PCM (no per-deck header — the preview is engine-wide).
+    auditionPlay: async (wav) => {
+      const buf = await decodeTo48k(wav)
+      const left = buf.getChannelData(0).slice()
+      const right = (
+        buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)
+      ).slice()
+      await invoke('audition_play', framePayload([], interleaveChannels(left, right)))
+    },
+    auditionStop: () => send('audition_stop'),
     // Discrete, rare device commands — a direct invoke, never the per-frame
     // coalescing. The promises are returned so the caller can catch a rejection
     // (the device couldn't be opened; audio stays undisturbed).

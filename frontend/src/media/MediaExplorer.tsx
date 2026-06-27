@@ -191,7 +191,11 @@ function reListLibrary<
         .filter((pair): pair is readonly [string, R] => pair[0] != null),
     )
     const restored = entries.map((entry) => byFile.get(entry.file) ?? toRow(entry))
-    setRows((current) => [...restored, ...current.filter((row) => fileOf(row) == null)])
+    // Newest-first: in-session takes not yet on disk lead, above the restored
+    // library reversed so the most recently composed file sits at the top (the
+    // registry stores composition order, oldest first), sparing a scroll to the
+    // take you just made.
+    setRows((current) => [...current.filter((row) => fileOf(row) == null), ...restored.reverse()])
   })()
 }
 
@@ -232,18 +236,21 @@ type MediaExplorerProps = {
   /** Load a decoded-to-be track onto a deck — flips it to playback
    * mode (ADR-0013). Resolves false when the audio doesn't decode. */
   onLoadTrack: (deck: DeckId, wav: ArrayBuffer, title: string) => Promise<boolean>
-  /** Return a deck to its live stream — the guaranteed exit from
-   * playback, expressed as a load like everything else (ADR-0013). */
-  onLoadLive: (deck: DeckId) => void
   /** Load a saved sample into a deck loop slot (ADR-0022) — the first free
-   * slot, as a loop or one-shot per the sample. Resolves false when every slot
-   * is full, the deck isn't a live Realtime deck, or the body doesn't decode. */
+   * slot, as a loop or one-shot per the sample, layering over whatever the deck
+   * plays (live or a track). Resolves false when every slot is full or the body
+   * doesn't decode. */
   onLoadSample: (
     deck: DeckId,
     wav: ArrayBuffer,
     oneShot: boolean,
     label: string,
   ) => Promise<boolean>
+  /** Preview a decoded WAV in the headphones before committing it to a deck
+   * (ADR-0027) — routed to the cue feed only, never the master. */
+  onPreview: (wav: ArrayBuffer) => Promise<void>
+  /** Stop the headphone preview (ADR-0027). */
+  onStopPreview: () => void
 }
 
 /** The Media Explorer (M19, ADR-0013): one pane below the booth that
@@ -257,8 +264,9 @@ export function MediaExplorer({
   onDeletePreset,
   onImportPresets,
   onLoadTrack,
-  onLoadLive,
   onLoadSample,
+  onPreview,
+  onStopPreview,
 }: MediaExplorerProps) {
   const { t } = useTranslation()
   const [tab, setTab] = useState<MediaTab>('crates')
@@ -293,8 +301,14 @@ export function MediaExplorer({
   // keeps its own inside CrateBrowser (mounted only while visible, so
   // exactly one list answers the hardware at a time).
   const [highlight, setHighlight] = useState(0)
-  // The take whose full prompt the 🔍 button has expanded, or null. One at a time.
+  // The take whose prompt is expanded to full text, or null. One at a time; the
+  // rest stay truncated to one line.
   const [expandedId, setExpandedId] = useState<number | null>(null)
+  // The item currently auditioning in the headphones (ADR-0027), or null. One at
+  // a time — starting another preview, loading, or unmounting stops it.
+  const [previewingId, setPreviewingId] = useState<number | null>(null)
+  // Never leave a preview ringing in the phones after the pane unmounts.
+  useEffect(() => onStopPreview, [onStopPreview])
   // A ref, not state: two composes batched into one render (Enter +
   // click) must not mint the same id.
   const nextIdRef = useRef(1)
@@ -326,10 +340,60 @@ export function MediaExplorer({
       ? null
       : readySamples[Math.min(highlight, readySamples.length - 1)].id
 
+  function stopPreview() {
+    onStopPreview()
+    setPreviewingId(null)
+  }
+
+  // Audition a take in the phones (ADR-0027): toggle it off if it's the one
+  // playing, otherwise fetch its WAV (the same in-memory-or-disk path as a load)
+  // and start previewing. Routed to the cue feed only, never the master.
+  async function cueTrack(track: GeneratedTrack & { state: 'ready' }) {
+    if (previewingId === track.id) {
+      stopPreview()
+      return
+    }
+    setGenerateError(null)
+    try {
+      const label = trackLabel(track)
+      let wav = track.wav
+      if (!wav) {
+        if (!track.file) throw new Error(t('media.undecodable', { title: label }))
+        wav = await invoke<ArrayBuffer>('read_generated_song', { name: track.file })
+      }
+      await onPreview(wav.slice(0))
+      setPreviewingId(track.id)
+    } catch (error) {
+      setGenerateError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function cueSample(sample: GeneratedSample & { state: 'ready' }) {
+    if (previewingId === sample.id) {
+      stopPreview()
+      return
+    }
+    setSampleError(null)
+    try {
+      const label = sampleLabel(sample)
+      let wav = sample.wav
+      if (!wav) {
+        if (!sample.file) throw new Error(t('media.undecodable', { title: label }))
+        wav = await invoke<ArrayBuffer>('read_generated_sample', { name: sample.file })
+      }
+      await onPreview(wav.slice(0))
+      setPreviewingId(sample.id)
+    } catch (error) {
+      setSampleError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   async function loadGeneratedTrack(
     deck: DeckId,
     track: GeneratedTrack & { state: 'ready' },
   ) {
+    // Committing to a deck ends the preview — the deck takes over.
+    if (previewingId != null) stopPreview()
     setGenerateError(null)
     try {
       // In memory for a take composed this session; otherwise read the bytes back
@@ -404,6 +468,8 @@ export function MediaExplorer({
     deck: DeckId,
     sample: GeneratedSample & { state: 'ready' },
   ) {
+    // Committing to a deck ends the preview — the deck takes over.
+    if (previewingId != null) stopPreview()
     setSampleError(null)
     try {
       // In memory for a clip composed this session; otherwise read the bytes back
@@ -560,7 +626,6 @@ export function MediaExplorer({
     setSampleError(null)
     setSampleSaveError(null)
     setSamples((current) => [
-      ...current,
       {
         id,
         state: 'pending',
@@ -569,6 +634,7 @@ export function MediaExplorer({
         model: requestEngine,
         oneShot,
       },
+      ...current,
     ])
     void (async () => {
       try {
@@ -660,8 +726,8 @@ export function MediaExplorer({
     setGenerateError(null)
     setSaveError(null)
     setTracks((current) => [
-      ...current,
       { id, state: 'pending', title: songTitle, prompt: trimmedPrompt, model: requestEngine },
+      ...current,
     ])
     void (async () => {
       try {
@@ -804,12 +870,23 @@ export function MediaExplorer({
             </Button>
           ))}
         </div>
-        {/* The guaranteed exit from playback: the live stream is itself
-            a loadable item, so leaving is a load too (ADR-0013). */}
-        <div className="media__live">
-          <span className="media__live-label">{t('media.live')}</span>
-          {loadButtons(onLoadLive, t('media.live'))}
-        </div>
+        {/* Utility actions live in the header to save a row below the
+            tabs; the per-tab folder shortcut is the only one so far. */}
+        {(tab === 'generate' || tab === 'samples') && (
+          <div className="media__header-actions">
+            <Button
+              onClick={() =>
+                void (tab === 'generate' ? openSongsFolder() : openSamplesFolder())
+              }
+            >
+              {t(
+                tab === 'generate'
+                  ? 'media.generate.openFolder'
+                  : 'media.samples.openFolder',
+              )}
+            </Button>
+          </div>
+        )}
       </div>
 
       {tab === 'crates' && (
@@ -823,11 +900,6 @@ export function MediaExplorer({
 
       {tab === 'generate' && (
         <div className="media__generate">
-          <div className="media__generate-toolbar">
-            <Button onClick={() => void openSongsFolder()}>
-              {t('media.generate.openFolder')}
-            </Button>
-          </div>
           <div className="media__generate-row">
             <div className="media__title-field">
               <TextField
@@ -897,6 +969,9 @@ export function MediaExplorer({
                     }`}
                   >
                     <span className="media__name">
+                      {track.state === 'pending' && (
+                        <span className="media__spinner" aria-hidden="true" />
+                      )}
                       <span className="media__name-text">
                         {track.state === 'pending'
                           ? t('media.generate.pending', { title: track.title })
@@ -905,30 +980,48 @@ export function MediaExplorer({
                       {track.state === 'ready' && composed && (
                         <span className="media__name-tag">{`#${track.id}`}</span>
                       )}
+                      {track.state === 'ready' && track.prompt != null && (
+                        <button
+                          type="button"
+                          className={`media__prompt${
+                            expandedId === track.id ? ' media__prompt--expanded' : ''
+                          }`}
+                          aria-expanded={expandedId === track.id}
+                          aria-label={t('media.generate.inspect', { name: rowLabel })}
+                          title={prettyPrompt(track.prompt)}
+                          onClick={() =>
+                            setExpandedId((current) =>
+                              current === track.id ? null : track.id,
+                            )
+                          }
+                        >
+                          {prettyPrompt(track.prompt)}
+                        </button>
+                      )}
                     </span>
                     <span className="media__meta">
                       {track.model == null
                         ? t('media.generate.imported')
                         : t(`media.generate.engines.${track.model}`)}
                     </span>
+                    {track.state === 'ready' && (
+                      <Button
+                        aria-label={
+                          previewingId === track.id
+                            ? t('media.previewStop')
+                            : t('media.preview', { name: rowLabel })
+                        }
+                        lit={previewingId === track.id}
+                        onClick={() => void cueTrack(track)}
+                      >
+                        🎧
+                      </Button>
+                    )}
                     {track.state === 'ready' &&
                       loadButtons(
                         (deck) => void loadGeneratedTrack(deck, track),
                         rowLabel,
                       )}
-                    {track.state === 'ready' && track.prompt != null && (
-                      <Button
-                        aria-label={t('media.generate.inspect', { name: rowLabel })}
-                        lit={expandedId === track.id}
-                        onClick={() =>
-                          setExpandedId((current) =>
-                            current === track.id ? null : track.id,
-                          )
-                        }
-                      >
-                        🔍
-                      </Button>
-                    )}
                     {track.state === 'ready' && (
                       <Button
                         aria-label={t('media.remove', { name: rowLabel })}
@@ -937,11 +1030,6 @@ export function MediaExplorer({
                         ✕
                       </Button>
                     )}
-                    {track.state === 'ready' &&
-                      track.prompt != null &&
-                      expandedId === track.id && (
-                        <p className="media__prompt">{prettyPrompt(track.prompt)}</p>
-                      )}
                   </li>
                 )
               })}
@@ -962,11 +1050,6 @@ export function MediaExplorer({
 
       {tab === 'samples' && (
         <div className="media__generate">
-          <div className="media__generate-toolbar">
-            <Button onClick={() => void openSamplesFolder()}>
-              {t('media.samples.openFolder')}
-            </Button>
-          </div>
           <div className="media__generate-row">
             <div className="media__title-field">
               <TextField
@@ -1040,6 +1123,9 @@ export function MediaExplorer({
                     }`}
                   >
                     <span className="media__name">
+                      {sample.state === 'pending' && (
+                        <span className="media__spinner" aria-hidden="true" />
+                      )}
                       <span className="media__name-text">
                         {sample.state === 'pending'
                           ? t('media.generate.pending', { title: sample.title })
@@ -1048,27 +1134,45 @@ export function MediaExplorer({
                       {sample.state === 'ready' && composed && (
                         <span className="media__name-tag">{`#${sample.id}`}</span>
                       )}
+                      {sample.state === 'ready' && sample.prompt != null && (
+                        <button
+                          type="button"
+                          className={`media__prompt${
+                            expandedId === sample.id ? ' media__prompt--expanded' : ''
+                          }`}
+                          aria-expanded={expandedId === sample.id}
+                          aria-label={t('media.generate.inspect', { name: rowLabel })}
+                          title={prettyPrompt(sample.prompt)}
+                          onClick={() =>
+                            setExpandedId((current) =>
+                              current === sample.id ? null : sample.id,
+                            )
+                          }
+                        >
+                          {prettyPrompt(sample.prompt)}
+                        </button>
+                      )}
                     </span>
                     <span className="media__meta">
                       {`${sampleModelLabel(sample.model)} · ${t(
                         sample.oneShot ? 'media.samples.oneShot' : 'media.samples.loop',
                       )}`}
                     </span>
-                    {sample.state === 'ready' &&
-                      loadButtons((deck) => void loadSample(deck, sample), rowLabel)}
-                    {sample.state === 'ready' && sample.prompt != null && (
+                    {sample.state === 'ready' && (
                       <Button
-                        aria-label={t('media.generate.inspect', { name: rowLabel })}
-                        lit={expandedId === sample.id}
-                        onClick={() =>
-                          setExpandedId((current) =>
-                            current === sample.id ? null : sample.id,
-                          )
+                        aria-label={
+                          previewingId === sample.id
+                            ? t('media.previewStop')
+                            : t('media.preview', { name: rowLabel })
                         }
+                        lit={previewingId === sample.id}
+                        onClick={() => void cueSample(sample)}
                       >
-                        🔍
+                        🎧
                       </Button>
                     )}
+                    {sample.state === 'ready' &&
+                      loadButtons((deck) => void loadSample(deck, sample), rowLabel)}
                     {sample.state === 'ready' && (
                       <Button
                         aria-label={t('media.remove', { name: rowLabel })}
@@ -1077,11 +1181,6 @@ export function MediaExplorer({
                         ✕
                       </Button>
                     )}
-                    {sample.state === 'ready' &&
-                      sample.prompt != null &&
-                      expandedId === sample.id && (
-                        <p className="media__prompt">{prettyPrompt(sample.prompt)}</p>
-                      )}
                   </li>
                 )
               })}

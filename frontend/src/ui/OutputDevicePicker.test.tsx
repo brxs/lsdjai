@@ -19,6 +19,8 @@ function makeEngine(overrides: Partial<AudioEngine> = {}): AudioEngine {
     resume: vi.fn(async () => {}),
     setCrossfade: vi.fn(),
     setCueMix: vi.fn(),
+    auditionPlay: vi.fn(async () => {}),
+    auditionStop: vi.fn(),
     listOutputDevices: vi.fn(async () => DEVICES),
     setMainDevice: vi.fn(async () => {}),
     setCueDevice: vi.fn(async () => {}),

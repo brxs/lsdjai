@@ -87,6 +87,13 @@
   --text-s: 0.72rem;
   --text-m: 0.85rem;
   --text-l: 1.1rem;
+  /* Shared line box for inline controls (buttons, fields, selects) so they line
+     up to the same height regardless of their font size. */
+  --control-line: 1.1rem;
+  /* The height a button resolves to from that line box + its padding + border.
+     Pinning fields to it sidesteps the native min-height a bare <input> keeps
+     even with appearance:none, so inputs/selects/buttons all line up. */
+  --control-height: calc(var(--control-line) + 2 * var(--space-2) + 2px);
 
   /* Silkscreen labels: uppercase micro-type. Space Mono has no 600 weight,
      so 700 is the bold; tracking is lighter since mono is already wide. */
