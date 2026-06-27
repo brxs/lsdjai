@@ -68,11 +68,14 @@ and tracked by the spike's revisit trigger.
 - **Path 1 is cheap.** No PyTorch re-export and no multi-GB artifact per finetune
   (the rejected Path 2): the adapter merges in seconds at load, in place on the
   weight dict, so peak generation memory is unchanged from ADR-0012.
-- **We carry upstream-track code.** The MLX fork is un-versioned and pinned
-  (`bccf5b7`, `sa3-pin.json`); a rebase could rename layers and break the merge's
-  name mapping. Mitigated by mirroring the converter's name remap, skipping
-  unknown layers, the pinned commit, and the spike's captured patch. If upstream
-  lands native MLX LoRA, we drop ours and bump the pin (ADR-0012's upgrade path).
+- **We carry upstream-track code.** The MLX port pins an exact commit in
+  `sa3-pin.json` (investigated against `bccf5b7`; now repointed to the fork that
+  carries this LoRA support — see the `sa3-pin.json` note); a rebase could rename
+  layers and break the merge's name mapping. Mitigated by mirroring the
+  converter's name remap, skipping unknown layers, the pinned commit, and the
+  spike's captured patch. Once the upstream PR lands (or upstream ships native MLX
+  LoRA), revert the pin to `Stability-AI/stable-audio-3` and bump the commit
+  (ADR-0012's upgrade path).
 - **`-xs` adapters recompute SVD bases at load** (the frozen bases are not stored
   in the checkpoint). On the medium DiT this is the heaviest case; flagged for the
   follow-up build issue to measure and, if needed, cache.
