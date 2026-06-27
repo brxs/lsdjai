@@ -46,3 +46,7 @@ scaffolds the file from the template.
 | [0019](0019-pcm-transport-from-python-sidecars-to-the-rust-engine.md) | PCM transport from the Python sidecars to the Rust audio engine | Accepted |
 | [0020](0020-rust-interface-state-store-and-mcp-server.md) | Rust as the single interface-state store, exposed via a native MCP server | Proposed |
 | [0021](0021-split-master-and-cue-to-independent-output-devices.md) | Split master and cue to independent output devices (dual-mode) | Accepted |
+| [0022](0022-persist-generated-samples-and-loops.md) | Persist generated samples and loops in a samples library | Accepted |
+| [0023](0023-midi-note-and-drum-conditioning-over-the-deck-control-channel.md) | MIDI note and drum conditioning over the deck control channel | Proposed |
+| [0024](0024-key-detection-in-the-rust-audio-engine-behind-an-honesty-gate.md) | Key detection in the Rust audio engine, behind an honesty gate | Proposed |
+| [0025](0025-beat-detection-in-the-rust-audio-engine.md) | Beat detection in the Rust audio engine | Proposed |
