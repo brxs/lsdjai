@@ -103,23 +103,9 @@ export type LibraryKind = 'songs' | 'samples'
 export function subscribeLibraryChanged(
   onChange: (library: LibraryKind) => void,
 ): () => void {
-  const ev = (globalThis as { __TAURI__?: { event?: TauriEventApi } }).__TAURI__?.event
-  if (!ev) return () => {}
-  let unlisten: (() => void) | null = null
-  let cancelled = false
-  void ev
-    .listen('library://changed', (e) => {
-      const library = (e.payload as { library?: LibraryKind }).library
-      if (library === 'songs' || library === 'samples') onChange(library)
-    })
-    .then((un) => {
-      if (cancelled) un()
-      else unlisten = un
-    })
-  return () => {
-    cancelled = true
-    unlisten?.()
-  }
+  return listenTo<{ library?: LibraryKind }>('library://changed', (payload) => {
+    if (payload.library === 'songs' || payload.library === 'samples') onChange(payload.library)
+  })
 }
 
 // --- Model manager (issue #43) ---------------------------------------------

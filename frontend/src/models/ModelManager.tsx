@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '../ui/Button'
@@ -98,6 +99,11 @@ export function ModelManager() {
   const sa3Ready = sa3.state === 'ready'
   const sa3Label = installLabel('sa3', '')
 
+  // Cancel while this row's install is in flight (label set), else its primary
+  // action (Install / Repair, or nothing).
+  const installAction = (label: string | null, primary: ReactNode) =>
+    label ? <Button onClick={() => cancelInstall()}>{t('modelManager.cancel')}</Button> : primary
+
   return (
     <div>
       {error && (
@@ -130,12 +136,11 @@ export function ModelManager() {
               </div>
               {model.needsResources && (
                 <div className="modelmgr__actions">
-                  {label ? (
-                    <Button onClick={() => cancelInstall()}>{t('modelManager.cancel')}</Button>
-                  ) : (
+                  {installAction(
+                    label,
                     <Button variant="primary" onClick={() => onInstall('magenta', model.name)} disabled={isInstalling}>
                       {t('modelManager.repair')}
-                    </Button>
+                    </Button>,
                   )}
                 </div>
               )}
@@ -152,12 +157,11 @@ export function ModelManager() {
                 {label && <div className="modelmgr__progress">{label}</div>}
               </div>
               <div className="modelmgr__actions">
-                {label ? (
-                  <Button onClick={() => cancelInstall()}>{t('modelManager.cancel')}</Button>
-                ) : (
+                {installAction(
+                  label,
                   <Button variant="primary" onClick={() => onInstall('magenta', name)} disabled={isInstalling}>
                     {t('modelManager.install')}
-                  </Button>
+                  </Button>,
                 )}
               </div>
             </div>
@@ -182,14 +186,13 @@ export function ModelManager() {
             {sa3Label && <div className="modelmgr__progress">{sa3Label}</div>}
           </div>
           <div className="modelmgr__actions">
-            {sa3Label ? (
-              <Button onClick={() => cancelInstall()}>{t('modelManager.cancel')}</Button>
-            ) : (
-              !sa3Ready && (
+            {installAction(
+              sa3Label,
+              !sa3Ready ? (
                 <Button variant="primary" onClick={() => onInstall('sa3')} disabled={isInstalling}>
                   {t('modelManager.install')}
                 </Button>
-              )
+              ) : null,
             )}
           </div>
         </div>

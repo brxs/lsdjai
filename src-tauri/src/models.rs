@@ -9,8 +9,8 @@
 //!   freshly downloaded model is actually loadable (a model's two files are not
 //!   enough without `resources/musiccoca` + `resources/spectrostream`).
 //! - **Stable Audio 3** → `curl` the pinned source tarball (`sa3-pin.json`),
-//!   `tar`-extract it, and run `scripts/sa3-install.sh` (the same build+warm
-//!   steps `just setup-sa3` uses; no git, no tty, no system Python 3.11).
+//!   `tar`-extract it, and run `scripts/sa3-install.sh` (build+warm steps; no
+//!   git, no tty, no system Python 3.11).
 //!
 //! Status facts mirror the stable conventions in `backend/lsdj/paths.py` and
 //! `backend/lsdj/sa3.py` (the two-file model layout, the SA3 candidate list, the
@@ -188,6 +188,29 @@ fn dir_size(path: &Path) -> u64 {
     total
 }
 
+/// On-disk size of the SA3 checkout, cached and invalidated by the `.lsdj-warmed`
+/// stamp's mtime. The checkout is a uv venv plus warmed weights — many files to
+/// walk — and `model_status` is re-fetched on every drawer open and
+/// `models://changed`, so an unwarmed/changing checkout is walked but a settled
+/// one is summed once.
+fn sa3_checkout_size(checkout: &Path) -> u64 {
+    static CACHE: Mutex<Option<(PathBuf, std::time::SystemTime, u64)>> = Mutex::new(None);
+    let stamp_mtime = std::fs::metadata(checkout.join("optimized").join("mlx").join(WARMED_STAMP))
+        .and_then(|m| m.modified())
+        .ok();
+    let mut cache = CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    if let (Some(mtime), Some((path, cached_mtime, size))) = (stamp_mtime, cache.as_ref()) {
+        if path == checkout && *cached_mtime == mtime {
+            return *size;
+        }
+    }
+    let size = dir_size(checkout);
+    if let Some(mtime) = stamp_mtime {
+        *cache = Some((checkout.to_path_buf(), mtime, size));
+    }
+    size
+}
+
 /// Every installed Magenta model, discovered by its files (mirrors
 /// `engine.available_models`): a `<name>/` dir with `<name>.mlxfn` +
 /// `<name>_state.safetensors`. Sorted.
@@ -247,7 +270,7 @@ pub struct Sa3Status {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveInstall {
-    family: &'static str,
+    family: Family,
     name: String,
 }
 
@@ -274,7 +297,7 @@ fn status(active: Option<(Family, String)>) -> ModelStatus {
         })
         .collect();
     let (sa3_state, sa3_checkout) = sa3_status();
-    let sa3_size = sa3_checkout.as_ref().map(|c| dir_size(c)).unwrap_or(0);
+    let sa3_size = sa3_checkout.as_ref().map(|c| sa3_checkout_size(c)).unwrap_or(0);
     ModelStatus {
         magenta: MagentaStatus {
             models_dir: models_dir.to_string_lossy().into_owned(),
@@ -288,7 +311,7 @@ fn status(active: Option<(Family, String)>) -> ModelStatus {
             checkout: sa3_checkout.map(|c| c.to_string_lossy().into_owned()),
         },
         installing: active.map(|(family, name)| ActiveInstall {
-            family: family.as_str(),
+            family,
             name,
         }),
     }
@@ -296,28 +319,20 @@ fn status(active: Option<(Family, String)>) -> ModelStatus {
 
 // --- Install / delete ------------------------------------------------------
 
-/// Which family a command targets.
-#[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
+/// Which family a command targets. `lowercase` serde is the single source of the
+/// wire spelling (`"magenta"`/`"sa3"`), used both ways.
+#[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Family {
     Magenta,
     Sa3,
 }
 
-impl Family {
-    fn as_str(self) -> &'static str {
-        match self {
-            Family::Magenta => "magenta",
-            Family::Sa3 => "sa3",
-        }
-    }
-}
-
 /// The `model://progress` payload the webview renders as a live install bar.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelProgress {
-    family: &'static str,
+    family: Family,
     name: String,
     stage: String,
     message: Option<String>,
@@ -328,7 +343,7 @@ fn emit(app: &AppHandle, family: Family, name: &str, stage: &str, message: Optio
     let _ = app.emit(
         "model://progress",
         ModelProgress {
-            family: family.as_str(),
+            family,
             name: name.to_string(),
             stage: stage.to_string(),
             message,
