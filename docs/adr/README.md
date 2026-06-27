@@ -52,3 +52,5 @@ scaffolds the file from the template.
 | [0025](0025-beat-detection-in-the-rust-audio-engine.md) | Beat detection in the Rust audio engine | Accepted |
 | [0026](0026-lane-driven-variable-chunk-segmentation.md) | Lane-driven variable chunk segmentation for the modulation timeline | Accepted |
 | [0027](0027-headphone-preview-for-library-items.md) | Headphone preview ("audition") for library items | Accepted |
+| [0028](0028-sa3-lora-via-the-mlx-path.md) | Stable Audio 3 LoRA finetunes via the MLX path | Accepted |
+| [0029](0029-output-resampling-for-non-48k-devices.md) | Output resampling for devices with no 48000/f32 config | Accepted |

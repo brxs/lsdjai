@@ -1,18 +1,27 @@
 //! The cpal device wrapper: a thin host around the device-free [`Engine`] core.
 //!
-//! Opens an exact 48000 / stereo / f32 output stream with `BufferSize::Fixed(256)`
-//! and, in its callback, sets FTZ/DAZ once and calls [`Engine::render`] wrapped in
+//! Opens a stereo / f32 output stream with `BufferSize::Fixed(256)` and, in its
+//! callback, sets FTZ/DAZ once and drains the engine's output ring(s) wrapped in
 //! `assert_no_alloc`. The callback is the ONLY real-time path; it allocates
 //! nothing, takes no lock, makes no syscall, and logs nothing. Ported from the
 //! Spike A `rt_engine` device half (`spike/rust-audio/engine/src/bin/rt_engine.rs`),
 //! now built on the library so the device path stays exercisable.
 //!
-//! Graceful no-device exit: if no output device or no exact-48000/f32 config is
+//! The engine renders at exactly [`SAMPLE_RATE`] (48000). A device that offers a
+//! 48000/f32 config is opened there and drained bit-exact (the fast path). A
+//! device with NO 48000/f32 config — e.g. a 44100 Bluetooth speaker — is opened
+//! at its own f32 rate and the 48 kHz stream is resampled to it on the callback
+//! via [`OutputResampler`] (ADR-0029). All device-rate knowledge lives here; the
+//! host's output ring stays a clean 48 kHz interleaved-stereo contract.
+//!
+//! Graceful no-device exit: if no output device or no usable f32 config is
 //! available (likely in a sandbox / headless CI), [`run_stream`] returns
 //! [`DeviceError::Unavailable`] rather than hanging or panicking.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, StreamConfig};
+use rubato::audioadapter_buffers::direct::InterleavedSlice;
+use rubato::{Fft, FixedSync, Resampler};
 
 use crate::host::OutputConsumer;
 use crate::{Engine, CHANNELS, SAMPLE_RATE};
@@ -25,8 +34,9 @@ const REQUESTED_BUFFER: u32 = 256;
 /// case — callers treat it as "no device, exit cleanly", not a failure.
 #[derive(Debug)]
 pub enum DeviceError {
-    /// No output device, or no exact 48000/stereo/f32 config (e.g. a sandbox, or
-    /// a built-in device defaulting to 44100). Not a bug — exit cleanly.
+    /// No output device, or no usable f32 config at all (e.g. a sandbox). A
+    /// non-48000 device is NOT this case anymore — it is opened and resampled
+    /// (ADR-0029). Not a bug — exit cleanly.
     Unavailable(String),
     /// The stream could not be built or started.
     Stream(String),
@@ -68,7 +78,8 @@ impl AudioStream {
 /// One output device the engine can open, for the picker UI.
 pub struct OutputDeviceInfo {
     pub name: String,
-    /// Channels of its widest usable (48000/f32, ≥ stereo) config.
+    /// Channels of its chosen usable (f32, ≥ stereo) config — the widest 48000/f32
+    /// config, or the fallback config when the device cannot do 48000.
     pub channels: u16,
     /// Whether it can carry the headphone cue: a ≥4-channel device lands master
     /// on 1/2 and the cue on 3/4 (the FLX4 phones jack).
@@ -83,26 +94,65 @@ fn device_name(device: &cpal::Device) -> String {
         .unwrap_or_else(|_| "<unknown>".into())
 }
 
-/// Choose a device's best output config for the engine: an exact 48000/f32 config
-/// with at least stereo, preferring the WIDEST channel count so a ≥4-channel
-/// device (the FLX4) lands its master on 1/2 and the cue on 3/4. Resampling is out
-/// of scope, so a device with no 48000/f32 config is simply unusable.
+/// Choose a device's output config for the engine. Preference order:
+///
+/// 1. An exact 48000/f32 config (≥ stereo), WIDEST channel count — the bit-exact
+///    fast path. A ≥4-channel device (the FLX4) lands master on 1/2, cue on 3/4.
+/// 2. Otherwise the device's own default config, if it is f32 / ≥ stereo — its
+///    nominal rate (e.g. 44100 for a Bluetooth speaker), which the OS will not
+///    itself resample, so we resample 48000 → it directly (ADR-0029).
+/// 3. Otherwise any f32 / ≥ stereo config, at the supported rate NEAREST 48000
+///    (widest channels as a tie-break).
+///
+/// The returned config's `sample_rate()` is the rate the stream opens at; the
+/// caller resamples when it is not [`SAMPLE_RATE`].
 fn pick_config(device: &cpal::Device) -> Option<cpal::SupportedStreamConfig> {
-    let configs = device.supported_output_configs().ok()?;
-    configs
-        .filter(|cfg| {
-            cfg.channels() >= CHANNELS
-                && cfg.sample_format() == cpal::SampleFormat::F32
-                && cfg.min_sample_rate() <= SAMPLE_RATE
-                && cfg.max_sample_rate() >= SAMPLE_RATE
-        })
-        .max_by_key(|cfg| cfg.channels())
-        .map(|cfg| cfg.with_sample_rate(SAMPLE_RATE))
+    let exact = device.supported_output_configs().ok().and_then(|configs| {
+        configs
+            .filter(|cfg| {
+                cfg.channels() >= CHANNELS
+                    && cfg.sample_format() == cpal::SampleFormat::F32
+                    && cfg.min_sample_rate() <= SAMPLE_RATE
+                    && cfg.max_sample_rate() >= SAMPLE_RATE
+            })
+            .max_by_key(|cfg| cfg.channels())
+            .map(|cfg| cfg.with_sample_rate(SAMPLE_RATE))
+    });
+    if exact.is_some() {
+        return exact;
+    }
+
+    // No 48000/f32 config: fall back to a resampled rate. Prefer the device's own
+    // default (its nominal rate, so the OS does not double-resample under us).
+    if let Ok(default) = device.default_output_config() {
+        if default.sample_format() == cpal::SampleFormat::F32 && default.channels() >= CHANNELS {
+            return Some(default);
+        }
+    }
+
+    // Last resort: the f32 / ≥ stereo config whose supported range lands a rate
+    // closest to 48000 (widest channels breaks ties). `clamp` gives the nearest
+    // in-range rate — for a 44100-only device that is 44100.
+    device.supported_output_configs().ok().and_then(|configs| {
+        configs
+            .filter(|cfg| {
+                cfg.channels() >= CHANNELS && cfg.sample_format() == cpal::SampleFormat::F32
+            })
+            .min_by_key(|cfg| {
+                let rate = SAMPLE_RATE.clamp(cfg.min_sample_rate(), cfg.max_sample_rate());
+                (rate.abs_diff(SAMPLE_RATE), u16::MAX - cfg.channels())
+            })
+            .map(|cfg| {
+                let rate = SAMPLE_RATE.clamp(cfg.min_sample_rate(), cfg.max_sample_rate());
+                cfg.with_sample_rate(rate)
+            })
+    })
 }
 
-/// Enumerate the output devices the engine can open (exact 48000/f32, ≥ stereo)
-/// with their widest channel count, for the picker. Off the RT path — called from
-/// a command when the picker opens. Empty on a headless host.
+/// Enumerate the output devices the engine can open (any f32, ≥ stereo config —
+/// exact 48000 or a resampled fallback) with their chosen channel count, for the
+/// picker. Off the RT path — called from a command when the picker opens. Empty
+/// on a headless host.
 pub fn list_output_devices() -> Vec<OutputDeviceInfo> {
     let host = cpal::default_host();
     let Ok(devices) = host.output_devices() else {
@@ -134,8 +184,10 @@ fn find_output_device(host: &cpal::Host, name: &str) -> Result<cpal::Device, Dev
         .ok_or_else(|| DeviceError::Unavailable(format!("output device '{name}' not found")))
 }
 
-/// Open `device_name` (or the default when `None`) at exactly 48000/f32, choosing
-/// its widest config (so the cue reaches channels 3/4 on a ≥4-channel device).
+/// Open `device_name` (or the default when `None`) at the config [`pick_config`]
+/// chooses — a 48000/f32 widest config (so the cue reaches channels 3/4 on a
+/// ≥4-channel device), or a resampled fallback rate. `info.sample_rate` is the
+/// rate the stream actually opens at; the caller resamples when it ≠ 48000.
 fn open_output(
     selected: Option<&str>,
 ) -> Result<(cpal::Device, StreamConfig, StreamInfo), DeviceError> {
@@ -151,12 +203,13 @@ fn open_output(
 
     let supported = pick_config(&device).ok_or_else(|| {
         DeviceError::Unavailable(format!(
-            "device '{device_name}' has no exact {SAMPLE_RATE}/f32 output config \
-             (built-in macOS often defaults to 44100)"
+            "device '{device_name}' has no usable f32 output config \
+             (no f32 ≥ stereo config at any sample rate)"
         ))
     })?;
 
     let device_channels = supported.channels();
+    let device_rate = supported.sample_rate();
     let buffer_size = match supported.buffer_size() {
         cpal::SupportedBufferSize::Range { min, max } => {
             BufferSize::Fixed(REQUESTED_BUFFER.clamp(*min, *max))
@@ -166,14 +219,14 @@ fn open_output(
 
     let config = StreamConfig {
         channels: device_channels,
-        sample_rate: SAMPLE_RATE,
+        sample_rate: device_rate,
         buffer_size,
     };
 
     let info = StreamInfo {
         device_name,
         device_channels,
-        sample_rate: SAMPLE_RATE,
+        sample_rate: device_rate,
         buffer_frames: buffer_size,
     };
 
@@ -203,8 +256,135 @@ fn spread(data: &mut [f32], dev_ch: usize, placements: &[(usize, &[f32])]) {
     }
 }
 
-/// Open `selected` at exactly 48000/f32, build a stream that drains `primary` onto
-/// channels 1/2 — and, when `secondary` is `Some` AND the device has ≥4 channels,
+/// Number of overlapping FFT blocks rubato's synchronous resampler uses — the
+/// usual real-time choice (more blocks = marginally better stopband for more
+/// latency; 2 keeps the added delay to a few ms, dwarfed by the output ring).
+const RESAMPLER_BLOCKS: usize = 2;
+
+/// Resamples the engine's 48 kHz interleaved-stereo feed to a device with no
+/// 48000/f32 config (e.g. a 44100 Bluetooth speaker), via rubato's synchronous
+/// FFT resampler at the fixed [`SAMPLE_RATE`] → device-rate ratio (ADR-0029).
+///
+/// rubato works in fixed `chunk_frames` blocks; the cpal callback's block size is
+/// whatever CoreAudio hands that call (usually the requested `Fixed`, but Bluetooth
+/// does not always honour it). [`fill`](Self::fill) decouples the two with a small
+/// `carry` FIFO: it serves leftover resampled samples first, then resamples as many
+/// `chunk_frames` blocks as the callback needs and stashes the unused tail of the
+/// last block for next time. So any block size is served exactly — never a silent
+/// zeroed tail or dropped frame.
+///
+/// Built OFF the RT path ([`OutputResampler::new`] allocates the FFT plans and
+/// buffers). The callback only calls [`fill`](Self::fill), which is alloc-free:
+/// [`OutputConsumer::drain_into`] (wait-free, zero-pads + counts an underrun on a
+/// short ring) plus rubato `process_into_buffer` (documented alloc-free) into
+/// pre-sized buffers. One instance per feed (the master, and the cue when combined
+/// on a ≥4-channel device).
+struct OutputResampler {
+    resampler: Fft<f32>,
+    /// Interleaved-stereo input scratch, sized to the resampler's worst-case input
+    /// (`input_frames_max`). Filled from the ring each resampled block.
+    input: Vec<f32>,
+    /// One resampled block at the device rate (interleaved stereo), `chunk_frames`.
+    chunk: Vec<f32>,
+    /// FIFO of resampled samples produced but not yet handed to the device, kept at
+    /// the front `[..carry_len]`. Always shorter than one `chunk`, so a buffer of
+    /// `chunk_frames` capacity is enough.
+    carry: Vec<f32>,
+    /// Valid samples in `carry`.
+    carry_len: usize,
+    /// Device-rate frames rubato produces per block (`FixedSync::Output`).
+    chunk_frames: usize,
+}
+
+impl OutputResampler {
+    /// Build a [`SAMPLE_RATE`] → `device_rate` stereo resampler working in
+    /// `chunk_frames`-frame blocks. `None` if rubato rejects the rates. Allocates —
+    /// call OFF the RT path.
+    fn new(device_rate: u32, chunk_frames: usize) -> Option<Self> {
+        let resampler = Fft::<f32>::new(
+            SAMPLE_RATE as usize,
+            device_rate as usize,
+            chunk_frames,
+            CHANNELS as usize,
+            RESAMPLER_BLOCKS,
+            FixedSync::Output,
+        )
+        .ok()?;
+        let input = vec![0.0; resampler.input_frames_max() * CHANNELS as usize];
+        let chunk = vec![0.0; chunk_frames * CHANNELS as usize];
+        let carry = vec![0.0; chunk_frames * CHANNELS as usize];
+        Some(OutputResampler { resampler, input, chunk, carry, carry_len: 0, chunk_frames })
+    }
+
+    /// **RT path.** Fill `out` (interleaved-stereo at the device rate) entirely,
+    /// from the `carry` FIFO plus freshly resampled blocks. `out.len()` may be any
+    /// even length — it need not equal `chunk_frames` (the FIFO absorbs the
+    /// difference). Alloc-free.
+    fn fill(&mut self, src: &mut OutputConsumer, out: &mut [f32]) {
+        let mut written = 0;
+        // Serve carried-over samples from the previous call first.
+        if self.carry_len > 0 {
+            let n = self.carry_len.min(out.len());
+            out[..n].copy_from_slice(&self.carry[..n]);
+            self.carry.copy_within(n..self.carry_len, 0);
+            self.carry_len -= n;
+            written = n;
+        }
+        // Resample fresh blocks until `out` is full; stash any tail of the last one.
+        while written < out.len() {
+            let produced = self.produce_chunk(src);
+            let n = (out.len() - written).min(produced);
+            out[written..written + n].copy_from_slice(&self.chunk[..n]);
+            written += n;
+            if n < produced {
+                self.carry[..produced - n].copy_from_slice(&self.chunk[n..produced]);
+                self.carry_len = produced - n;
+            }
+        }
+    }
+
+    /// Drain the next input block from `src` and resample it into `self.chunk`,
+    /// returning the sample count produced (`chunk_frames * CHANNELS`). On a
+    /// size-invariant rubato error (should never happen — buffers are sized to
+    /// `input_frames_max`/`chunk_frames`) the block is silenced.
+    fn produce_chunk(&mut self, src: &mut OutputConsumer) -> usize {
+        // How many input frames rubato wants next (varies as 48000/device_rate is
+        // not integer); drain exactly that — `drain_into` zero-pads + counts an
+        // underrun on a short ring.
+        let n_in = self.resampler.input_frames_next();
+        src.drain_into(&mut self.input[..n_in * CHANNELS as usize]);
+        if !self.resample_chunk(n_in) {
+            self.chunk.iter_mut().for_each(|s| *s = 0.0);
+        }
+        self.chunk.len()
+    }
+
+    /// Resample the `n_in` interleaved-stereo frames already in `self.input` into
+    /// `self.chunk`. Returns whether rubato succeeded. The drain-free half of
+    /// [`produce_chunk`](Self::produce_chunk), split out so the resampling can be
+    /// unit-tested on a directly-filled `input`. Alloc-free.
+    fn resample_chunk(&mut self, n_in: usize) -> bool {
+        // Disjoint field borrows (input / chunk / resampler) confined to here.
+        let input = InterleavedSlice::new(
+            &self.input[..n_in * CHANNELS as usize],
+            CHANNELS as usize,
+            n_in,
+        );
+        let output =
+            InterleavedSlice::new_mut(&mut self.chunk[..], CHANNELS as usize, self.chunk_frames);
+        match (input, output) {
+            (Ok(inp), Ok(mut outp)) => self
+                .resampler
+                .process_into_buffer(&inp, &mut outp, None)
+                .is_ok(),
+            _ => false,
+        }
+    }
+}
+
+/// Open `selected` (a 48000/f32 config, or a resampled fallback rate), build a
+/// stream that drains `primary` onto channels 1/2 — and, when `secondary` is
+/// `Some` AND the device has ≥4 channels,
 /// also drains it onto channels 3/4 (the FLX4 combined master+cue path). On a
 /// narrower device the `secondary` is dropped: the stream is primary-only and the
 /// secondary ring stays undrained (its `push_all` overflow is discarded, so the
@@ -216,10 +396,12 @@ fn spread(data: &mut [f32], dev_ch: usize, placements: &[(usize, &[f32])]) {
 /// (the combined path already owns 1/2 and 3/4) or on a stereo device.
 ///
 /// The callback is the ONLY real-time path: it sets FTZ/DAZ once, drains the
-/// ring(s), and spreads into the device buffer, all under `assert_no_alloc` —
-/// trivially alloc/lock/syscall free. The [`Engine`] renders on the host's
-/// dedicated render thread into the rings; the callback only pulls from them (see
-/// [`crate::host`] for the decoupled-render-thread rationale and latency note).
+/// ring(s), resamples to the device rate when one is needed, and spreads into the
+/// device buffer, all under `assert_no_alloc` — alloc/lock/syscall free (rubato's
+/// `process_into_buffer` and the ring drains are all alloc-free). The [`Engine`]
+/// renders at 48 kHz on the host's dedicated render thread into the rings; the
+/// callback only pulls from them (see [`crate::host`] for the decoupled-render-
+/// thread rationale and latency note).
 ///
 /// On any sandbox/headless condition this returns [`DeviceError::Unavailable`]
 /// without hanging — the host keeps running headlessly (its render thread fills
@@ -243,11 +425,41 @@ fn open_spread_stream(
     // (laptop jack, Bluetooth), land on 1/2 (offset 0).
     let primary_offset = if primary_on_phones && device_channels >= 4 { 2 } else { 0 };
 
+    // When the device opened at a rate other than the engine's 48 kHz, build a
+    // resampler per feed (off the RT path; the callback only `fill`s them). A
+    // failure here is fatal — playing 48 kHz audio straight into a 44.1 kHz buffer
+    // would be pitched wrong — so it surfaces as a stream error. The resampler's
+    // chunk granularity is the requested buffer; its FIFO decouples that from the
+    // actual callback block size, so a varying block is served exactly.
+    let device_rate = info.sample_rate;
+    let chunk_frames = match info.buffer_frames {
+        BufferSize::Fixed(n) => n as usize,
+        BufferSize::Default => REQUESTED_BUFFER as usize,
+    };
+    let build_resampler = |feed: &str| -> Result<OutputResampler, DeviceError> {
+        OutputResampler::new(device_rate, chunk_frames).ok_or_else(|| {
+            DeviceError::Stream(format!(
+                "failed to build {device_rate} Hz {feed} resampler from {SAMPLE_RATE} Hz"
+            ))
+        })
+    };
+    let mut primary_resampler = if device_rate != SAMPLE_RATE {
+        Some(build_resampler("master")?)
+    } else {
+        None
+    };
+    let mut secondary_resampler = if device_rate != SAMPLE_RATE && secondary_routed {
+        Some(build_resampler("cue")?)
+    } else {
+        None
+    };
+
     let mut first_call = true;
-    // Per-callback scratch for wide (>2ch) devices: the rings hold interleaved
-    // stereo, so on a wider device we drain stereo into these scratches and spread
-    // into the device buffer. Sized ONCE here, off the RT path, for a generous
-    // worst-case block; the callback never resizes them.
+    // Per-callback scratch for wide (>2ch) devices: the rings (and the resamplers)
+    // produce interleaved stereo, so on a wider device we gather stereo into these
+    // scratches and spread into the device buffer — same path whether the stereo
+    // came from a straight ring drain or a resample. Sized ONCE here, off the RT
+    // path, for a generous worst-case block; the callback never resizes them.
     let mut scratch: Vec<f32> = Vec::new();
     let mut secondary_scratch: Vec<f32> = Vec::new();
     if device_channels != CHANNELS as usize {
@@ -269,26 +481,61 @@ fn open_spread_stream(
                         first_call = false;
                     }
                     let dev_ch = device_channels;
-                    if dev_ch == CHANNELS as usize {
-                        // Stereo fast path: drain straight into the device buffer.
-                        primary.drain_into(data);
-                    } else {
-                        // Wider device: drain stereo into scratch, then spread.
-                        let want = (data.len() / dev_ch) * CHANNELS as usize;
-                        let usable = scratch.len().min(want);
-                        primary.drain_into(&mut scratch[..usable]);
-                        if let Some(secondary) = secondary.as_mut() {
-                            // Combined: primary on 1/2, secondary (cue) on 3/4.
-                            let su = secondary_scratch.len().min(want);
-                            secondary.drain_into(&mut secondary_scratch[..su]);
-                            spread(
-                                data,
-                                dev_ch,
-                                &[(0, &scratch[..usable]), (2, &secondary_scratch[..su])],
-                            );
-                        } else {
-                            // Lone feed (master, or a split cue) at its channel pair.
-                            spread(data, dev_ch, &[(primary_offset, &scratch[..usable])]);
+                    match primary_resampler.as_mut() {
+                        // Bit-exact: device runs at 48 kHz, drain straight through.
+                        None => {
+                            if dev_ch == CHANNELS as usize {
+                                // Stereo fast path: drain into the device buffer.
+                                primary.drain_into(data);
+                            } else {
+                                // Wider device: drain stereo into scratch, spread.
+                                let want = (data.len() / dev_ch) * CHANNELS as usize;
+                                let usable = scratch.len().min(want);
+                                primary.drain_into(&mut scratch[..usable]);
+                                if let Some(secondary) = secondary.as_mut() {
+                                    // Combined: primary on 1/2, secondary (cue) 3/4.
+                                    let su = secondary_scratch.len().min(want);
+                                    secondary.drain_into(&mut secondary_scratch[..su]);
+                                    spread(
+                                        data,
+                                        dev_ch,
+                                        &[(0, &scratch[..usable]), (2, &secondary_scratch[..su])],
+                                    );
+                                } else {
+                                    // Lone feed (master, or a split cue).
+                                    spread(data, dev_ch, &[(primary_offset, &scratch[..usable])]);
+                                }
+                            }
+                        }
+                        // Device runs at another rate: resample 48 kHz → device rate.
+                        // `fill` serves exactly the bytes asked for (its FIFO absorbs
+                        // the chunk-vs-block-size difference).
+                        Some(pr) => {
+                            if dev_ch == CHANNELS as usize {
+                                // Stereo device: resample into the device buffer.
+                                pr.fill(&mut primary, data);
+                            } else {
+                                // Wider device: resample into scratch, then spread.
+                                let want = (data.len() / dev_ch) * CHANNELS as usize;
+                                let usable = scratch.len().min(want);
+                                if let (Some(sr), Some(secondary)) =
+                                    (secondary_resampler.as_mut(), secondary.as_mut())
+                                {
+                                    // Combined: both feeds resampled, master 1/2, cue 3/4.
+                                    let su = secondary_scratch.len().min(want);
+                                    pr.fill(&mut primary, &mut scratch[..usable]);
+                                    sr.fill(secondary, &mut secondary_scratch[..su]);
+                                    spread(
+                                        data,
+                                        dev_ch,
+                                        &[(0, &scratch[..usable]), (2, &secondary_scratch[..su])],
+                                    );
+                                } else {
+                                    // Lone feed (master, or a split cue).
+                                    pr.fill(&mut primary, &mut scratch[..usable]);
+                                    spread(data, dev_ch, &[(primary_offset, &scratch[..usable])]);
+                                }
+                            }
                         }
                     }
                 });
@@ -343,13 +590,21 @@ pub fn open_cue_stream(
 /// This is the original engine-in-callback path (Phase 1 / `device_run`). The
 /// Tauri app now drives audio through [`open_main_stream`] / [`open_cue_stream`] +
 /// [`crate::host`] instead, but this path stays for the `device_run` binary and
-/// hardware spikes.
+/// hardware spikes. It renders the engine directly in the callback and does NOT
+/// resample, so it requires an exact-48000 device (the app path resamples — see
+/// [`open_spread_stream`] / ADR-0029).
 ///
-/// On any sandbox/headless condition (no device, wrong rate) this returns
+/// On any sandbox/headless condition (no device, no 48000 config) this returns
 /// [`DeviceError::Unavailable`] without hanging — the caller decides whether that
 /// is fatal.
 pub fn run_stream(mut engine: Engine) -> Result<AudioStream, DeviceError> {
     let (device, config, info) = open_output(None)?;
+    if info.sample_rate != SAMPLE_RATE {
+        return Err(DeviceError::Unavailable(format!(
+            "default device opened at {} Hz; run_stream needs {SAMPLE_RATE} (it does not resample)",
+            info.sample_rate
+        )));
+    }
     let device_channels = info.device_channels;
 
     // Per-callback scratch for wide (>2ch) devices: the engine renders exactly
@@ -468,7 +723,8 @@ pub(crate) fn set_ftz_daz() {
 
 #[cfg(test)]
 mod tests {
-    use super::spread;
+    use super::{spread, OutputConsumer, OutputResampler, CHANNELS, SAMPLE_RATE};
+    use rubato::Resampler;
 
     /// A lone block at offset 0 lands on channels 1/2 and zeroes the rest of each
     /// frame (master, or a split cue on a stereo/wide non-FLX4 device).
@@ -529,5 +785,159 @@ mod tests {
             vec![0.1, 0.2, 0.7, 0.8, 0.3, 0.4, 0.0, 0.0],
             "frame 0 carries master+cue; frame 1 carries master with cue zeroed",
         );
+    }
+
+    // --- OutputResampler (the non-48000 fallback path, ADR-0029) ---
+    //
+    // Most of these exercise the resampling core directly on `OutputResampler::input`
+    // / `resample_chunk` (the drain-free half of `produce_chunk`), so no device or
+    // ring is needed — the same headless-testability discipline as the playback
+    // varispeed tests. `fill` (the carry-FIFO + drain path) is exercised against a
+    // real ring via `OutputConsumer::new_test_pair`. The actual 44.1 kHz output to a
+    // Bluetooth device is the hardware checklist's job.
+
+    /// Target rate for the tests — a 44100 Bluetooth speaker, the motivating case.
+    const DEVICE_RATE: u32 = 44_100;
+    /// Resampler chunk size (frames) used throughout.
+    const CHUNK_FRAMES: usize = 256;
+
+    /// Fill `n_in` interleaved-stereo frames of `input` with a 48 kHz-domain sine at
+    /// `freq`, continuing from `phase0`; returns the phase to resume from so
+    /// successive blocks stay continuous.
+    fn fill_sine(input: &mut [f32], n_in: usize, freq: f32, phase0: f32) -> f32 {
+        let dphase = 2.0 * std::f32::consts::PI * freq / SAMPLE_RATE as f32;
+        let mut phase = phase0;
+        for f in 0..n_in {
+            let s = phase.sin() * 0.5;
+            input[2 * f] = s;
+            input[2 * f + 1] = s;
+            phase += dphase;
+        }
+        phase
+    }
+
+    /// A 48000 → 44100 resampler builds, and each block is a full `chunk_frames`
+    /// from a (downsample) demand of ≥ `chunk_frames` input frames — all finite.
+    #[test]
+    fn output_resampler_builds_and_produces_full_blocks() {
+        let mut r =
+            OutputResampler::new(DEVICE_RATE, CHUNK_FRAMES).expect("44.1k resampler builds");
+        assert_eq!(r.chunk.len(), CHUNK_FRAMES * CHANNELS as usize);
+        let n_in = r.resampler.input_frames_next();
+        assert!(n_in >= CHUNK_FRAMES, "downsample pulls ≥ output frames, got {n_in}");
+        assert!(
+            r.input.len() >= n_in * CHANNELS as usize,
+            "input scratch ({}) fits the demand ({n_in})",
+            r.input.len()
+        );
+        fill_sine(&mut r.input, n_in, 1_000.0, 0.0);
+        assert!(r.resample_chunk(n_in), "resample succeeds");
+        assert!(r.chunk.iter().all(|s| s.is_finite()), "output is finite (no NaN/inf)");
+    }
+
+    /// Over many blocks the resampler consumes input at exactly the 48000/44100
+    /// ratio — proof the `input_frames_next` bookkeeping does not drift (which would
+    /// slowly drain or overflow the output ring in the running app).
+    #[test]
+    fn output_resampler_consumes_input_at_the_rate_ratio() {
+        let mut r = OutputResampler::new(DEVICE_RATE, CHUNK_FRAMES).unwrap();
+        let blocks = 500;
+        let mut total_in = 0usize;
+        for _ in 0..blocks {
+            let n_in = r.resampler.input_frames_next();
+            total_in += n_in;
+            for s in r.input[..n_in * CHANNELS as usize].iter_mut() {
+                *s = 0.0;
+            }
+            assert!(r.resample_chunk(n_in));
+        }
+        let ratio = total_in as f64 / (blocks * CHUNK_FRAMES) as f64;
+        let expected = SAMPLE_RATE as f64 / DEVICE_RATE as f64; // ≈ 1.0884
+        assert!(
+            (ratio - expected).abs() < 0.005,
+            "input/output ratio {ratio:.4} ≈ 48000/44100 {expected:.4} (no drift)"
+        );
+    }
+
+    /// A continuous 1 kHz sine keeps its level through the conversion: steady-state
+    /// output RMS matches the input within 1 dB (correct pitch + no gain change).
+    #[test]
+    fn output_resampler_preserves_sine_energy() {
+        let mut r = OutputResampler::new(DEVICE_RATE, CHUNK_FRAMES).unwrap();
+        let mut phase = 0.0;
+        // Warm up past the resampler's startup delay.
+        for _ in 0..10 {
+            let n_in = r.resampler.input_frames_next();
+            phase = fill_sine(&mut r.input, n_in, 1_000.0, phase);
+            assert!(r.resample_chunk(n_in));
+        }
+        let mut sum_sq = 0.0f64;
+        let mut n = 0u64;
+        for _ in 0..20 {
+            let n_in = r.resampler.input_frames_next();
+            phase = fill_sine(&mut r.input, n_in, 1_000.0, phase);
+            assert!(r.resample_chunk(n_in));
+            for &s in r.chunk.iter() {
+                sum_sq += (s as f64) * (s as f64);
+                n += 1;
+            }
+        }
+        let out_rms = (sum_sq / n as f64).sqrt();
+        let in_rms = 0.5 / std::f64::consts::SQRT_2; // amplitude-0.5 sine
+        let db = 20.0 * (out_rms / in_rms).log10();
+        assert!(db.abs() < 1.0, "sine energy preserved within 1 dB, got {db:.2} dB (rms {out_rms:.4})");
+    }
+
+    /// `fill` serves any block size — including ones that differ from the resampler
+    /// chunk — exactly and continuously, via the carry FIFO. Driving a DISTINCT
+    /// per-channel DC (left = +0.3, right = −0.3) through irregular block sizes,
+    /// every block comes back full with left and right intact (no zeroed tails, no
+    /// gaps, no drift, and no L/R swap at a carry boundary) once the startup delay
+    /// clears. This is the robustness ADR-0029 adds for devices that don't honour
+    /// the requested buffer size (some Bluetooth paths).
+    #[test]
+    fn fill_serves_any_block_size_continuously() {
+        const LEFT: f32 = 0.3;
+        const RIGHT: f32 = -0.3;
+        let mut r = OutputResampler::new(DEVICE_RATE, CHUNK_FRAMES).unwrap();
+        // A ring big enough to stay primed, kept topped up with the L≠R signal so
+        // `fill`'s internal drains never starve (this isolates the FIFO logic from
+        // underruns). Push whole frames so the interleaved ring stays L/R aligned.
+        let (mut producer, mut consumer) = OutputConsumer::new_test_pair(1 << 16);
+        let top_up = |producer: &mut rtrb::Producer<f32>| {
+            while producer.slots() >= CHANNELS as usize {
+                let _ = producer.push(LEFT);
+                let _ = producer.push(RIGHT);
+            }
+        };
+        top_up(&mut producer);
+
+        // Block sizes that are smaller, equal to, and larger than CHUNK_FRAMES, plus
+        // odd-but-even counts — exactly the variability `fill` must absorb.
+        let block_frames = [64usize, 256, 300, 200, 512, 100, 333 & !1, 256];
+        let mut out = vec![0.0f32; 1024 * CHANNELS as usize];
+
+        // Warm up past the resampler's startup delay (early output is silent).
+        for _ in 0..16 {
+            r.fill(&mut consumer, &mut out[..CHUNK_FRAMES * CHANNELS as usize]);
+            top_up(&mut producer);
+        }
+
+        for &bf in block_frames.iter().cycle().take(64) {
+            let len = bf * CHANNELS as usize;
+            // Poison the slice so a missed write shows up as a failure.
+            out[..len].fill(-9.0);
+            r.fill(&mut consumer, &mut out[..len]);
+            top_up(&mut producer);
+            let ok = out[..len].chunks_exact(CHANNELS as usize).all(|frame| {
+                (frame[0] - LEFT).abs() < 0.02 && (frame[1] - RIGHT).abs() < 0.02
+            });
+            assert!(
+                ok,
+                "every {bf}-frame block keeps left≈{LEFT}/right≈{RIGHT} (continuous, \
+                 no gaps, no L/R swap): {:?}…",
+                &out[..8]
+            );
+        }
     }
 }

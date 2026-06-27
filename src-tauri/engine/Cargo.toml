@@ -33,6 +33,13 @@ rtrb = "=0.3.4"
 # check stays live in release but only WARNS (never aborts) — an alloc in the
 # audio callback must not crash the stream.
 assert_no_alloc = { version = "=1.1.2", default-features = false, features = ["warn_release", "warn_debug"] }
+# rubato — de-facto Rust sample-rate-conversion crate (ADR-0029). Only the
+# synchronous FFT resampler (`fft_resampler`) is pulled; `default-features` is off
+# so the `log` feature stays OUT (rubato's own real-time-safety requirement — its
+# `process_into_buffer` must not log/alloc on the audio callback). Used only on
+# the fallback path for a device with no 48000/f32 config (e.g. a 44100 Bluetooth
+# speaker); the exact-48000 path never touches it.
+rubato = { version = "=3.0.0", default-features = false, features = ["fft_resampler"] }
 
 # NOTE: the release profile (opt-level = 3) lives in the workspace root
 # (src-tauri/Cargo.toml). Cargo only honours `[profile.*]` at the workspace
