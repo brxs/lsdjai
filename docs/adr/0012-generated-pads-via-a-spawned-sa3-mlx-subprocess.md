@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-06-12
 - **Deciders:** Daniel Peter
+- **Extended by:** ADR-0028 (Stable Audio 3 LoRA finetunes via the MLX path)
 
 ## Context
 

@@ -513,6 +513,7 @@ pub fn run() {
             commands::unsubscribe_deck_pcm,
             models::model_status,
             models::install_model,
+            models::update_model,
             models::cancel_install,
             models::open_model_folder,
         ])

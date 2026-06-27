@@ -1,4 +1,5 @@
 {
-  "repo": "https://github.com/Stability-AI/stable-audio-3",
-  "commit": "bccf5b7"
+  "note": "Pinned to our fork for the MLX LoRA support (ADR-0028). Revert repo to Stability-AI/stable-audio-3 and bump commit once upstream PR Stability-AI/stable-audio-3#57 merges.",
+  "repo": "https://github.com/brxs/stable-audio-3",
+  "commit": "36ef97776ee12375edd67a830a1bb0056d65bad8"
 }

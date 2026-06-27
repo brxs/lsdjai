@@ -124,6 +124,10 @@ export type InstalledModel = {
 /** SA3's four readiness states (Rust `models`/`sa3.readiness`). */
 export type Sa3State = 'missing' | 'venv_missing' | 'not_warmed' | 'ready'
 
+/** The source an SA3 checkout was installed from / is pinned to (Rust
+ * `models::Sa3Source`): the `sa3-pin.json` repo + commit. */
+export type Sa3Source = { repo: string; commit: string }
+
 /** The model-manager status for both families (Rust `models::ModelStatus`). */
 export type ModelStatus = {
   magenta: {
@@ -132,7 +136,17 @@ export type ModelStatus = {
     installable: string[]
     installed: InstalledModel[]
   }
-  sa3: { state: Sa3State; sizeBytes: number; checkout: string | null }
+  sa3: {
+    state: Sa3State
+    sizeBytes: number
+    checkout: string | null
+    /** What the installed checkout was fetched from (`null` when unstamped). */
+    installedSource: Sa3Source | null
+    /** What's currently pinned. */
+    pinnedSource: Sa3Source
+    /** The installed checkout differs from the pin (or is unstamped) — offer an update. */
+    updateAvailable: boolean
+  }
   /** The in-flight install, so the manager reflects it after a close/reopen even
    * though the live `model://progress` events were missed while unmounted. */
   installing: { family: ModelFamily; name: string } | null
@@ -178,6 +192,12 @@ export function modelStatus(): Promise<ModelStatus> {
  * final `models://changed`. */
 export function installModel(family: ModelFamily, name?: string): Promise<void> {
   return invoke('install_model', { family, name: name ?? null })
+}
+
+/** Update a family in place to the pinned source (SA3: re-fetch the pinned
+ * checkout, rebuild, re-warm). Progress arrives like an install. */
+export function updateModel(family: ModelFamily): Promise<void> {
+  return invoke('update_model', { family })
 }
 
 /** Cancel the in-flight install (kills the child + cleans partials). */
