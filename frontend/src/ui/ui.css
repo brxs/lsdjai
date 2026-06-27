@@ -100,8 +100,10 @@
   border: 1px solid var(--color-border);
   background: var(--color-surface-inset);
   color: var(--color-text);
-  /* So a select and a text input land on the same height under identical
-     padding (the box, not the content, carries the border). */
+  /* Strip native field metrics (a bare <input> is otherwise a touch taller than
+     a select/button) and let the shared line box + padding decide the height. */
+  appearance: none;
+  -webkit-appearance: none;
   box-sizing: border-box;
 }
 
@@ -110,9 +112,8 @@
   outline-offset: -1px;
 }
 
-/* A native <select> renders taller than a text input from its built-in
-   appearance + dropdown arrow. Strip the native chrome so it matches
-   .ui-field__input exactly, and draw our own caret from a token colour. */
+/* The base rule already strips the native appearance; the select just needs its
+   own caret (drawn from a token colour) and room for it. */
 .ui-select {
   position: relative;
   display: flex;
@@ -121,8 +122,6 @@
 
 .ui-select .ui-field__input {
   flex: 1;
-  appearance: none;
-  -webkit-appearance: none;
   /* Leave room for the caret so a long option never slides under it. */
   padding-right: calc(var(--space-3) + var(--space-4));
 }
