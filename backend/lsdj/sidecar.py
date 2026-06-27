@@ -24,8 +24,10 @@ model-loaded round-trip is a native-checklist item.
 import argparse
 import json
 import queue
+import re
 import socket
 import struct
+import sys
 import threading
 
 from .engine import DeckEngine
@@ -136,17 +138,134 @@ def run_sidecar(
     run_deck_worker(deck_id, model, cmd_queue, out_queue, engine_factory=engine_factory)
 
 
+# --- Model tooling (the in-app model manager, issue #43) -------------------
+#
+# The Rust shell spawns this same binary to install Magenta assets without a
+# terminal: `--init-resources` fetches the shared resources `mrt models init`
+# pulls (musiccoca + spectrostream — a model cannot load without them), and
+# `--download-model NAME` fetches an exported model. Both reuse the upstream
+# `magenta_rt.cli.models_commands` code path verbatim (the HF repo, the file
+# list, the source dispatch); the only addition is a machine-readable progress
+# contract on stdout — one JSON object per line:
+#
+#   {"event": "stage", "stage": "init"|"download"}       # phase; UI keys the label
+#   {"event": "file", "file": "<repo-relative path>"}    # a file started
+#   {"event": "done"}                                     # success
+#   {"event": "error", "message": "<cause>"}              # the reason, then exit 1
+#
+# The upstream code echoes human text and calls sys.exit(1) on failure; we route
+# its click output into the progress contract and translate any exit/exception
+# into an `error` line so the shell sees structured failure, not a dead pipe.
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _emit(obj: dict) -> None:
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def run_model_tooling(
+    *, init_resources: bool = False, download_model: str | None = None
+) -> None:
+    """Install Magenta assets via the upstream `mrt models` code path, emitting
+    the JSON progress contract. Raises SystemExit(1) on failure (after an
+    `error` event that carries the tooling's own reason — `mrt` echoes the cause,
+    e.g. an auth or network error, then exits). Resources are fetched first so a
+    freshly downloaded model is actually loadable."""
+    from magenta_rt import paths
+    from magenta_rt.cli import models_commands as mc
+
+    import click  # noqa: PLC0415 - deferred; only the tooling modes need it
+
+    root = str(paths.magenta_home())
+    source = mc._DEFAULT_SOURCE
+    # The `models` group's commands, reached by name (a `checkpoints.download`
+    # shadows the module-level `download`, so the group registry is the safe
+    # handle).
+    init_cmd = mc.models.commands["init"]
+    download_cmd = mc.models.commands["download"]
+
+    # The last human line the tooling printed — surfaced as the failure cause if
+    # it exits non-zero. Stage labels carry the user-facing wording (keyed in the
+    # frontend), so these messages are diagnostics, not localised UI.
+    last_message: list[str] = []
+
+    def echo(message: object = "", *_args, **_kwargs) -> None:
+        text = _ANSI_RE.sub("", str(message)).strip()
+        if not text:
+            return
+        if text.startswith("Downloading ") and text.endswith("…"):
+            _emit(
+                {
+                    "event": "file",
+                    "file": text[len("Downloading ") :].rstrip("… ").strip(),
+                }
+            )
+        else:
+            last_message.append(text)
+
+    saved_echo = click.echo
+    click.echo = echo
+    try:
+        if init_resources:
+            _emit({"event": "stage", "stage": "init"})
+            init_cmd.callback(download_path=root, source=source)
+        if download_model:
+            _emit({"event": "stage", "stage": "download"})
+            download_cmd.callback(
+                name=download_model, download_path=root, source=source
+            )
+    except SystemExit as exc:
+        cause = last_message[-1] if last_message else "install failed"
+        _emit({"event": "error", "message": f"{cause} (exit {exc.code})"})
+        raise SystemExit(1) from exc
+    except Exception as exc:  # noqa: BLE001 - any failure becomes a progress error
+        _emit({"event": "error", "message": str(exc)})
+        raise SystemExit(1) from exc
+    finally:
+        click.echo = saved_echo
+    _emit({"event": "done"})
+
+
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="LSDJai per-deck inference sidecar")
-    parser.add_argument("--deck", required=True, help="deck id (e.g. a or b)")
-    parser.add_argument("--model", required=True, help="model name (e.g. mrt2_small)")
+    # Deck-sidecar arguments. Not required, so the same binary can run the
+    # model-tooling modes below (issue #43) without a deck/port.
+    parser.add_argument("--deck", help="deck id (e.g. a or b)")
+    parser.add_argument("--model", help="model name (e.g. mrt2_small)")
     parser.add_argument(
         "--port",
         type=int,
-        required=True,
         help="loopback TCP port the shell is listening on",
     )
+    parser.add_argument(
+        "--init-resources",
+        action="store_true",
+        help="fetch the shared model resources, emit JSON progress, then exit",
+    )
+    parser.add_argument(
+        "--download-model",
+        metavar="NAME",
+        help="download an exported Magenta model, emit JSON progress, then exit",
+    )
     args = parser.parse_args(argv)
+
+    if args.init_resources or args.download_model:
+        run_model_tooling(
+            init_resources=args.init_resources,
+            download_model=args.download_model,
+        )
+        return
+
+    missing = [
+        name for name in ("deck", "model", "port") if getattr(args, name) is None
+    ]
+    if missing:
+        parser.error(
+            "the following arguments are required: "
+            + ", ".join("--" + name for name in missing)
+        )
 
     sock = socket.create_connection(("127.0.0.1", args.port))
     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)

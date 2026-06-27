@@ -40,11 +40,14 @@ Underlying tools: uv + pytest + ruff in `backend/`, npm + vitest + eslint in
 - Headphone cue is handled by the Rust engine: a chosen output device or the
   FLX4's own phones jack. Color FX are pure amount→parameter curves at a
   pre-fader insert with a bit-exact bypass (ADR-0008).
-- Model weights live outside the repo in `~/Documents/Magenta/magenta-rt-v2`
-  (override with `MAGENTA_HOME`); first run needs `uv run mrt models init` +
-  `uv run mrt models download mrt2_small`. Only `backend/lsdj/engine.py`
-  may import `magenta_rt` (ADR-0002); measured API facts are in
-  `docs/spike-mrt2.md`.
+- Model weights live outside the repo in the app-owned data dir
+  `~/Library/Application Support/LSDJai/magenta-rt-v2` (kept out of `~/Documents`,
+  which users may sync to iCloud; `MAGENTA_HOME` overrides the base). The app sets
+  `MAGENTA_HOME` at startup and migrates a prior `~/Documents/Magenta` install
+  once (`models::ensure_magenta_home`); `just setup` downloads to the same place.
+  First run needs `uv run mrt models init` + `uv run mrt models download
+  mrt2_small`. Only `backend/lsdj/engine.py` may import `magenta_rt` (ADR-0002);
+  measured API facts are in `docs/spike-mrt2.md`.
 - Changes that touch hardware behaviour cannot be fully verified by tests:
   add/extend a checklist in `docs/` (e.g. `m12-hardware-checklist.md`) and have
   a human tick it before calling the work done.

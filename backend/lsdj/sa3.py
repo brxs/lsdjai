@@ -67,29 +67,88 @@ class GenerationFailed(Exception):
     """The CLI ran and did not produce a WAV."""
 
 
-def resolve_mlx_dir(
-    env: dict | None = None, home: pathlib.Path | None = None
-) -> pathlib.Path | None:
-    """First checkout whose optimized/mlx has a venv and the CLI script.
+# Canonical SA3 install states, shared verbatim with the Rust `model_status`
+# and the model-manager UI (issue #43): the readiness contract is one of these.
+STATE_MISSING = "missing"
+STATE_VENV_MISSING = "venv_missing"
+STATE_NOT_WARMED = "not_warmed"
+STATE_READY = "ready"
 
-    $SA3_MLX_HOME wins (pointing at the checkout root); the conventional
-    data home and the sibling-repos clone are fallbacks.
-    """
-    env = os.environ if env is None else env
-    home = pathlib.Path.home() if home is None else home
+WARMED_STAMP = ".lsdj-warmed"
+
+
+def _checkout_candidates(env: dict, home: pathlib.Path) -> list[pathlib.Path]:
+    """Checkout roots to probe, in order. $SA3_MLX_HOME wins (pointing at the
+    checkout root); otherwise the app-owned data dir, where in-app installs (and
+    `just setup-sa3`) put the checkout. Mirrors the Rust `models::sa3_candidates`."""
     candidates = []
     override = env.get("SA3_MLX_HOME", "")
     if override:
         candidates.append(pathlib.Path(override).expanduser())
-    candidates.append(home / "Documents" / "Magenta" / "stable-audio-3")
-    candidates.append(home / "Repos" / "stable-audio-3")
-    for checkout in candidates:
+    candidates.append(
+        home / "Library" / "Application Support" / "LSDJai" / "stable-audio-3"
+    )
+    return candidates
+
+
+def resolve_mlx_dir(
+    env: dict | None = None, home: pathlib.Path | None = None
+) -> pathlib.Path | None:
+    """First checkout whose optimized/mlx has a venv and the CLI script."""
+    env = os.environ if env is None else env
+    home = pathlib.Path.home() if home is None else home
+    for checkout in _checkout_candidates(env, home):
         mlx_dir = checkout / "optimized" / "mlx"
         python = mlx_dir / ".venv" / "bin" / "python"
         script = mlx_dir / "scripts" / "sa3_mlx.py"
         if python.is_file() and script.is_file():
             return mlx_dir
     return None
+
+
+def readiness(env: dict | None = None, home: pathlib.Path | None = None) -> dict:
+    """The SA3 install state for the model manager (issue #43).
+
+    Walks the same candidates as `resolve_mlx_dir` and classifies the first
+    checkout that has an `optimized/mlx` dir:
+
+      - ``missing``       no checkout with an ``optimized/mlx`` dir
+      - ``venv_missing``  checkout present, but no ``.venv``/CLI script
+      - ``not_warmed``    venv present, but the ``.lsdj-warmed`` stamp is absent
+      - ``ready``         venv present and warmed
+
+    Returns ``{"state", "checkout", "mlx_dir"}`` (paths are str or None). The
+    Rust `model_status` mirrors this exact logic and these exact identifiers.
+    """
+    env = os.environ if env is None else env
+    home = pathlib.Path.home() if home is None else home
+
+    first_with_mlx: tuple[pathlib.Path, pathlib.Path] | None = None
+    for checkout in _checkout_candidates(env, home):
+        mlx_dir = checkout / "optimized" / "mlx"
+        if not mlx_dir.is_dir():
+            continue
+        if first_with_mlx is None:
+            first_with_mlx = (checkout, mlx_dir)
+        python = mlx_dir / ".venv" / "bin" / "python"
+        script = mlx_dir / "scripts" / "sa3_mlx.py"
+        if not (python.is_file() and script.is_file()):
+            continue
+        warmed = (mlx_dir / WARMED_STAMP).is_file()
+        return {
+            "state": STATE_READY if warmed else STATE_NOT_WARMED,
+            "checkout": str(checkout),
+            "mlx_dir": str(mlx_dir),
+        }
+
+    if first_with_mlx is not None:
+        checkout, mlx_dir = first_with_mlx
+        return {
+            "state": STATE_VENV_MISSING,
+            "checkout": str(checkout),
+            "mlx_dir": str(mlx_dir),
+        }
+    return {"state": STATE_MISSING, "checkout": None, "mlx_dir": None}
 
 
 async def generate(prompt: str, seconds: float, kind: str) -> bytes:

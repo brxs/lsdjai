@@ -20,7 +20,7 @@ import {
 import { createLoudnessTracker, trimDbFor } from '../audio/master'
 import { STYLE_SAMPLE_SECONDS } from '../audio/styleSample'
 import { useAudioEngine } from '../audio/engineContext'
-import { getApiBaseUrl } from '../audio/nativeEngine'
+import { getApiBaseUrl, subscribeModelsChanged } from '../audio/nativeEngine'
 import {
   sendNativeDeckCommand,
   subscribeSidecarStatus,
@@ -453,27 +453,33 @@ export function useDeck(deckId: DeckId): DeckControls {
       bandScroller.push(samples)
     })
     // The model list + RAM info come from the generation server so the model
-    // picker populates and the RAM warning works.
+    // picker populates and the RAM warning works. Re-fetched when the model
+    // manager installs or removes a Magenta model (`models://changed`, issue #43).
     let cancelled = false
-    void getApiBaseUrl()
-      .then((base) => fetch(`${base}/api/models`))
-      .then((response) => (response.ok ? response.json() : null))
-      .then((info) => {
-        if (cancelled || !info) return
-        dispatch({
-          type: 'deck_info',
-          models: info.models,
-          ramInfo: {
-            totalGb: info.total_ram_gb,
-            estimateGbByModel: info.model_ram_estimate_gb,
-          },
+    const fetchModels = () => {
+      void getApiBaseUrl()
+        .then((base) => fetch(`${base}/api/models`))
+        .then((response) => (response.ok ? response.json() : null))
+        .then((info) => {
+          if (cancelled || !info) return
+          dispatch({
+            type: 'deck_info',
+            models: info.models,
+            ramInfo: {
+              totalGb: info.total_ram_gb,
+              estimateGbByModel: info.model_ram_estimate_gb,
+            },
+          })
         })
-      })
-      .catch(() => {})
+        .catch(() => {})
+    }
+    fetchModels()
+    const unsubscribeModels = subscribeModelsChanged(fetchModels)
     return () => {
       cancelled = true
       unsubscribeStatus()
       unsubscribePcm()
+      unsubscribeModels()
       channelRef.current?.dispose()
       channelRef.current = null
       channelPromiseRef.current = null

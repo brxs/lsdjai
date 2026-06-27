@@ -40,6 +40,7 @@ use tauri::Manager;
 mod commands;
 mod generation;
 mod library;
+mod models;
 mod samples;
 mod sidecar;
 mod songs;
@@ -393,6 +394,11 @@ pub fn run() {
         // webview can't download, so songs are written to disk and opened natively.
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // Relocate the Magenta model weights out of ~/Documents (which users
+            // may sync to iCloud) into the app-owned data dir, migrating a prior
+            // install. MUST run before any backend process spawns so they — and
+            // magenta_rt.paths, read at import — inherit MAGENTA_HOME (issue #43).
+            models::ensure_magenta_home();
             // Start the audio host (engine + render thread + device), then spawn
             // the per-deck inference sidecars fed by the deck handles. Everything
             // is held in managed state for the app's lifetime.
@@ -430,6 +436,11 @@ pub fn run() {
             // change (a deck auto-saving a sample, a hand-drop/-delete); Rust owns the
             // watch and emits `library://changed` (ADR-0022).
             watcher::watch_libraries(app.handle().clone(), songs_dir, samples_dir);
+            // The in-app model manager (issue #43): own the install lifecycle and
+            // watch the Magenta models dir so the manager + deck picker live-reload
+            // when a model folder appears/disappears (`models://changed`).
+            app.manage(models::InstallManager::new());
+            watcher::watch_models(app.handle().clone(), models::magenta_models_dir());
             app.manage(host);
             app.manage(audio_state);
             app.manage(sidecars);
@@ -498,6 +509,10 @@ pub fn run() {
             commands::deck_embed_sample,
             commands::subscribe_deck_pcm,
             commands::unsubscribe_deck_pcm,
+            models::model_status,
+            models::install_model,
+            models::cancel_install,
+            models::open_model_folder,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -512,6 +527,7 @@ pub fn run() {
                 use tauri::Manager;
                 app.state::<generation::GenerationServer>().shutdown();
                 app.state::<sidecar::Sidecars>().shutdown();
+                app.state::<models::InstallManager>().shutdown();
             }
         });
 }

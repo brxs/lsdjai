@@ -4,12 +4,14 @@ default:
     @just --list
 
 # One-time setup: backend deps, all model weights (both Magenta deck
-# models + Stable Audio 3), frontend deps + build.
+# models + Stable Audio 3), frontend deps + build. Magenta weights go to the
+# app-owned data dir (~/Library/Application Support/LSDJai), matching where the
+# app reads them (MAGENTA_HOME); an existing MAGENTA_HOME override is honoured.
 setup:
     cd backend && uv sync
-    cd backend && uv run mrt models init
-    cd backend && uv run mrt models download mrt2_small
-    cd backend && uv run mrt models download mrt2_base
+    cd backend && MAGENTA_HOME="${MAGENTA_HOME:-$HOME/Library/Application Support/LSDJai}" uv run mrt models init
+    cd backend && MAGENTA_HOME="${MAGENTA_HOME:-$HOME/Library/Application Support/LSDJai}" uv run mrt models download mrt2_small
+    cd backend && MAGENTA_HOME="${MAGENTA_HOME:-$HOME/Library/Application Support/LSDJai}" uv run mrt models download mrt2_base
     just setup-sa3
     cd frontend && npm install
     cargo install tauri-cli
@@ -17,44 +19,59 @@ setup:
 
 # Stable Audio 3 (ADR-0012/0013): the pinned checkout, its venv, and a
 # warm-up clip per DiT so the weights (~8 GB, medium included) download
-# here and never inside a request. Idempotent; honours SA3_MLX_HOME and
-# an existing checkout, and leaves an existing checkout's commit alone.
+# here and never inside a request. The checkout lives in the app-owned data dir
+# (the resolver's only non-override location); $SA3_MLX_HOME overrides it.
+# Idempotent — an existing checkout is reused, its commit left alone. The repo +
+# commit are pinned in sa3-pin.json (the single bump point, shared with the in-app
+# installer); the build+warm steps live in scripts/sa3-install.sh.
 setup-sa3:
     #!/usr/bin/env bash
     set -euo pipefail
-    checkout="${SA3_MLX_HOME:-}"
-    if [ -z "$checkout" ]; then
-      for candidate in "$HOME/Documents/Magenta/stable-audio-3" "$HOME/Repos/stable-audio-3"; do
-        if [ -e "$candidate" ]; then checkout="$candidate"; break; fi
-      done
-    fi
-    if [ -z "$checkout" ]; then
-      checkout="$HOME/Repos/stable-audio-3"
-      git clone https://github.com/Stability-AI/stable-audio-3 "$checkout"
+    checkout="${SA3_MLX_HOME:-$HOME/Library/Application Support/LSDJai/stable-audio-3}"
+    if [ ! -e "$checkout" ]; then
+      repo="$(python3 -c 'import json; print(json.load(open("sa3-pin.json"))["repo"])')"
+      commit="$(python3 -c 'import json; print(json.load(open("sa3-pin.json"))["commit"])')"
+      git clone "$repo" "$checkout"
       # The CLI vocabulary the backend speaks is measured at this commit
-      # (backend/lsdj/sa3.py); a fresh clone honours the pin.
-      git -C "$checkout" checkout bccf5b7
+      # (sa3-pin.json, backend/lsdj/sa3.py); a fresh clone honours the pin.
+      git -C "$checkout" checkout "$commit"
     fi
-    mlx="$checkout/optimized/mlx"
-    if [ ! -x "$mlx/.venv/bin/python" ]; then
-      (cd "$mlx" && ./install.sh)
+    bash scripts/sa3-install.sh "$checkout"
+
+# Relocate existing model weights from the legacy ~/Documents/Magenta (or
+# $MAGENTA_HOME) location — and a ~/Repos Stable Audio 3 clone — into the
+# app-owned data dir (~/Library/Application Support/LSDJai), so model data is out
+# of any iCloud-synced Documents folder. Same-volume moves are instant. The app
+# also migrates the Magenta weights automatically on first launch; this is the
+# manual equivalent and also covers Stable Audio 3. Idempotent — an item whose
+# destination already exists is left alone.
+migrate-models:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    old="${MAGENTA_HOME:-$HOME/Documents/Magenta}"
+    new="$HOME/Library/Application Support/LSDJai"
+    mkdir -p "$new"
+    if [ -d "$old/magenta-rt-v2" ] && [ ! -e "$new/magenta-rt-v2" ]; then
+      echo "moving magenta-rt-v2 → $new/"
+      mv "$old/magenta-rt-v2" "$new/magenta-rt-v2"
+    else
+      echo "skip magenta-rt-v2 (source missing or destination exists)"
     fi
-    # The warm-ups exist to download weights; once stamped, repeat
-    # setups skip the three model loads (rm the stamp to re-warm).
-    stamp="$mlx/.lsdj-warmed"
-    if [ -f "$stamp" ]; then
-      echo "sa3 weights already warmed ($stamp)"
-      exit 0
+    if [ -e "$new/stable-audio-3" ]; then
+      echo "skip stable-audio-3 (destination exists)"
+    else
+      moved=0
+      for src in "$old/stable-audio-3" "$HOME/Repos/stable-audio-3"; do
+        if [ -d "$src" ]; then
+          echo "moving stable-audio-3 ($src) → $new/"
+          mv "$src" "$new/stable-audio-3"
+          moved=1
+          break
+        fi
+      done
+      [ "$moved" = 1 ] || echo "skip stable-audio-3 (no checkout found)"
     fi
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
-    for spec in "sm-sfx same-s" "sm-music same-s" "medium same-l"; do
-      set -- $spec
-      echo "warming $1/$2…"
-      (cd "$mlx" && .venv/bin/python scripts/sa3_mlx.py --prompt "setup warm-up" \
-        --dit "$1" --decoder "$2" --seconds 1 --steps 1 --out "$tmp/warm.wav")
-    done
-    touch "$stamp"
+    echo "done — model data now lives under $new"
 
 # Build the frontend into frontend/dist (the Tauri webview loads it via
 # tauri.conf's frontendDist; tauri-dev / tauri-build depend on this).

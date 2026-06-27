@@ -248,5 +248,40 @@
       "top": "Top bar",
       "off": "Off"
     }
+  },
+  "settings": {
+    "open": "Settings",
+    "title": "Settings",
+    "close": "Close",
+    "appearance": "Appearance"
+  },
+  "modelManager": {
+    "loading": "Reading model status…",
+    "magenta": "Magenta deck models",
+    "sa3": "Stable Audio 3",
+    "none": "No models installed",
+    "notInstalled": "Not installed",
+    "needsResources": "Needs shared resources — repair to enable loading",
+    "install": "Install",
+    "repair": "Repair",
+    "installing": "Installing…",
+    "cancel": "Cancel",
+    "openFolder": "Open folder",
+    "errorPrefix": "Install failed: {{message}}",
+    "sa3State": {
+      "missing": "Not installed",
+      "venv_missing": "Needs setup",
+      "not_warmed": "Weights not downloaded",
+      "ready": "Ready"
+    },
+    "stage": {
+      "init": "Fetching shared resources…",
+      "download": "Downloading…",
+      "fetch": "Downloading source…",
+      "extract": "Extracting…",
+      "install": "Building and warming…",
+      "done": "Done",
+      "error": "Failed"
+    }
   }
 }

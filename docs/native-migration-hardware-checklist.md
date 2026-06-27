@@ -155,3 +155,36 @@ status arrives as `sidecar://status` events (`useDeck` selects this with
         `list_output_devices` / `set_output_device` dropdown in the mixer's Phones
         section that opens the chosen device (cue on 3/4 of a ≥4-channel device)
         and switches live.
+
+## Part 8 — In-app model manager (issue #43)
+
+The model manager (settings-drawer panel) installs both model families with no
+terminal. The download/install paths cannot be reached by cargo/vitest/pytest
+(real multi-GB weights, the packaged frozen bundle, the SA3 uv/venv build), so a
+human verifies them here. Run with `just tauri-dev` for dev paths; the packaged
+checks need a `just tauri-build` bundle on a clean machine (no `~/Documents/
+Magenta`, no `~/Repos/stable-audio-3`).
+
+- [ ] Open the settings drawer from the status bar; both families list with
+      installed-vs-missing status and on-disk size.
+- [ ] Install a missing Magenta model from the drawer (no terminal): progress
+      streams, and when done the deck model picker offers it AND a deck actually
+      loads it — i.e. the shared `resources/` were fetched (`--init-resources`),
+      not just the two model files.
+- [ ] Packaged build only: the same install works from the frozen bundle
+      (`lsdj_infer --init-resources` / `--download-model`) — confirms
+      `huggingface_hub` / `fsspec` / `click` are collected (a missing fsspec
+      registration fails only here, never in CI).
+- [ ] Install the Stable Audio 3 stack from the drawer on a machine with no
+      checkout: tarball fetch → extract → `install.sh -y --python 3.11` → warm,
+      with staged progress and no git/tty prompt; SA3 generation then works.
+- [ ] Cancel an in-flight install: the child is killed and the partial dir is
+      cleaned (no half-written model folder, no spurious `models://changed`).
+- [ ] Drop a valid model folder into the models dir: it appears in the manager
+      and the picker once both files are present (the watcher), not before.
+- [ ] "Open models folder" reveals the models dir in Finder; removing a model
+      there is reflected live in the manager and the deck picker (the watcher).
+      (In-app deletion is intentionally absent — moving multi-GB weights to the
+      Trash fails on iCloud/dataless files, -8013.)
+- [ ] Quit mid-install: no orphaned install process (the `InstallManager` is torn
+      down from `RunEvent::Exit`, like the sidecars).

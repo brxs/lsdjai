@@ -58,19 +58,19 @@ class TestResolveMlxDir:
         )
         assert resolved == mlx_dir
 
-    def test_falls_back_to_conventional_homes(self, tmp_path):
-        mlx_dir = make_checkout(tmp_path / "Repos" / "stable-audio-3", SUCCESS_STUB)
+    def test_resolves_the_app_support_home(self, tmp_path):
+        # In-app installs (and `just setup-sa3`) put the checkout in the app-owned
+        # data dir — the only non-override candidate.
+        mlx_dir = make_checkout(
+            tmp_path / "Library" / "Application Support" / "LSDJai" / "stable-audio-3",
+            SUCCESS_STUB,
+        )
         assert sa3.resolve_mlx_dir(env={}, home=tmp_path) == mlx_dir
 
-    def test_documents_home_beats_repos(self, tmp_path):
-        make_checkout(tmp_path / "Repos" / "stable-audio-3", SUCCESS_STUB)
-        documents = make_checkout(
-            tmp_path / "Documents" / "Magenta" / "stable-audio-3", SUCCESS_STUB
-        )
-        assert sa3.resolve_mlx_dir(env={}, home=tmp_path) == documents
-
     def test_checkout_without_venv_is_skipped(self, tmp_path):
-        checkout = tmp_path / "Repos" / "stable-audio-3"
+        checkout = (
+            tmp_path / "Library" / "Application Support" / "LSDJai" / "stable-audio-3"
+        )
         (checkout / "optimized" / "mlx" / "scripts").mkdir(parents=True)
         (checkout / "optimized" / "mlx" / "scripts" / "sa3_mlx.py").write_text("#")
         assert sa3.resolve_mlx_dir(env={}, home=tmp_path) is None

@@ -11,6 +11,7 @@
 //! - A short debounce coalesces a burst (one save fires several create/modify
 //!   events; a deck saving four freezes fires more) into one emit per library.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -95,6 +96,51 @@ pub fn watch_libraries(app: AppHandle, songs_dir: PathBuf, samples_dir: PathBuf)
             }
         })
         .expect("failed to spawn lsdj library-watch thread");
+}
+
+/// Watch the Magenta models dir and emit `models://changed` when the set of
+/// *complete* models changes — a model folder dropped in (issue #43), an install
+/// finishing, or a delete. Unlike the flat library watch, models are nested
+/// subdirs (`<name>/<name>.mlxfn` + `<name>_state.safetensors`), so this watches
+/// RECURSIVELY and keys on the two-file discovery convention rather than a flat
+/// audio file: it re-scans after each settled burst and emits only when the
+/// complete-model set actually changed, so a half-written / partial folder never
+/// fires. Best-effort, like [`watch_libraries`].
+pub fn watch_models(app: AppHandle, models_dir: PathBuf) {
+    std::thread::Builder::new()
+        .name("lsdj-models-watch".into())
+        .spawn(move || {
+            let _ = std::fs::create_dir_all(&models_dir);
+            let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
+            let mut watcher = match notify::recommended_watcher(tx) {
+                Ok(w) => w,
+                Err(e) => {
+                    eprintln!("lsdj-app: models watcher unavailable ({e}); manager re-lists on open");
+                    return;
+                }
+            };
+            if let Err(e) = watcher.watch(&models_dir, RecursiveMode::Recursive) {
+                eprintln!("lsdj-app: cannot watch {} ({e})", models_dir.display());
+                return;
+            }
+
+            let mut last: BTreeSet<String> =
+                crate::models::discover_installed(&models_dir).into_iter().collect();
+            loop {
+                if rx.recv().is_err() {
+                    return; // the watcher (sole sender) was dropped — app shutdown.
+                }
+                // Coalesce the burst, then re-scan once it settles.
+                while rx.recv_timeout(DEBOUNCE).is_ok() {}
+                let now: BTreeSet<String> =
+                    crate::models::discover_installed(&models_dir).into_iter().collect();
+                if now != last {
+                    last = now;
+                    let _ = app.emit("models://changed", ());
+                }
+            }
+        })
+        .expect("failed to spawn lsdj models-watch thread");
 }
 
 /// Classify one FS event: `(touched_songs, touched_samples)`. Only an audio-file
