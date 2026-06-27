@@ -1,6 +1,6 @@
 # 0023. MIDI note and drum conditioning over the deck control channel
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-27
 - **Deciders:** Daniel Peter
 
