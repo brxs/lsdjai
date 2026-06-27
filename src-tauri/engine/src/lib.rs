@@ -65,7 +65,8 @@ use ring::{new_deck_ring, RingConsumer, RingProducer};
 use telemetry::Telemetry;
 
 /// Output sample rate. The engine renders at exactly this rate; the device
-/// wrapper requires an exact-match device config (resampling is out of scope).
+/// wrapper opens a matching 48000 config bit-exact, or resamples to a device
+/// that cannot do 48000 (e.g. a 44100 Bluetooth speaker — ADR-0029).
 pub const SAMPLE_RATE: u32 = 48_000;
 
 /// Output channel count (interleaved stereo).

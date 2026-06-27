@@ -338,6 +338,22 @@ impl OutputConsumer {
             self.telemetry.note_output_underrun();
         }
     }
+
+    /// Test-only: a fresh output ring's producer + consumer (with throwaway
+    /// telemetry) so other modules' tests can drive `drain_into` against a real
+    /// wait-free ring (e.g. the device-side resampler). `capacity_frames` is in
+    /// stereo frames.
+    #[cfg(test)]
+    pub(crate) fn new_test_pair(capacity_frames: usize) -> (Producer<f32>, OutputConsumer) {
+        let (tx, rx) = RingBuffer::<f32>::new(capacity_frames * CHANNELS as usize);
+        (
+            tx,
+            OutputConsumer {
+                consumer: rx,
+                telemetry: Arc::new(Telemetry::new()),
+            },
+        )
+    }
 }
 
 /// A freshly-built output ring producer (master OR cue) for an output-device
