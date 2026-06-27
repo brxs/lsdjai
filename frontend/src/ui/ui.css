@@ -100,11 +100,13 @@
   border: 1px solid var(--color-border);
   background: var(--color-surface-inset);
   color: var(--color-text);
-  /* Strip native field metrics (a bare <input> is otherwise a touch taller than
-     a select/button) and let the shared line box + padding decide the height. */
+  /* Strip native field metrics and pin the box to the same height a button
+     resolves to, so a bare <input> (which keeps a native min-height even with
+     appearance:none) lines up with the selects and the Compose button. */
   appearance: none;
   -webkit-appearance: none;
   box-sizing: border-box;
+  height: var(--control-height);
 }
 
 .ui-field__input:focus {
