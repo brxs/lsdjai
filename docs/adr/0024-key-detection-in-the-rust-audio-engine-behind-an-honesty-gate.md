@@ -1,6 +1,6 @@
 # 0024. Key detection in the Rust audio engine, behind an honesty gate
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-27
 - **Deciders:** Daniel Peter
 

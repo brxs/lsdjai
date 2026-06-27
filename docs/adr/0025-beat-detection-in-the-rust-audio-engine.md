@@ -1,6 +1,6 @@
 # 0025. Beat detection in the Rust audio engine
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-27
 - **Deciders:** Daniel Peter
 
