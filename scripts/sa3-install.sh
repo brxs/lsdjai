@@ -4,9 +4,8 @@
 # request. Idempotent — the `.lsdj-warmed` stamp, written ONLY here, gates
 # re-warming (rm it to re-warm).
 #
-# Shared by `just setup-sa3` (after a git clone) and the in-app model manager
-# (the Rust shell, after a tarball extract), so the build steps cannot drift.
-# Both pass the checkout ROOT (the dir that contains `optimized/mlx`).
+# Run by the in-app model manager (the Rust shell, after a tarball extract). Pass
+# the checkout ROOT (the dir that contains `optimized/mlx`).
 #
 # Usage: scripts/sa3-install.sh <checkout_root>
 set -euo pipefail

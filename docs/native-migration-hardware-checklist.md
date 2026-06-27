@@ -5,7 +5,8 @@ Tauri webview, real audio devices, the FLX4, the model sidecars, and packaging.
 Per [`CLAUDE.md`](../CLAUDE.md), a human ticks these before the work is "done".
 
 Run the native stack with `just tauri-dev` (Tauri app + sidecars; needs
-`just setup` for backend deps + model weights).
+`just setup` for backend deps — install model weights in-app from the settings
+drawer).
 
 ## Part 2 — MIDI (`tauri-plugin-midi`)
 

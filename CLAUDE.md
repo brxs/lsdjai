@@ -12,7 +12,8 @@ native Tauri app. See [`README.md`](README.md) for the full overview,
 All common tasks live in the root [`justfile`](justfile) — run `just` to list
 them.
 
-- `just setup` — backend deps, model weights, frontend deps + build
+- `just setup` — backend deps, frontend deps + build (install model weights
+  in-app, from the settings drawer)
 - `just tauri-dev` — run the native app (the generation server binds an
   ephemeral loopback port)
 - `just tauri-build` — build the distributable native app
@@ -44,10 +45,11 @@ Underlying tools: uv + pytest + ruff in `backend/`, npm + vitest + eslint in
   `~/Library/Application Support/LSDJai/magenta-rt-v2` (kept out of `~/Documents`,
   which users may sync to iCloud; `MAGENTA_HOME` overrides the base). The app sets
   `MAGENTA_HOME` at startup and migrates a prior `~/Documents/Magenta` install
-  once (`models::ensure_magenta_home`); `just setup` downloads to the same place.
-  First run needs `uv run mrt models init` + `uv run mrt models download
-  mrt2_small`. Only `backend/lsdj/engine.py` may import `magenta_rt` (ADR-0002);
-  measured API facts are in `docs/spike-mrt2.md`.
+  once (`models::ensure_magenta_home`). Install models **in-app** from the
+  settings drawer (the model manager, issue #43) — there is no `just`/terminal
+  install path; `just migrate-models` only relocates an existing install. Only
+  `backend/lsdj/engine.py` may import `magenta_rt` (ADR-0002); measured API facts
+  are in `docs/spike-mrt2.md`.
 - Changes that touch hardware behaviour cannot be fully verified by tests:
   add/extend a checklist in `docs/` (e.g. `m12-hardware-checklist.md`) and have
   a human tick it before calling the work done.

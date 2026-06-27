@@ -3,40 +3,15 @@
 default:
     @just --list
 
-# One-time setup: backend deps, all model weights (both Magenta deck
-# models + Stable Audio 3), frontend deps + build. Magenta weights go to the
-# app-owned data dir (~/Library/Application Support/LSDJai), matching where the
-# app reads them (MAGENTA_HOME); an existing MAGENTA_HOME override is honoured.
+# One-time setup: backend deps, frontend deps + build. Model weights are NOT
+# downloaded here — install them in-app from the settings drawer (the model
+# manager, issue #43), which is the only install path. A dev's first
+# `just tauri-dev` shows empty decks until a model is installed.
 setup:
     cd backend && uv sync
-    cd backend && MAGENTA_HOME="${MAGENTA_HOME:-$HOME/Library/Application Support/LSDJai}" uv run mrt models init
-    cd backend && MAGENTA_HOME="${MAGENTA_HOME:-$HOME/Library/Application Support/LSDJai}" uv run mrt models download mrt2_small
-    cd backend && MAGENTA_HOME="${MAGENTA_HOME:-$HOME/Library/Application Support/LSDJai}" uv run mrt models download mrt2_base
-    just setup-sa3
     cd frontend && npm install
     cargo install tauri-cli
     just build
-
-# Stable Audio 3 (ADR-0012/0013): the pinned checkout, its venv, and a
-# warm-up clip per DiT so the weights (~8 GB, medium included) download
-# here and never inside a request. The checkout lives in the app-owned data dir
-# (the resolver's only non-override location); $SA3_MLX_HOME overrides it.
-# Idempotent — an existing checkout is reused, its commit left alone. The repo +
-# commit are pinned in sa3-pin.json (the single bump point, shared with the in-app
-# installer); the build+warm steps live in scripts/sa3-install.sh.
-setup-sa3:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    checkout="${SA3_MLX_HOME:-$HOME/Library/Application Support/LSDJai/stable-audio-3}"
-    if [ ! -e "$checkout" ]; then
-      repo="$(python3 -c 'import json; print(json.load(open("sa3-pin.json"))["repo"])')"
-      commit="$(python3 -c 'import json; print(json.load(open("sa3-pin.json"))["commit"])')"
-      git clone "$repo" "$checkout"
-      # The CLI vocabulary the backend speaks is measured at this commit
-      # (sa3-pin.json, backend/lsdj/sa3.py); a fresh clone honours the pin.
-      git -C "$checkout" checkout "$commit"
-    fi
-    bash scripts/sa3-install.sh "$checkout"
 
 # Relocate existing model weights from the legacy ~/Documents/Magenta (or
 # $MAGENTA_HOME) location — and a ~/Repos Stable Audio 3 clone — into the
@@ -84,9 +59,9 @@ build:
 # this must happen here, not in tauri.conf's beforeDevCommand, because Tauri runs
 # that hook from the repo root and a fresh dist is required or the decks hang in
 # 'Connecting'. Needs cargo-tauri (`cargo install tauri-cli@^2`) and the backend
-# deps + model weights (`just setup`). The default `uv run` sidecar/generation
-# commands use the backend project dir; override with LSDJ_SIDECAR_CMD /
-# LSDJ_GENERATION_CMD (e.g. the packaged binaries).
+# deps (`just setup`); install model weights in-app from the settings drawer. The
+# default `uv run` sidecar/generation commands use the backend project dir;
+# override with LSDJ_SIDECAR_CMD / LSDJ_GENERATION_CMD (e.g. the packaged binaries).
 tauri-dev: build
     cd src-tauri && LSDJ_SIDECARS=1 cargo tauri dev
 

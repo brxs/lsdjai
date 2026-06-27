@@ -39,10 +39,8 @@ MAX_PROMPT_LENGTH = 32000
 TIMEOUT_SECONDS = 120
 
 SETUP_HINT = (
-    "sa3_mlx checkout not found - run `just setup-sa3` (clones "
-    "https://github.com/Stability-AI/stable-audio-3, installs its MLX venv, "
-    "and pre-warms all three DiTs' weights, ~8 GB), or point SA3_MLX_HOME "
-    "at an existing checkout"
+    "sa3_mlx checkout not found - install Stable Audio 3 from the app's settings "
+    "drawer (the model manager), or point SA3_MLX_HOME at an existing checkout"
 )
 
 
@@ -79,8 +77,8 @@ WARMED_STAMP = ".lsdj-warmed"
 
 def _checkout_candidates(env: dict, home: pathlib.Path) -> list[pathlib.Path]:
     """Checkout roots to probe, in order. $SA3_MLX_HOME wins (pointing at the
-    checkout root); otherwise the app-owned data dir, where in-app installs (and
-    `just setup-sa3`) put the checkout. Mirrors the Rust `models::sa3_candidates`."""
+    checkout root); otherwise the app-owned data dir, where the in-app installer
+    puts the checkout. Mirrors the Rust `models::sa3_candidates`."""
     candidates = []
     override = env.get("SA3_MLX_HOME", "")
     if override:

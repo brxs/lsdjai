@@ -67,12 +67,12 @@ with the Developer ID + the same entitlements, or sign the whole `.app` tree wit
 bundle (Spike B measured ~23 s cold, ~1 s thereafter); notarization is what keeps
 that a one-time cost rather than a per-launch block.
 
-## 4. First-run model download (preserving `just setup`)
+## 4. First-run model install (the in-app model manager)
 
-The weights live outside the bundle at `$MAGENTA_HOME/magenta-rt-v2` (default
-`~/Documents/Magenta`; see [`CLAUDE.md`](../CLAUDE.md)). `just setup` runs
-`uv run mrt models init` + `uv run mrt models download mrt2_small`. The packaged
-app preserves this flow on first run:
+The weights live outside the bundle at `$MAGENTA_HOME/magenta-rt-v2` (default the
+app-owned `~/Library/Application Support/LSDJai`; see [`CLAUDE.md`](../CLAUDE.md)).
+There is no terminal install path — models install **in-app** from the settings
+drawer (issue #43). The packaged app follows this flow on first run:
 
 1. On launch, check whether `$MAGENTA_HOME/magenta-rt-v2/<model>` exists.
 2. If absent, show the first-run download screen instead of the decks (the
@@ -106,7 +106,6 @@ fresh install and later top-ups:
   (`~/Library/Application Support/LSDJai/stable-audio-3`, the resolver's first
   candidate): the Rust shell fetches the pinned source
   ([`sa3-pin.json`](../sa3-pin.json)) as a tarball (`curl`), extracts it (`tar`),
-  and runs [`scripts/sa3-install.sh`](../scripts/sa3-install.sh) — the same
-  build+warm steps `just setup-sa3` uses (`install.sh -y --python 3.11`, no git,
-  no tty, no system Python 3.11). Both families' weights move there with
-  `just migrate-models`.
+  and runs [`scripts/sa3-install.sh`](../scripts/sa3-install.sh) — build+warm
+  steps with no git, no tty, no system Python 3.11 (`install.sh -y --python
+  3.11`). Both families' weights move there with `just migrate-models`.
