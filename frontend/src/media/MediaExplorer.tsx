@@ -903,6 +903,9 @@ export function MediaExplorer({
                     }`}
                   >
                     <span className="media__name">
+                      {track.state === 'pending' && (
+                        <span className="media__spinner" aria-hidden="true" />
+                      )}
                       <span className="media__name-text">
                         {track.state === 'pending'
                           ? t('media.generate.pending', { title: track.title })
@@ -922,19 +925,6 @@ export function MediaExplorer({
                         (deck) => void loadGeneratedTrack(deck, track),
                         rowLabel,
                       )}
-                    {track.state === 'ready' && track.prompt != null && (
-                      <Button
-                        aria-label={t('media.generate.inspect', { name: rowLabel })}
-                        lit={expandedId === track.id}
-                        onClick={() =>
-                          setExpandedId((current) =>
-                            current === track.id ? null : track.id,
-                          )
-                        }
-                      >
-                        🔍
-                      </Button>
-                    )}
                     {track.state === 'ready' && (
                       <Button
                         aria-label={t('media.remove', { name: rowLabel })}
@@ -943,11 +933,23 @@ export function MediaExplorer({
                         ✕
                       </Button>
                     )}
-                    {track.state === 'ready' &&
-                      track.prompt != null &&
-                      expandedId === track.id && (
-                        <p className="media__prompt">{prettyPrompt(track.prompt)}</p>
-                      )}
+                    {track.state === 'ready' && track.prompt != null && (
+                      <button
+                        type="button"
+                        className={`media__prompt${
+                          expandedId === track.id ? ' media__prompt--expanded' : ''
+                        }`}
+                        aria-expanded={expandedId === track.id}
+                        aria-label={t('media.generate.inspect', { name: rowLabel })}
+                        onClick={() =>
+                          setExpandedId((current) =>
+                            current === track.id ? null : track.id,
+                          )
+                        }
+                      >
+                        {prettyPrompt(track.prompt)}
+                      </button>
+                    )}
                   </li>
                 )
               })}
@@ -1041,6 +1043,9 @@ export function MediaExplorer({
                     }`}
                   >
                     <span className="media__name">
+                      {sample.state === 'pending' && (
+                        <span className="media__spinner" aria-hidden="true" />
+                      )}
                       <span className="media__name-text">
                         {sample.state === 'pending'
                           ? t('media.generate.pending', { title: sample.title })
@@ -1057,19 +1062,6 @@ export function MediaExplorer({
                     </span>
                     {sample.state === 'ready' &&
                       loadButtons((deck) => void loadSample(deck, sample), rowLabel)}
-                    {sample.state === 'ready' && sample.prompt != null && (
-                      <Button
-                        aria-label={t('media.generate.inspect', { name: rowLabel })}
-                        lit={expandedId === sample.id}
-                        onClick={() =>
-                          setExpandedId((current) =>
-                            current === sample.id ? null : sample.id,
-                          )
-                        }
-                      >
-                        🔍
-                      </Button>
-                    )}
                     {sample.state === 'ready' && (
                       <Button
                         aria-label={t('media.remove', { name: rowLabel })}
@@ -1078,11 +1070,23 @@ export function MediaExplorer({
                         ✕
                       </Button>
                     )}
-                    {sample.state === 'ready' &&
-                      sample.prompt != null &&
-                      expandedId === sample.id && (
-                        <p className="media__prompt">{prettyPrompt(sample.prompt)}</p>
-                      )}
+                    {sample.state === 'ready' && sample.prompt != null && (
+                      <button
+                        type="button"
+                        className={`media__prompt${
+                          expandedId === sample.id ? ' media__prompt--expanded' : ''
+                        }`}
+                        aria-expanded={expandedId === sample.id}
+                        aria-label={t('media.generate.inspect', { name: rowLabel })}
+                        onClick={() =>
+                          setExpandedId((current) =>
+                            current === sample.id ? null : sample.id,
+                          )
+                        }
+                      >
+                        {prettyPrompt(sample.prompt)}
+                      </button>
+                    )}
                   </li>
                 )
               })}

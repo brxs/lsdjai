@@ -289,7 +289,11 @@ describe('MediaExplorer', () => {
     vi.stubGlobal('__TAURI__', { core: { invoke }, event: { listen } })
     renderExplorer()
     fireEvent.click(screen.getByRole('tab', { name: 'Samples' }))
-    expect(await screen.findByText('one')).toBeInTheDocument()
+    // Scope to the name cell: a take whose title equals its prompt now shows the
+    // text twice (the name and the always-visible prompt line).
+    expect(
+      await screen.findByText('one', { selector: '.media__name-text' }),
+    ).toBeInTheDocument()
     expect(screen.getByText('#1')).toBeInTheDocument()
 
     // A deck saves a second sample → the watcher fires → the tab re-lists.
@@ -300,9 +304,11 @@ describe('MediaExplorer', () => {
     await act(async () => {
       onChange?.({ payload: { library: 'samples' } })
     })
-    expect(await screen.findByText('two')).toBeInTheDocument()
+    expect(
+      await screen.findByText('two', { selector: '.media__name-text' }),
+    ).toBeInTheDocument()
     // The pre-existing row kept its identity across the reload (no id churn).
-    expect(screen.getByText('one')).toBeInTheDocument()
+    expect(screen.getByText('one', { selector: '.media__name-text' })).toBeInTheDocument()
     expect(screen.getByText('#1')).toBeInTheDocument()
     expect(screen.getByText('#2')).toBeInTheDocument()
   })
@@ -401,7 +407,11 @@ describe('MediaExplorer', () => {
     renderExplorer()
     fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
     // The composed take comes back as its title + a kept-visible #id tag…
-    expect(await screen.findByText('late night dub')).toBeInTheDocument()
+    // (scoped to the name: this take's title equals its prompt, which the prompt
+    // line also renders.)
+    expect(
+      await screen.findByText('late night dub', { selector: '.media__name-text' }),
+    ).toBeInTheDocument()
     expect(screen.getByText('#1')).toBeInTheDocument()
     // …and the hand-added one is marked Imported (no model).
     expect(screen.getByText('mixtape')).toBeInTheDocument()
@@ -480,7 +490,7 @@ describe('MediaExplorer', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Trash is unavailable')
   })
 
-  it('reveals the full prompt behind the 🔍 button and toggles it off', async () => {
+  it('shows the prompt inline and expands the full text on click', async () => {
     const prompt = 'deep rolling dub techno with tape hiss and a long modular intro'
     const invoke = vi.fn(async (cmd: string) => {
       if (cmd === 'list_generated_songs') {
@@ -491,19 +501,22 @@ describe('MediaExplorer', () => {
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
     fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
-    const lupe = await screen.findByRole('button', {
+    const promptLine = await screen.findByRole('button', {
       name: 'Show the full prompt for Dub Reverie #1',
     })
-    // The full prompt block isn't rendered until asked (the row only shows the title).
-    expect(document.querySelector('.media__prompt')).toBeNull()
-    fireEvent.click(lupe)
-    expect(document.querySelector('.media__prompt')).toHaveTextContent(prompt)
+    // The prompt now rides its own line for context (CSS truncates it), collapsed
+    // at first; the toggle is the text itself rather than a separate 🔍 button.
+    expect(promptLine).toHaveTextContent(prompt)
+    expect(promptLine).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(promptLine)
+    expect(promptLine).toHaveAttribute('aria-expanded', 'true')
+    expect(promptLine.className).toContain('media__prompt--expanded')
     // Clicking again collapses it.
-    fireEvent.click(lupe)
-    expect(document.querySelector('.media__prompt')).toBeNull()
+    fireEvent.click(promptLine)
+    expect(promptLine).toHaveAttribute('aria-expanded', 'false')
   })
 
-  it('pretty-prints a JSON prompt in the 🔍 inspector', async () => {
+  it('pretty-prints a JSON prompt in the inline prompt line', async () => {
     const minified = '{"title":"X","bpm":120}'
     const invoke = vi.fn(async (cmd: string) => {
       if (cmd === 'list_generated_songs') {

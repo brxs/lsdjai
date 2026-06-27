@@ -123,15 +123,58 @@
   cursor: pointer;
 }
 
-/* The 🔍-expanded full prompt: its own full-width line below the row. */
+/* The prompt rides its own full-width line below the row, always visible but
+   truncated to one line so it gives context at a glance; clicking the line
+   expands it to the full prompt (the old 🔍 toggle, now the text itself). */
 .media__prompt {
   flex-basis: 100%;
+  width: 100%;
   margin: 0;
   padding: var(--space-1) var(--space-2);
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
   font: 400 var(--text-s) var(--font-mono);
   color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.media__prompt:hover {
+  color: var(--color-text);
+}
+
+.media__prompt--expanded {
   white-space: pre-wrap;
+  overflow: visible;
   overflow-wrap: anywhere;
+}
+
+/* A quiet spinner while a take composes, so a long render reads as working,
+   not stuck. Decorative — the row text already says "composing…". */
+.media__spinner {
+  flex: none;
+  align-self: center;
+  width: 0.7rem;
+  height: 0.7rem;
+  border: 2px solid var(--color-border-strong);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: media-spin 0.8s linear infinite;
+}
+
+@keyframes media-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .media__spinner {
+    animation: none;
+  }
 }
 
 .media__meta {
