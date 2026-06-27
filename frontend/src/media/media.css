@@ -26,18 +26,13 @@
   gap: var(--space-1);
 }
 
-.media__live {
+/* Utility actions sit at the end of the header row (Open Folder for now), pushed
+   right so they clear the tabs and reclaim the line the live row used to take. */
+.media__header-actions {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   margin-left: auto;
-}
-
-.media__live-label {
-  font: var(--silkscreen);
-  letter-spacing: var(--silkscreen-spacing);
-  text-transform: uppercase;
-  color: var(--color-text-silkscreen);
 }
 
 .media__generate,
@@ -45,13 +40,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-}
-
-/* A utility action (Open songs folder) on its own line above the compose form, so it
-   isn't mistaken for part of the prompt/title inputs. */
-.media__generate-toolbar {
-  display: flex;
-  justify-content: flex-end;
 }
 
 .media__generate-row {

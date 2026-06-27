@@ -97,11 +97,44 @@
   border: 1px solid var(--color-border);
   background: var(--color-surface-inset);
   color: var(--color-text);
+  /* So a select and a text input land on the same height under identical
+     padding (the box, not the content, carries the border). */
+  box-sizing: border-box;
 }
 
 .ui-field__input:focus {
   outline: 1px solid var(--color-accent);
   outline-offset: -1px;
+}
+
+/* A native <select> renders taller than a text input from its built-in
+   appearance + dropdown arrow. Strip the native chrome so it matches
+   .ui-field__input exactly, and draw our own caret from a token colour. */
+.ui-select {
+  position: relative;
+  display: flex;
+  flex: 1;
+}
+
+.ui-select .ui-field__input {
+  flex: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  /* Leave room for the caret so a long option never slides under it. */
+  padding-right: calc(var(--space-3) + var(--space-4));
+}
+
+.ui-select__arrow {
+  position: absolute;
+  top: 50%;
+  right: var(--space-3);
+  width: 0;
+  height: 0;
+  transform: translateY(-50%);
+  border-left: 0.3rem solid transparent;
+  border-right: 0.3rem solid transparent;
+  border-top: 0.35rem solid var(--color-text-silkscreen);
+  pointer-events: none;
 }
 
 /* ---------- pickers: swatch + icon toggle groups ---------- */

@@ -25,21 +25,24 @@ export function Select({ label, value, options, disabled, onChange, onReopen }: 
       <label className="ui-field__label" htmlFor={id}>
         {label}
       </label>
-      <select
-        className="ui-field__input"
-        id={id}
-        value={value}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.value)}
-        onMouseDown={onReopen}
-        onFocus={onReopen}
-      >
-        {entries.map((entry) => (
-          <option key={entry.value} value={entry.value}>
-            {entry.label}
-          </option>
-        ))}
-      </select>
+      <div className="ui-select">
+        <select
+          className="ui-field__input"
+          id={id}
+          value={value}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.value)}
+          onMouseDown={onReopen}
+          onFocus={onReopen}
+        >
+          {entries.map((entry) => (
+            <option key={entry.value} value={entry.value}>
+              {entry.label}
+            </option>
+          ))}
+        </select>
+        <span className="ui-select__arrow" aria-hidden="true" />
+      </div>
     </div>
   )
 }

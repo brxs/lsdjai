@@ -191,7 +191,11 @@ function reListLibrary<
         .filter((pair): pair is readonly [string, R] => pair[0] != null),
     )
     const restored = entries.map((entry) => byFile.get(entry.file) ?? toRow(entry))
-    setRows((current) => [...restored, ...current.filter((row) => fileOf(row) == null)])
+    // Newest-first: in-session takes not yet on disk lead, above the restored
+    // library reversed so the most recently composed file sits at the top (the
+    // registry stores composition order, oldest first), sparing a scroll to the
+    // take you just made.
+    setRows((current) => [...current.filter((row) => fileOf(row) == null), ...restored.reverse()])
   })()
 }
 
@@ -232,9 +236,6 @@ type MediaExplorerProps = {
   /** Load a decoded-to-be track onto a deck — flips it to playback
    * mode (ADR-0013). Resolves false when the audio doesn't decode. */
   onLoadTrack: (deck: DeckId, wav: ArrayBuffer, title: string) => Promise<boolean>
-  /** Return a deck to its live stream — the guaranteed exit from
-   * playback, expressed as a load like everything else (ADR-0013). */
-  onLoadLive: (deck: DeckId) => void
   /** Load a saved sample into a deck loop slot (ADR-0022) — the first free
    * slot, as a loop or one-shot per the sample. Resolves false when every slot
    * is full, the deck isn't a live Realtime deck, or the body doesn't decode. */
@@ -257,7 +258,6 @@ export function MediaExplorer({
   onDeletePreset,
   onImportPresets,
   onLoadTrack,
-  onLoadLive,
   onLoadSample,
 }: MediaExplorerProps) {
   const { t } = useTranslation()
@@ -560,7 +560,6 @@ export function MediaExplorer({
     setSampleError(null)
     setSampleSaveError(null)
     setSamples((current) => [
-      ...current,
       {
         id,
         state: 'pending',
@@ -569,6 +568,7 @@ export function MediaExplorer({
         model: requestEngine,
         oneShot,
       },
+      ...current,
     ])
     void (async () => {
       try {
@@ -660,8 +660,8 @@ export function MediaExplorer({
     setGenerateError(null)
     setSaveError(null)
     setTracks((current) => [
-      ...current,
       { id, state: 'pending', title: songTitle, prompt: trimmedPrompt, model: requestEngine },
+      ...current,
     ])
     void (async () => {
       try {
@@ -804,12 +804,23 @@ export function MediaExplorer({
             </Button>
           ))}
         </div>
-        {/* The guaranteed exit from playback: the live stream is itself
-            a loadable item, so leaving is a load too (ADR-0013). */}
-        <div className="media__live">
-          <span className="media__live-label">{t('media.live')}</span>
-          {loadButtons(onLoadLive, t('media.live'))}
-        </div>
+        {/* Utility actions live in the header to save a row below the
+            tabs; the per-tab folder shortcut is the only one so far. */}
+        {(tab === 'generate' || tab === 'samples') && (
+          <div className="media__header-actions">
+            <Button
+              onClick={() =>
+                void (tab === 'generate' ? openSongsFolder() : openSamplesFolder())
+              }
+            >
+              {t(
+                tab === 'generate'
+                  ? 'media.generate.openFolder'
+                  : 'media.samples.openFolder',
+              )}
+            </Button>
+          </div>
+        )}
       </div>
 
       {tab === 'crates' && (
@@ -823,11 +834,6 @@ export function MediaExplorer({
 
       {tab === 'generate' && (
         <div className="media__generate">
-          <div className="media__generate-toolbar">
-            <Button onClick={() => void openSongsFolder()}>
-              {t('media.generate.openFolder')}
-            </Button>
-          </div>
           <div className="media__generate-row">
             <div className="media__title-field">
               <TextField
@@ -962,11 +968,6 @@ export function MediaExplorer({
 
       {tab === 'samples' && (
         <div className="media__generate">
-          <div className="media__generate-toolbar">
-            <Button onClick={() => void openSamplesFolder()}>
-              {t('media.samples.openFolder')}
-            </Button>
-          </div>
           <div className="media__generate-row">
             <div className="media__title-field">
               <TextField

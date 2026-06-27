@@ -10,7 +10,6 @@ import { MediaExplorer } from './MediaExplorer'
 type Handlers = {
   onLoadPreset?: (deck: DeckId, preset: StylePreset) => void
   onLoadTrack?: (deck: DeckId, wav: ArrayBuffer, title: string) => Promise<boolean>
-  onLoadLive?: (deck: DeckId) => void
   onLoadSample?: (
     deck: DeckId,
     wav: ArrayBuffer,
@@ -32,7 +31,6 @@ function renderExplorer(
         onDeletePreset={vi.fn()}
         onImportPresets={vi.fn()}
         onLoadTrack={handlers.onLoadTrack ?? vi.fn(async () => true)}
-        onLoadLive={handlers.onLoadLive ?? vi.fn()}
         onLoadSample={handlers.onLoadSample ?? vi.fn(async () => true)}
       />
     </ControlBusProvider>,
@@ -85,15 +83,6 @@ describe('MediaExplorer', () => {
     expect(
       screen.getByText("No presets yet — save a deck's style below its pad"),
     ).toBeInTheDocument()
-  })
-
-  it('offers the live stream as a loadable item — the exit from playback', () => {
-    const onLoadLive = vi.fn()
-    renderExplorer({ onLoadLive })
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Load Live stream to deck A' }),
-    )
-    expect(onLoadLive).toHaveBeenCalledWith('a')
   })
 
   it('composes an SA3 track and loads it onto a deck', async () => {
@@ -182,6 +171,8 @@ describe('MediaExplorer', () => {
     await composeTrack('first')
     await composeTrack('second')
 
+    // Newest sits at the top, so the rotary starts on 'second #2'; one step
+    // down lands on the older 'first #1'.
     act(() => bus.publish({ kind: 'browse_scroll', steps: 1 }))
     await act(async () => {
       bus.publish({ kind: 'browse_load', deck: 'a' })
@@ -189,7 +180,7 @@ describe('MediaExplorer', () => {
     expect(onLoadTrack).toHaveBeenCalledWith(
       'a',
       expect.any(ArrayBuffer),
-      'second #2',
+      'first #1',
     )
   })
 

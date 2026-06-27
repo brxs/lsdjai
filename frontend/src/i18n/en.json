@@ -40,7 +40,6 @@
       "samples": "Samples",
       "folder": "Folder"
     },
-    "live": "Live stream",
     "loadShort": "→ {{deck}}",
     "loadTo": "Load {{name}} to deck {{deck}}",
     "highlight": "Select {{name}}",
