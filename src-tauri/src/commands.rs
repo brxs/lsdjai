@@ -1094,3 +1094,16 @@ pub fn set_deck_cues(
         store.set_deck_cues(deck, cues);
     }
 }
+
+/// Mirror a playback deck's loaded-track identity into the store (`None` clears it
+/// on unload / a realtime deck). A read-back the webview writes up; no engine effect.
+#[tauri::command]
+pub fn set_deck_track(
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    track: Option<crate::store::TrackIdentitySnap>,
+) {
+    if valid_deck(deck) {
+        store.set_deck_track(deck, track);
+    }
+}

@@ -26,6 +26,7 @@ const deck = (): DeckSnap => ({
   model: null,
   playing: false,
   cues: [],
+  track: null,
 })
 
 const sample = (over: Partial<InterfaceState> = {}): InterfaceState => ({

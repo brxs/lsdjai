@@ -31,7 +31,7 @@
 
 use std::sync::Mutex;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
 use lsdj_engine::{EqBand, FxKind, DECK_COUNT};
@@ -89,6 +89,17 @@ pub struct FxSnap {
     pub amount: f32,
 }
 
+/// A loaded track's identity in the store (a playback-deck read-back the store
+/// mirrors). `Deserialize` too — it crosses as a `set_deck_track` command argument.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackIdentitySnap {
+    pub title: String,
+    /// Offline beat-tracker BPM, or `None` when the gate refuses a number.
+    pub bpm: Option<f64>,
+    pub duration_seconds: f64,
+}
+
 /// One deck's state in the store: the mixer channel plus the realtime-deck
 /// read-backs the store mirrors (model / playing). Not `Copy` — `model` is a
 /// `String`.
@@ -115,6 +126,9 @@ pub struct DeckSnap {
     /// with no track). ADR-0015's cue state moves here per ADR-0020; the webview
     /// owns the set/jump logic (jump is a plain seek) and mirrors the points up.
     pub cues: Vec<Option<f64>>,
+    /// The loaded track's identity on a playback deck (a read-back the store
+    /// mirrors), or `None` on a realtime deck / with no track.
+    pub track: Option<TrackIdentitySnap>,
 }
 
 impl Default for DeckSnap {
@@ -137,6 +151,7 @@ impl Default for DeckSnap {
             model: None,
             playing: false,
             cues: Vec::new(),
+            track: None,
         }
     }
 }
@@ -258,6 +273,12 @@ impl InterfaceState {
             d.cues = cues;
         }
     }
+
+    pub fn set_track(&mut self, deck: usize, track: Option<TrackIdentitySnap>) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.track = track;
+        }
+    }
 }
 
 /// The shell-level store: the locked [`InterfaceState`] plus the [`AppHandle`] used
@@ -353,6 +374,12 @@ impl InterfaceStore {
     pub fn set_deck_cues(&self, deck: usize, cues: Vec<Option<f64>>) {
         self.mutate(move |s| s.set_cues(deck, cues));
     }
+
+    /// Mirror the loaded track's identity (a playback-deck read-back). The webview
+    /// writes it on load / unload; `None` clears it.
+    pub fn set_deck_track(&self, deck: usize, track: Option<TrackIdentitySnap>) {
+        self.mutate(move |s| s.set_track(deck, track));
+    }
 }
 
 #[cfg(test)]
@@ -374,7 +401,28 @@ mod tests {
             assert_eq!(deck.model, None);
             assert!(!deck.playing);
             assert!(deck.cues.is_empty());
+            assert_eq!(deck.track, None);
         }
+    }
+
+    #[test]
+    fn track_identity_is_mirrored_and_cleared_per_deck() {
+        let mut state = InterfaceState::default();
+        state.set_track(
+            0,
+            Some(TrackIdentitySnap {
+                title: "Take 1".to_string(),
+                bpm: Some(128.0),
+                duration_seconds: 180.0,
+            }),
+        );
+        let track = state.decks[0].track.as_ref().unwrap();
+        assert_eq!(track.title, "Take 1");
+        assert_eq!(track.bpm, Some(128.0));
+        assert_eq!(state.decks[1].track, None);
+        // Unload clears it.
+        state.set_track(0, None);
+        assert_eq!(state.decks[0].track, None);
     }
 
     #[test]

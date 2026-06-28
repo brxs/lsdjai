@@ -24,6 +24,7 @@ import {
   getApiBaseUrl,
   setDeckCues,
   setDeckRealtime,
+  setDeckTrack,
   subscribeModelsChanged,
 } from '../audio/nativeEngine'
 import { fxKindFromSnap, useInterfaceStore } from '../audio/interfaceStore'
@@ -461,6 +462,20 @@ export function useDeck(deckId: DeckId): DeckControls {
   useEffect(() => {
     setDeckCues(deckIndex, track?.cues ?? [])
   }, [deckIndex, track?.cues])
+
+  // Mirror the loaded-track identity UP into the store (ADR-0020): title, BPM, and
+  // duration on a playback deck, null with no track. A write-only read-back mirror,
+  // keyed on the identity fields (not the whole track object) so cue/transport
+  // churn doesn't re-push it.
+  useEffect(() => {
+    setDeckTrack(
+      deckIndex,
+      track
+        ? { title: track.title, bpm: track.bpm, durationSeconds: track.duration }
+        : null,
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deckIndex, track?.title, track?.bpm, track?.duration])
 
   const [primed, setPrimedState] = useState(false)
   const primedRef = useRef(primed)

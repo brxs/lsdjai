@@ -248,6 +248,9 @@ export type DeckSnap = {
   /** Hot-cue points on the loaded track in track seconds, one per pad (empty with
    * no track). ADR-0015's cue state, mirrored here per ADR-0020. */
   cues: (number | null)[]
+  /** The loaded track's identity on a playback deck (a read-back the store
+   * mirrors), or null on a realtime deck / with no track. */
+  track: { title: string; bpm: number | null; durationSeconds: number } | null
 }
 
 /** The authoritative interface state the webview projects (mirrors Rust
@@ -284,6 +287,15 @@ export function setDeckRealtime(deck: number, model: string | null, playing: boo
  * Fire-and-forget. */
 export function setDeckCues(deck: number, cues: (number | null)[]): void {
   void invoke('set_deck_cues', { deck, cues }).catch(() => {})
+}
+
+/** Mirror a playback deck's loaded-track identity into the store (null clears it).
+ * A read-back the webview writes up; no engine effect. Fire-and-forget. */
+export function setDeckTrack(
+  deck: number,
+  track: { title: string; bpm: number | null; durationSeconds: number } | null,
+): void {
+  void invoke('set_deck_track', { deck, track }).catch(() => {})
 }
 
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }
