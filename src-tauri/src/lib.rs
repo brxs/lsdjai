@@ -40,6 +40,7 @@ use tauri::Manager;
 mod commands;
 mod generation;
 mod library;
+mod mcp;
 mod models;
 mod samples;
 mod sidecar;
@@ -204,17 +205,26 @@ struct AppInfo {
     /// The loopback port the generation server bound (`None` if disabled / not
     /// running). The webview builds the `/api/*` base URL from it (gap 2).
     generation_port: Option<u16>,
+    /// The loopback port the MCP server bound (`None` if `LSDJ_MCP` is unset / it
+    /// failed), and the per-session bearer token a client must present (ADR-0020
+    /// Phase 2). Surfaced so the client config can point at `http://127.0.0.1:
+    /// <mcpPort>/mcp` with `Authorization: Bearer <mcpToken>`.
+    mcp_port: Option<u16>,
+    mcp_token: Option<String>,
 }
 
 #[tauri::command]
 fn app_info(
     state: tauri::State<'_, AudioState>,
     generation: tauri::State<'_, generation::GenerationServer>,
+    mcp: tauri::State<'_, mcp::McpServer>,
 ) -> AppInfo {
     AppInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         audio_device_started: state.device_started,
         generation_port: generation.port(),
+        mcp_port: mcp.port(),
+        mcp_token: mcp.token(),
     }
 }
 
@@ -452,6 +462,11 @@ pub fn run() {
             app.manage(sidecars);
             app.manage(taps);
             app.manage(generation_server);
+            // The native MCP server (ADR-0020 Phase 2): an external agent as a
+            // co-DJ. Flag-gated (`LSDJ_MCP`), loopback-only, token-guarded; its
+            // tools mutate the same managed state the IPC commands do. Reaches that
+            // state through the cloned AppHandle.
+            app.manage(mcp::McpServer::start(app.handle().clone()));
             app.manage(IdleHandles(Mutex::new(idle_handles)));
             Ok(())
         })
@@ -544,6 +559,7 @@ pub fn run() {
                 app.state::<generation::GenerationServer>().shutdown();
                 app.state::<sidecar::Sidecars>().shutdown();
                 app.state::<models::InstallManager>().shutdown();
+                app.state::<mcp::McpServer>().shutdown();
             }
         });
 }

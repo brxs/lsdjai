@@ -1,0 +1,230 @@
+//! In-process MCP server (ADR-0020 Phase 2): an external AI agent (Claude Desktop /
+//! Claude Code) as a co-DJ. Hosted inside the Tauri process, **loopback-only**,
+//! **flag-gated** (`LSDJ_MCP`), guarded by a **per-session bearer token**. Tools
+//! mutate the one interface store (the same validated path UI and MIDI take), so an
+//! agent's move is reflected on screen (the bidirectional projection); resources
+//! read the store.
+//!
+//! Mirrors the generation server's spawn/supervise/shutdown discipline
+//! ([`crate::generation`]): a disabled or failed start just leaves the endpoint
+//! unadvertised (`port() == None`).
+
+use std::sync::Arc;
+
+use axum::extract::Request;
+use axum::http::{header::AUTHORIZATION, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
+use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::streamable_http_server::tower::{
+    StreamableHttpServerConfig, StreamableHttpService,
+};
+use rmcp::{tool, tool_handler, tool_router, ServerHandler};
+use serde::Deserialize;
+use tauri::{AppHandle, Manager};
+use tokio_util::sync::CancellationToken;
+
+use crate::store::InterfaceStore;
+use lsdj_engine::host::Host;
+
+/// The MCP request handler. Holds the [`AppHandle`] so a tool reaches the same
+/// Tauri-managed state (`Host`, `InterfaceStore`, sidecars) the IPC commands drive —
+/// no second copy of the control surface.
+#[derive(Clone)]
+pub struct McpHandler {
+    app: AppHandle,
+    tool_router: ToolRouter<Self>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct CrossfadeArgs {
+    /// Crossfader position, 0 = deck A, 1 = deck B.
+    position: f32,
+}
+
+#[tool_router]
+impl McpHandler {
+    pub fn new(app: AppHandle) -> Self {
+        Self {
+            app,
+            tool_router: Self::tool_router(),
+        }
+    }
+
+    /// Move the crossfader — forwarded to the engine and recorded in the store
+    /// exactly as the UI/MIDI `set_crossfade` command does, so the on-screen
+    /// crossfader follows (the bidirectional projection).
+    #[tool(description = "Set the crossfader position (0 = deck A, 1 = deck B).")]
+    async fn set_crossfade(
+        &self,
+        Parameters(CrossfadeArgs { position }): Parameters<CrossfadeArgs>,
+    ) -> String {
+        self.app.state::<Host>().set_crossfade(position);
+        self.app.state::<InterfaceStore>().set_crossfade(position);
+        format!("crossfade set to {position}")
+    }
+}
+
+#[tool_handler(router = self.tool_router)]
+impl ServerHandler for McpHandler {}
+
+/// The supervised MCP server: its chosen loopback port and per-session bearer token
+/// (both surfaced to the client via `app_info`), plus the cancellation token that
+/// stops the axum task. Held in Tauri managed state; dropping it (or `shutdown`)
+/// stops the server.
+pub struct McpServer {
+    port: Option<u16>,
+    token: Option<String>,
+    cancel: CancellationToken,
+}
+
+impl McpServer {
+    /// Start the MCP server, gated behind `LSDJ_MCP`. Never fails the app: a disabled
+    /// or failed start yields `port() == None` and the endpoint is simply
+    /// unadvertised. Binds `127.0.0.1` on an ephemeral port; every request must carry
+    /// the bearer token.
+    pub fn start(app: AppHandle) -> McpServer {
+        let cancel = CancellationToken::new();
+        if std::env::var("LSDJ_MCP").is_err() {
+            eprintln!("lsdj-app: MCP server disabled (set LSDJ_MCP=1 to enable)");
+            return McpServer {
+                port: None,
+                token: None,
+                cancel,
+            };
+        }
+
+        // Bind synchronously so the port is known before we advertise it; hand the
+        // std listener to tokio inside the task.
+        let listener = match std::net::TcpListener::bind(("127.0.0.1", 0)) {
+            Ok(listener) => listener,
+            Err(e) => {
+                eprintln!("lsdj-app: MCP server bind failed: {e}");
+                return McpServer {
+                    port: None,
+                    token: None,
+                    cancel,
+                };
+            }
+        };
+        let port = match listener.local_addr() {
+            Ok(addr) => addr.port(),
+            Err(e) => {
+                eprintln!("lsdj-app: MCP server local_addr failed: {e}");
+                return McpServer {
+                    port: None,
+                    token: None,
+                    cancel,
+                };
+            }
+        };
+        if let Err(e) = listener.set_nonblocking(true) {
+            eprintln!("lsdj-app: MCP server set_nonblocking failed: {e}");
+            return McpServer {
+                port: None,
+                token: None,
+                cancel,
+            };
+        }
+
+        let token = generate_token();
+
+        // The streamable-HTTP MCP service: a fresh handler per session, sharing the
+        // app's managed state through the cloned AppHandle.
+        let service = StreamableHttpService::new(
+            move || Ok(McpHandler::new(app.clone())),
+            Arc::new(LocalSessionManager::default()),
+            StreamableHttpServerConfig::default(),
+        );
+
+        let router = axum::Router::new()
+            .nest_service("/mcp", service)
+            .layer(axum::middleware::from_fn_with_state(token.clone(), require_token));
+
+        let serve_cancel = cancel.clone();
+        tauri::async_runtime::spawn(async move {
+            let listener = match tokio::net::TcpListener::from_std(listener) {
+                Ok(listener) => listener,
+                Err(e) => {
+                    eprintln!("lsdj-app: MCP server tokio listener failed: {e}");
+                    return;
+                }
+            };
+            println!("lsdj-app: MCP server on http://127.0.0.1:{port}/mcp");
+            let result = axum::serve(listener, router)
+                .with_graceful_shutdown(async move { serve_cancel.cancelled().await })
+                .await;
+            if let Err(e) = result {
+                eprintln!("lsdj-app: MCP server stopped: {e}");
+            }
+        });
+
+        McpServer {
+            port: Some(port),
+            token: Some(token),
+            cancel,
+        }
+    }
+
+    /// The loopback port the MCP server bound, or `None` if disabled / failed.
+    pub fn port(&self) -> Option<u16> {
+        self.port
+    }
+
+    /// The per-session bearer token a client must present, or `None` if disabled.
+    pub fn token(&self) -> Option<String> {
+        self.token.clone()
+    }
+
+    /// Stop the server task (graceful shutdown). Called from the app's `Exit` handler.
+    pub fn shutdown(&self) {
+        self.cancel.cancel();
+    }
+}
+
+impl Drop for McpServer {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+/// Reject any request that does not carry `Authorization: Bearer <token>`. The
+/// server is loopback-only, but the token stops another local process from driving
+/// the instrument without the user's config.
+async fn require_token(
+    axum::extract::State(token): axum::extract::State<String>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let presented = request
+        .headers()
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    if presented == Some(format!("Bearer {token}").as_str()) {
+        next.run(request).await
+    } else {
+        (StatusCode::UNAUTHORIZED, "missing or invalid bearer token").into_response()
+    }
+}
+
+/// A per-session bearer token: 32 random bytes, hex-encoded.
+fn generate_token() -> String {
+    let bytes: [u8; 32] = rand::random();
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::generate_token;
+
+    #[test]
+    fn token_is_64_hex_chars_and_unique() {
+        let token = generate_token();
+        assert_eq!(token.len(), 64); // 32 bytes, two hex chars each
+        assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+        // Random per session — two draws differ.
+        assert_ne!(token, generate_token());
+    }
+}
