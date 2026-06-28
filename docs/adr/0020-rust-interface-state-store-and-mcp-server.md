@@ -1,8 +1,16 @@
 # 0020. Rust as the single interface-state store, exposed via a native MCP server
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-06-28)
 - **Date:** 2026-06-20
 - **Deciders:** Daniel Peter
+
+> **Amended on acceptance (2026-06-28, while planning issue #37 Phase 1).**
+> Narrowed from the Proposed draft: the store owns all **semantic/identity +
+> audio-param** interface state, but **ephemeral view state stays in React**
+> (active tab, scroll/highlight, expanded row, in-progress form fields, the
+> loaded-but-not-confirmed selection). An agent does not need to drive scroll
+> position, and the per-keystroke IPC churn the draft flagged buys nothing for the
+> MCP goal. The Decision and Consequences below reflect this narrowing.
 
 ## Context
 
@@ -62,12 +70,13 @@ webview re-renders from the snapshot.
 **The state store (the inversion).**
 
 - A **shell-level state store** in the Tauri/`Host` layer becomes authoritative
-  for all interface state: realtime-deck prompt/style/model/playing,
-  loaded-track identity (title/file/bpm/grid), mixer
+  for all **semantic/identity + audio-param** interface state: realtime-deck
+  prompt/style/model/playing, loaded-track identity (title/file/bpm/grid), mixer
   (volume/EQ/trim/crossfade/cue/cue-mix), FX kind + amount, hot-cue points,
-  loop-slot labels — **and** the view state that is React-local today (active
-  browser tab, scroll/highlight, expanded row, in-progress form fields, the
-  loaded-but-not-confirmed selection).
+  loop-slot labels. **Ephemeral view state stays in React** (active browser tab,
+  scroll/highlight, expanded row, in-progress form fields, the
+  loaded-but-not-confirmed selection): an agent does not drive scroll position,
+  so the store does not carry it (the narrowing recorded above).
 - **Layering.** The real-time audio core (`lsdj-engine`, headless/RT-safe)
   keeps owning the audio params it already does (gains, EQ coefficients,
   crossfade, loop regions, buffers) inside the mix graph and stays out of the
@@ -120,11 +129,12 @@ change the audio path (ADR-0017) or how generation is hosted (ADR-0018/0019).
   projection that renders from a Rust snapshot and emits intents. That is a
   substantial frontend refactor and the larger half of this work — the MCP server
   is the easy half once it lands.
-- Harder: putting *view* state (tab/scroll/highlight/in-progress form fields) in
-  the store means ephemeral UI churn now crosses the IPC boundary on every
-  keystroke and scroll. Accepted for a single store; the implementation must keep
-  these mutations cheap (coalesced, locally echoed) so typing and scrolling stay
-  snappy.
+- Scoped out (the acceptance narrowing): *view* state (tab/scroll/highlight/
+  in-progress form fields) is **kept in React**, not the store. Putting it in the
+  store would push ephemeral UI churn across the IPC boundary on every keystroke
+  and scroll for no agent benefit — an agent drives the instrument, not the scroll
+  position. The store stays the single source of truth for the semantic/audio
+  state an agent and the human share; view state remains a private React concern.
 - Harder: strict unidirectional flow means a fader / jog / crossfade drag
   round-trips through Rust before the knob re-renders. Sub-millisecond on
   loopback, but high-rate performance gestures need **optimistic local rendering**
