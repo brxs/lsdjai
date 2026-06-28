@@ -20,7 +20,11 @@ import {
 import { createLoudnessTracker, trimDbFor } from '../audio/master'
 import { STYLE_SAMPLE_SECONDS } from '../audio/styleSample'
 import { useAudioEngine } from '../audio/engineContext'
-import { getApiBaseUrl, subscribeModelsChanged } from '../audio/nativeEngine'
+import {
+  getApiBaseUrl,
+  setDeckRealtime,
+  subscribeModelsChanged,
+} from '../audio/nativeEngine'
 import { fxKindFromSnap, useInterfaceStore } from '../audio/interfaceStore'
 import {
   sendNativeDeckCommand,
@@ -440,6 +444,14 @@ export function useDeck(deckId: DeckId): DeckControls {
       setTrimState(next)
     }
   }, [storeState, deckIndex])
+
+  // Mirror the realtime deck's derived read-backs (model + playing) UP into the
+  // store, so a future MCP agent observes them (ADR-0020). The webview owns the
+  // derivation (worker status + play/stop, in the reducer); this is a write-only
+  // push, not a projection — nothing reads it back into React.
+  useEffect(() => {
+    setDeckRealtime(deckIndex, state.model, state.playing)
+  }, [deckIndex, state.model, state.playing])
 
   const [primed, setPrimedState] = useState(false)
   const primedRef = useRef(primed)

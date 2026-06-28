@@ -1064,3 +1064,19 @@ pub fn engine_snapshot(state: tauri::State<'_, Host>) -> EngineSnapshotDto {
 pub fn store_snapshot(store: tauri::State<'_, InterfaceStore>) -> InterfaceState {
     store.snapshot()
 }
+
+/// Mirror a realtime deck's derived read-backs (model + playing) into the store.
+/// These are derived in the webview from worker status + play/stop, so — unlike the
+/// mixer setters — the webview WRITES the current value up (no engine effect); the
+/// store holds it for a future MCP read (ADR-0020).
+#[tauri::command]
+pub fn set_deck_realtime(
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    model: Option<String>,
+    playing: bool,
+) {
+    if valid_deck(deck) {
+        store.set_realtime(deck, model, playing);
+    }
+}

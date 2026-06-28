@@ -232,21 +232,26 @@ export function subscribeModelProgress(onProgress: (p: ModelProgress) => void): 
 /** A Color FX kind as it appears in the store snapshot (the camelCase wire value). */
 export type FxKindSnap = 'filter' | 'dubEcho' | 'space' | 'crush' | 'noise' | 'sweep'
 
-/** One deck's mixer-channel state in the store. */
-export type DeckMixSnap = {
+/** One deck's state in the store: the mixer channel plus the realtime read-backs
+ * the store mirrors (model / playing). */
+export type DeckSnap = {
   volume: number
   eq: { low: number; mid: number; high: number }
   trimDb: number
   cue: boolean
   onAir: boolean
   fx: { kind: FxKindSnap | null; amount: number }
+  /** The realtime deck's loaded model (a sidecar read-back the store mirrors). */
+  model: string | null
+  /** Whether the realtime deck is generating (a derived read-back the store mirrors). */
+  playing: boolean
 }
 
 /** The authoritative interface state the webview projects (mirrors Rust
  * `store::InterfaceState`). View state is deliberately absent — it stays in React
  * (the ADR-0020 narrowing). */
 export type InterfaceState = {
-  decks: DeckMixSnap[]
+  decks: DeckSnap[]
   crossfade: number
   cueMix: number
 }
@@ -261,6 +266,14 @@ export function storeSnapshot(): Promise<InterfaceState> {
  * unsubscribe fn. */
 export function subscribeStoreChanged(onChange: (state: InterfaceState) => void): () => void {
   return listenTo<InterfaceState>('store://changed', onChange)
+}
+
+/** Mirror a realtime deck's derived state (model + playing) into the store. The
+ * webview owns the derivation (worker status + play/stop); this writes the current
+ * value up so the store stays the single source of truth — no engine effect.
+ * Fire-and-forget (a dropped mirror write must never surface as a rejection). */
+export function setDeckRealtime(deck: number, model: string | null, playing: boolean): void {
+  void invoke('set_deck_realtime', { deck, model, playing }).catch(() => {})
 }
 
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }

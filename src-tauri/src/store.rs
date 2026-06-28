@@ -89,10 +89,12 @@ pub struct FxSnap {
     pub amount: f32,
 }
 
-/// One deck's mixer-channel state in the store.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+/// One deck's state in the store: the mixer channel plus the realtime-deck
+/// read-backs the store mirrors (model / playing). Not `Copy` — `model` is a
+/// `String`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DeckMixSnap {
+pub struct DeckSnap {
     pub volume: f32,
     pub eq: EqSnap,
     /// Chain-head trim in dB (M17 gain staging; 0 dB = unity).
@@ -102,11 +104,18 @@ pub struct DeckMixSnap {
     /// On-air (M10 primed deck): off-air mutes only the master feed.
     pub on_air: bool,
     pub fx: FxSnap,
+    /// The realtime deck's loaded model name — a sidecar read-back the store
+    /// mirrors (the webview derives it from worker status and writes it up); `None`
+    /// before the worker reports ready.
+    pub model: Option<String>,
+    /// Whether the realtime deck is generating — a derived read-back the store
+    /// mirrors (set by play/stop, cleared on model-load / worker-death).
+    pub playing: bool,
 }
 
-impl Default for DeckMixSnap {
+impl Default for DeckSnap {
     fn default() -> Self {
-        DeckMixSnap {
+        DeckSnap {
             volume: 1.0,
             eq: EqSnap {
                 low: 0.5,
@@ -121,6 +130,8 @@ impl Default for DeckMixSnap {
                 kind: None,
                 amount: 0.0,
             },
+            model: None,
+            playing: false,
         }
     }
 }
@@ -135,7 +146,7 @@ impl Default for DeckMixSnap {
 #[serde(rename_all = "camelCase")]
 pub struct InterfaceState {
     /// Per-deck mixer channel, indexed by deck (length [`DECK_COUNT`]).
-    pub decks: Vec<DeckMixSnap>,
+    pub decks: Vec<DeckSnap>,
     /// Equal-power crossfader position (0 = deck A, 1 = deck B).
     pub crossfade: f32,
     /// Cue/master headphone blend (0 = cue only, 1 = master).
@@ -145,7 +156,7 @@ pub struct InterfaceState {
 impl Default for InterfaceState {
     fn default() -> Self {
         InterfaceState {
-            decks: vec![DeckMixSnap::default(); DECK_COUNT],
+            decks: vec![DeckSnap::default(); DECK_COUNT],
             crossfade: 0.5,
             cue_mix: 0.5,
         }
@@ -156,7 +167,7 @@ impl InterfaceState {
     /// A mutable handle to a deck's channel, or `None` for an out-of-range index —
     /// a bad index is a silent no-op (the store never panics on a caller's index,
     /// matching the `commands.rs` trust boundary).
-    fn deck_mut(&mut self, deck: usize) -> Option<&mut DeckMixSnap> {
+    fn deck_mut(&mut self, deck: usize) -> Option<&mut DeckSnap> {
         self.decks.get_mut(deck)
     }
 
@@ -222,6 +233,18 @@ impl InterfaceState {
     pub fn clear_fx(&mut self, deck: usize) {
         if let Some(d) = self.deck_mut(deck) {
             d.fx.kind = None;
+        }
+    }
+
+    pub fn set_model(&mut self, deck: usize, model: Option<String>) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.model = model;
+        }
+    }
+
+    pub fn set_playing(&mut self, deck: usize, playing: bool) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.playing = playing;
         }
     }
 }
@@ -303,6 +326,16 @@ impl InterfaceStore {
     pub fn clear_fx(&self, deck: usize) {
         self.mutate(|s| s.clear_fx(deck));
     }
+
+    /// Mirror a realtime deck's derived read-backs (model + playing) in one
+    /// mutation. The webview owns the derivation (from worker status + play/stop)
+    /// and writes the current value up; the store holds it for a future MCP read.
+    pub fn set_realtime(&self, deck: usize, model: Option<String>, playing: bool) {
+        self.mutate(move |s| {
+            s.set_model(deck, model);
+            s.set_playing(deck, playing);
+        });
+    }
 }
 
 #[cfg(test)]
@@ -321,7 +354,21 @@ mod tests {
             assert!(deck.on_air);
             assert!(!deck.cue);
             assert_eq!(deck.fx.kind, None);
+            assert_eq!(deck.model, None);
+            assert!(!deck.playing);
         }
+    }
+
+    #[test]
+    fn realtime_read_backs_are_mirrored_per_deck() {
+        let mut state = InterfaceState::default();
+        state.set_model(0, Some("mrt2_base".to_string()));
+        state.set_playing(0, true);
+        assert_eq!(state.decks[0].model.as_deref(), Some("mrt2_base"));
+        assert!(state.decks[0].playing);
+        // The other deck is untouched.
+        assert_eq!(state.decks[1].model, None);
+        assert!(!state.decks[1].playing);
     }
 
     #[test]
@@ -370,8 +417,8 @@ mod tests {
         state.set_volume(DECK_COUNT, 0.0);
         state.set_eq(99, EqBand::Mid, 0.0);
         state.set_fx(7, FxKind::Crush);
-        assert_eq!(state.decks[0], DeckMixSnap::default());
-        assert_eq!(state.decks[DECK_COUNT - 1], DeckMixSnap::default());
+        assert_eq!(state.decks[0], DeckSnap::default());
+        assert_eq!(state.decks[DECK_COUNT - 1], DeckSnap::default());
     }
 
     #[test]

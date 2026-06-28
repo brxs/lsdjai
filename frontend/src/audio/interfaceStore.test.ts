@@ -5,7 +5,7 @@ import { useInterfaceStore, useProjected } from './interfaceStore'
 import {
   storeSnapshot,
   subscribeStoreChanged,
-  type DeckMixSnap,
+  type DeckSnap,
   type InterfaceState,
 } from './nativeEngine'
 
@@ -16,13 +16,15 @@ vi.mock('./nativeEngine', () => ({
   subscribeStoreChanged: vi.fn(),
 }))
 
-const deck = (): DeckMixSnap => ({
+const deck = (): DeckSnap => ({
   volume: 1,
   eq: { low: 0.5, mid: 0.5, high: 0.5 },
   trimDb: 0,
   cue: false,
   onAir: true,
   fx: { kind: null, amount: 0 },
+  model: null,
+  playing: false,
 })
 
 const sample = (over: Partial<InterfaceState> = {}): InterfaceState => ({

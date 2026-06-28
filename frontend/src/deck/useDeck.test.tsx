@@ -15,7 +15,7 @@ import * as beatModule from '../audio/beat'
 import { updateDeckSettings } from '../persistence'
 import { clickTrack } from '../test/clickTrack'
 import type { AudioEngine, DeckChannel } from '../audio/types'
-import type { DeckMixSnap, InterfaceState } from '../audio/nativeEngine'
+import type { DeckSnap, InterfaceState } from '../audio/nativeEngine'
 import { useDeck } from './useDeck'
 
 /** Wrap useDeck's beat tracker so a test can watch what reaches the live
@@ -104,8 +104,8 @@ function feedPcm(buffer: ArrayBuffer) {
   native.pcmChannel?.onmessage?.(buffer)
 }
 
-/** A neutral store deck-mix channel (matches the Rust `DeckMixSnap` default). */
-function storeDeck(): DeckMixSnap {
+/** A neutral store deck-mix channel (matches the Rust `DeckSnap` default). */
+function storeDeck(): DeckSnap {
   return {
     volume: 1,
     eq: { low: 0.5, mid: 0.5, high: 0.5 },
@@ -113,11 +113,13 @@ function storeDeck(): DeckMixSnap {
     cue: false,
     onAir: true,
     fx: { kind: null, amount: 0 },
+    model: null,
+    playing: false,
   }
 }
 
 /** Fire a `store://changed` event with deck 'a' (index 0) carrying `mix`. */
-function fireStore(mix: Partial<DeckMixSnap>) {
+function fireStore(mix: Partial<DeckSnap>) {
   const payload: InterfaceState = {
     decks: [{ ...storeDeck(), ...mix }, storeDeck()],
     crossfade: 0.5,
@@ -1758,5 +1760,18 @@ describe('useDeck mixer projection (ADR-0020)', () => {
     // an external move — so it must be ignored.
     act(() => fireStore({ volume: 1 }))
     expect(result.current.volume).toBe(0.8)
+  })
+})
+
+describe('useDeck realtime mirror (ADR-0020)', () => {
+  it('writes the derived playing state up via set_deck_realtime', async () => {
+    const { result } = renderDeck(makeFakeEngine().engine)
+    await act(() => result.current.play())
+    const calls = native.invoke.mock.calls.filter(
+      ([cmd]) => cmd === 'set_deck_realtime',
+    )
+    // The write-only mirror fired, and the latest carries playing:true for deck 0.
+    expect(calls.length).toBeGreaterThan(0)
+    expect(calls.at(-1)?.[1]).toMatchObject({ deck: 0, playing: true })
   })
 })

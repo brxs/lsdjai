@@ -510,6 +510,7 @@ pub fn run() {
             commands::track_peaks,
             commands::engine_snapshot,
             commands::store_snapshot,
+            commands::set_deck_realtime,
             commands::deck_play,
             commands::deck_stop,
             commands::deck_set_prompt,
