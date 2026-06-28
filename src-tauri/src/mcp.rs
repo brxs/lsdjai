@@ -17,11 +17,16 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::{
+    AnnotateAble, ListResourcesResult, PaginatedRequestParams, RawResource,
+    ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
+};
+use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::tower::{
     StreamableHttpServerConfig, StreamableHttpService,
 };
-use rmcp::{tool, tool_handler, tool_router, ServerHandler};
+use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler};
 use serde::Deserialize;
 use tauri::{AppHandle, Manager};
 use tokio_util::sync::CancellationToken;
@@ -67,8 +72,63 @@ impl McpHandler {
     }
 }
 
+/// The URI the interface-state snapshot is served at — the agent reads this to
+/// observe the whole instrument (the store snapshot, ADR-0020).
+const STORE_RESOURCE_URI: &str = "lsdj://interface-state";
+
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for McpHandler {}
+impl ServerHandler for McpHandler {
+    fn get_info(&self) -> ServerInfo {
+        // ServerInfo is #[non_exhaustive], so build from default and set the public
+        // fields: advertise BOTH tools and resources so the client lists the store.
+        let mut info = ServerInfo::default();
+        info.capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources()
+            .build();
+        info.instructions = Some(
+            "LSDJ.ai — a generative DJ instrument. Read the `lsdj://interface-state` \
+             resource to observe the decks, mixer, and FX; call the tools to act as a \
+             co-DJ."
+                .to_string(),
+        );
+        info
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        Ok(ListResourcesResult {
+            resources: vec![
+                RawResource::new(STORE_RESOURCE_URI, "Interface state").no_annotation()
+            ],
+            next_cursor: None,
+            ..Default::default()
+        })
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        if request.uri != STORE_RESOURCE_URI {
+            return Err(McpError::resource_not_found(
+                format!("unknown resource: {}", request.uri),
+                None,
+            ));
+        }
+        let snapshot = self.app.state::<InterfaceStore>().snapshot();
+        let json = serde_json::to_string_pretty(&snapshot)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(ReadResourceResult::new(vec![ResourceContents::text(
+            json,
+            STORE_RESOURCE_URI,
+        )]))
+    }
+}
 
 /// The supervised MCP server: its chosen loopback port and per-session bearer token
 /// (both surfaced to the client via `app_info`), plus the cancellation token that
