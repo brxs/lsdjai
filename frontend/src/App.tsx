@@ -45,6 +45,49 @@ import { phaseOffsetBeats } from './audio/track'
 import { handleShortcutKey } from './shortcuts'
 import { sameMask } from './selectionMask'
 
+/** The "AI co-DJ (MCP)" Settings body (ADR-0020 Phase 2): the live endpoint +
+ * bearer token, with copy-paste connection snippets for the common agent
+ * harnesses. A hint to enable the server when it's off (`LSDJ_MCP` unset). */
+function McpSettings({ info }: { info: McpInfo | null }) {
+  const { t } = useTranslation()
+  if (!info?.port || !info.token) {
+    return <p className="settings-mcp__hint">{t('settings.mcpDisabled')}</p>
+  }
+  const endpoint = `http://127.0.0.1:${info.port}/mcp`
+  const claudeCode = `claude mcp add --transport http lsdj ${endpoint} --header "Authorization: Bearer ${info.token}"`
+  const configJson = `{
+  "mcpServers": {
+    "lsdj": {
+      "type": "http",
+      "url": "${endpoint}",
+      "headers": { "Authorization": "Bearer ${info.token}" }
+    }
+  }
+}`
+  return (
+    <>
+      <p className="settings-mcp__hint">{t('settings.mcpHint')}</p>
+      <div className="settings-mcp__field">
+        <span className="ui-field__label">{t('settings.mcpEndpoint')}</span>
+        <code className="settings-mcp__value">{endpoint}</code>
+      </div>
+      <div className="settings-mcp__field">
+        <span className="ui-field__label">{t('settings.mcpToken')}</span>
+        <code className="settings-mcp__value">{info.token}</code>
+      </div>
+      <div className="settings-mcp__field">
+        <span className="ui-field__label">{t('settings.mcpClaudeCode')}</span>
+        <code className="settings-mcp__value">{claudeCode}</code>
+      </div>
+      <div className="settings-mcp__field">
+        <span className="ui-field__label">{t('settings.mcpConfig')}</span>
+        <pre className="settings-mcp__value settings-mcp__code">{configJson}</pre>
+      </div>
+      <p className="settings-mcp__hint">{t('settings.mcpConfigPath')}</p>
+    </>
+  )
+}
+
 function App() {
   const { t } = useTranslation()
   const engine = useAudioEngine()
@@ -628,29 +671,6 @@ function App() {
             />
           </div>
         </section>
-        {/* The native MCP server (ADR-0020 Phase 2): point a Claude Desktop /
-            Code client at the loopback endpoint with the bearer token. Shown only
-            when the server is up (LSDJ_MCP=1); otherwise a hint to enable it. */}
-        <section className="modelmgr__section">
-          <h3 className="modelmgr__heading">{t('settings.mcp')}</h3>
-          <div className="settings-mcp">
-            {mcpInfo?.port ? (
-              <>
-                <p className="settings-mcp__hint">{t('settings.mcpHint')}</p>
-                <div className="settings-mcp__field">
-                  <span className="ui-field__label">{t('settings.mcpEndpoint')}</span>
-                  <code className="settings-mcp__value">{`http://127.0.0.1:${mcpInfo.port}/mcp`}</code>
-                </div>
-                <div className="settings-mcp__field">
-                  <span className="ui-field__label">{t('settings.mcpToken')}</span>
-                  <code className="settings-mcp__value">{mcpInfo.token}</code>
-                </div>
-              </>
-            ) : (
-              <p className="settings-mcp__hint">{t('settings.mcpDisabled')}</p>
-            )}
-          </div>
-        </section>
         {/* Where master-bus recordings are saved. Empty = the OS Downloads
             folder (the default); choosing a folder routes takes there. */}
         <section className="modelmgr__section">
@@ -716,6 +736,14 @@ function App() {
         <section className="modelmgr__section settings-model-library">
           <h3 className="modelmgr__heading">{t('settings.modelLibrary')}</h3>
           <ModelManager />
+        </section>
+        {/* The native MCP server (ADR-0020 Phase 2): last in the list so the
+            copy-paste connection snippets don't push the everyday controls down. */}
+        <section className="modelmgr__section">
+          <h3 className="modelmgr__heading">{t('settings.mcp')}</h3>
+          <div className="settings-mcp">
+            <McpSettings info={mcpInfo} />
+          </div>
         </section>
       </Drawer>
       {beatView === 'top' && (

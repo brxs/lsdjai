@@ -943,6 +943,14 @@
   color: var(--color-text-muted);
 }
 
+/* The config JSON keeps its formatting and scrolls rather than wrapping. */
+.settings-mcp__code {
+  margin: 0;
+  white-space: pre;
+  word-break: normal;
+  overflow-x: auto;
+}
+
 /* Per-deck model pickers (moved out of the deck column): the same stacked
    layout as the audio group. */
 .settings-models {
