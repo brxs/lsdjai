@@ -11,6 +11,7 @@ import {
   rotateMcpToken,
   subscribeLoadTrack,
   subscribeLoadSample,
+  subscribeDeckCommand,
   type McpInfo,
 } from './audio/nativeEngine'
 import { FX_KINDS } from './audio/fx'
@@ -542,6 +543,29 @@ function App() {
     () => deckB.syncTrack(effectiveBpm(deckA)),
     [deckA, deckB, effectiveBpm],
   )
+
+  // An MCP agent's track-transport gesture (Rust emits mcp://deck-command): run the
+  // deck's own method so its reducer state and the UI follow (seek reflects via the
+  // position poll; rate/loop/sync are webview-owned). The load-flow pattern.
+  useEffect(() => {
+    return subscribeDeckCommand(({ deck, command, value }) => {
+      const controls = deck === 0 ? deckA : deckB
+      switch (command) {
+        case 'seek':
+          if (value != null) controls.seekTrack(value)
+          break
+        case 'rate':
+          if (value != null) controls.setTrackRate(value)
+          break
+        case 'beatloop':
+          if (value != null) controls.beatLoop(value)
+          break
+        case 'sync':
+          ;(deck === 0 ? handleSyncA : handleSyncB)()
+          break
+      }
+    })
+  }, [deckA, deckB, handleSyncA, handleSyncB])
   const getPhaseOffset = useCallback(() => {
     const aPlayback = deckA.mode === 'playback'
     const bPlayback = deckB.mode === 'playback'

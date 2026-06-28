@@ -321,6 +321,15 @@ export function subscribeLoadSample(
   return listenTo('mcp://load-sample', onLoad)
 }
 
+/** An MCP agent's track-transport gesture (Rust emits `mcp://deck-command`): the
+ * webview runs the deck's own method (seek / rate / sync / beatloop) so its state and
+ * the UI follow. `value` is null for argument-less commands (sync). */
+export function subscribeDeckCommand(
+  onCommand: (payload: { deck: number; command: string; value: number | null }) => void,
+): () => void {
+  return listenTo('mcp://deck-command', onCommand)
+}
+
 /** Mirror a realtime deck's derived state (model + playing) into the store. The
  * webview owns the derivation (worker status + play/stop); this writes the current
  * value up so the store stays the single source of truth — no engine effect.

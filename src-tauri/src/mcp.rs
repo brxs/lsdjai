@@ -220,6 +220,30 @@ struct LoadFromLibraryArgs {
     file: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SeekArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// Position in track seconds.
+    seconds: f64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct TempoArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// Target playback tempo in BPM (varispeed; clamped to the deck's range).
+    bpm: f64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct BeatLoopArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// Loop length in beats (e.g. 4).
+    beats: u32,
+}
+
 /// How many hot-cue pads a deck currently has — the loaded track's cue-bank size, 0
 /// with no track. Read from the store snapshot so the cue tools validate before
 /// writing (and report "no track" / "out of range" rather than silently no-op).
@@ -624,6 +648,74 @@ impl McpHandler {
             json!({ "deck": deck, "file": file, "oneShot": one_shot, "label": label }),
         );
         format!("loading \"{label}\" onto deck {deck}")
+    }
+
+    /// Ask the webview to run a track-transport gesture on a deck. Transport that the
+    /// webview owns (rate/loop/sync state, or a seek the position poll reflects) is
+    /// driven through the deck's own methods so the UI follows — the load-flow pattern.
+    fn emit_deck_command(&self, deck: usize, command: &str, value: Option<f64>) {
+        let _ = self.app.emit(
+            "mcp://deck-command",
+            json!({ "deck": deck, "command": command, "value": value }),
+        );
+    }
+
+    #[tool(description = "Seek a deck's loaded track to a position in seconds. deck 0 = A, 1 = B.")]
+    async fn seek_track(&self, Parameters(SeekArgs { deck, seconds }): Parameters<SeekArgs>) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        self.emit_deck_command(deck, "seek", Some(seconds));
+        format!("deck {deck} seeking to {seconds:.2}s")
+    }
+
+    /// Set a deck's tempo in BPM — converted to a varispeed rate from the loaded
+    /// track's own BPM (read from the store), then clamped to the deck's range by the
+    /// webview.
+    #[tool(
+        description = "Set a deck's playback tempo in BPM (varispeed; clamped to the \
+                       deck's range). Needs a loaded track with a known BPM. deck 0 = A, 1 = B."
+    )]
+    async fn set_tempo(&self, Parameters(TempoArgs { deck, bpm }): Parameters<TempoArgs>) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        if bpm <= 0.0 {
+            return "bpm must be positive".to_string();
+        }
+        let snapshot = self.app.state::<InterfaceStore>().snapshot();
+        let base = snapshot
+            .decks
+            .get(deck)
+            .and_then(|d| d.track.as_ref())
+            .and_then(|track| track.bpm);
+        let Some(base) = base.filter(|b| *b > 0.0) else {
+            return format!("deck {deck} has no track with a known BPM to set tempo on");
+        };
+        let rate = bpm / base;
+        self.emit_deck_command(deck, "rate", Some(rate));
+        format!("deck {deck} tempo → {bpm:.1} BPM (rate {rate:.3})")
+    }
+
+    #[tool(
+        description = "Beat-match (sync) a deck's track to the other deck's tempo. \
+                       deck 0 = A, 1 = B."
+    )]
+    async fn sync_deck(&self, Parameters(DeckArgs { deck }): Parameters<DeckArgs>) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        self.emit_deck_command(deck, "sync", None);
+        format!("deck {deck} syncing to the other deck")
+    }
+
+    #[tool(description = "Set a beat loop on a deck's track (length in beats, e.g. 4). deck 0 = A, 1 = B.")]
+    async fn beat_loop(&self, Parameters(BeatLoopArgs { deck, beats }): Parameters<BeatLoopArgs>) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        self.emit_deck_command(deck, "beatloop", Some(f64::from(beats)));
+        format!("deck {deck} {beats}-beat loop")
     }
 
     /// Generate a clip via the loopback generation server and save it to the samples
