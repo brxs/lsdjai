@@ -22,6 +22,7 @@ import { STYLE_SAMPLE_SECONDS } from '../audio/styleSample'
 import { useAudioEngine } from '../audio/engineContext'
 import {
   getApiBaseUrl,
+  setDeckCues,
   setDeckRealtime,
   subscribeModelsChanged,
 } from '../audio/nativeEngine'
@@ -452,6 +453,14 @@ export function useDeck(deckId: DeckId): DeckControls {
   useEffect(() => {
     setDeckRealtime(deckIndex, state.model, state.playing)
   }, [deckIndex, state.model, state.playing])
+
+  // Mirror the loaded track's hot-cue points UP into the store (ADR-0015 →
+  // ADR-0020): the cue STATE LOCATION moves to the store, while the webview keeps
+  // the set/jump logic (jump is a plain seek). Empty with no track. A write-only
+  // push; the bidirectional projection lands with the Phase-2 MCP cue setter.
+  useEffect(() => {
+    setDeckCues(deckIndex, track?.cues ?? [])
+  }, [deckIndex, track?.cues])
 
   const [primed, setPrimedState] = useState(false)
   const primedRef = useRef(primed)

@@ -115,6 +115,7 @@ function storeDeck(): DeckSnap {
     fx: { kind: null, amount: 0 },
     model: null,
     playing: false,
+    cues: [],
   }
 }
 

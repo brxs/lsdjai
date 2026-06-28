@@ -111,6 +111,10 @@ pub struct DeckSnap {
     /// Whether the realtime deck is generating — a derived read-back the store
     /// mirrors (set by play/stop, cleared on model-load / worker-death).
     pub playing: bool,
+    /// Hot-cue points on the loaded track, in track seconds, one per pad (empty
+    /// with no track). ADR-0015's cue state moves here per ADR-0020; the webview
+    /// owns the set/jump logic (jump is a plain seek) and mirrors the points up.
+    pub cues: Vec<Option<f64>>,
 }
 
 impl Default for DeckSnap {
@@ -132,6 +136,7 @@ impl Default for DeckSnap {
             },
             model: None,
             playing: false,
+            cues: Vec::new(),
         }
     }
 }
@@ -247,6 +252,12 @@ impl InterfaceState {
             d.playing = playing;
         }
     }
+
+    pub fn set_cues(&mut self, deck: usize, cues: Vec<Option<f64>>) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.cues = cues;
+        }
+    }
 }
 
 /// The shell-level store: the locked [`InterfaceState`] plus the [`AppHandle`] used
@@ -336,6 +347,12 @@ impl InterfaceStore {
             s.set_playing(deck, playing);
         });
     }
+
+    /// Mirror the loaded track's hot-cue points (ADR-0015 → ADR-0020). The webview
+    /// owns the set/jump logic and writes the current points up.
+    pub fn set_deck_cues(&self, deck: usize, cues: Vec<Option<f64>>) {
+        self.mutate(move |s| s.set_cues(deck, cues));
+    }
 }
 
 #[cfg(test)]
@@ -356,6 +373,7 @@ mod tests {
             assert_eq!(deck.fx.kind, None);
             assert_eq!(deck.model, None);
             assert!(!deck.playing);
+            assert!(deck.cues.is_empty());
         }
     }
 
@@ -369,6 +387,14 @@ mod tests {
         // The other deck is untouched.
         assert_eq!(state.decks[1].model, None);
         assert!(!state.decks[1].playing);
+    }
+
+    #[test]
+    fn hot_cues_are_mirrored_per_deck() {
+        let mut state = InterfaceState::default();
+        state.set_cues(0, vec![Some(1.5), None, Some(3.0)]);
+        assert_eq!(state.decks[0].cues, vec![Some(1.5), None, Some(3.0)]);
+        assert!(state.decks[1].cues.is_empty());
     }
 
     #[test]

@@ -1080,3 +1080,17 @@ pub fn set_deck_realtime(
         store.set_realtime(deck, model, playing);
     }
 }
+
+/// Mirror a playback deck's hot-cue points into the store (ADR-0015 → ADR-0020).
+/// The webview owns the set/jump logic (jump is a plain seek) and writes the
+/// current points up; no engine effect.
+#[tauri::command]
+pub fn set_deck_cues(
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    cues: Vec<Option<f64>>,
+) {
+    if valid_deck(deck) {
+        store.set_deck_cues(deck, cues);
+    }
+}

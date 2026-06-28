@@ -511,6 +511,7 @@ pub fn run() {
             commands::engine_snapshot,
             commands::store_snapshot,
             commands::set_deck_realtime,
+            commands::set_deck_cues,
             commands::deck_play,
             commands::deck_stop,
             commands::deck_set_prompt,

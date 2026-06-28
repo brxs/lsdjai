@@ -25,6 +25,7 @@ const deck = (): DeckSnap => ({
   fx: { kind: null, amount: 0 },
   model: null,
   playing: false,
+  cues: [],
 })
 
 const sample = (over: Partial<InterfaceState> = {}): InterfaceState => ({
