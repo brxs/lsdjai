@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { useAudioEngine } from '../audio/engineContext'
@@ -85,22 +85,27 @@ export function OutputDevicePicker({
 
   useEffect(refresh, [refresh])
 
-  function pick(name: string) {
-    // Every choice (including the DEFAULT_VALUE sentinel) goes to the engine: the
-    // main switch reads "" as the system default; the cue switch reads "" as
-    // "same as main". On success we commit + persist via onSelect; on failure we
-    // surface the error and the controlled select snaps back to `value`.
-    const switchDevice =
-      mode === 'main' ? engine.setMainDevice : engine.setCueDevice
-    switchDevice(name).then(
-      () => {
-        setError(null)
-        onSelect(name)
-      },
-      (cause: unknown) =>
-        setError(cause instanceof Error ? cause.message : String(cause)),
-    )
-  }
+  // useCallback so the memoised <Select> sees a stable onChange across App's
+  // re-render churn (otherwise a fresh closure each render defeats the memo).
+  const pick = useCallback(
+    (name: string) => {
+      // Every choice (including the DEFAULT_VALUE sentinel) goes to the engine: the
+      // main switch reads "" as the system default; the cue switch reads "" as
+      // "same as main". On success we commit + persist via onSelect; on failure we
+      // surface the error and the controlled select snaps back to `value`.
+      const switchDevice =
+        mode === 'main' ? engine.setMainDevice : engine.setCueDevice
+      switchDevice(name).then(
+        () => {
+          setError(null)
+          onSelect(name)
+        },
+        (cause: unknown) =>
+          setError(cause instanceof Error ? cause.message : String(cause)),
+      )
+    },
+    [mode, engine, onSelect],
+  )
 
   // The "same as main" cue option only carries the combined cue when the main
   // device is ≥4 channels. This is a display hint only — the engine's
@@ -111,25 +116,29 @@ export function OutputDevicePicker({
     mainDeviceName === '' ||
     devices.some((device) => device.name === mainDeviceName && device.cueCapable)
 
-  const defaultOption: SelectOption =
-    mode === 'main'
-      ? { value: DEFAULT_VALUE, label: t('mixer.outputDefault') }
-      : {
-          value: DEFAULT_VALUE,
-          label: mainIsCueCapable
-            ? t('mixer.cueSameAsMain')
-            : t('mixer.cueSameAsMainNoCh'),
-        }
-
-  const options: SelectOption[] = [
-    defaultOption,
-    ...devices.map((device) => ({ value: device.name, label: device.name })),
-    // Keep a persisted-but-currently-absent device visible so its name still
-    // shows rather than silently snapping to the default.
-    ...(value && !devices.some((device) => device.name === value)
-      ? [{ value, label: value }]
-      : []),
-  ]
+  // useMemo so the option array keeps a stable reference across App's re-render
+  // churn — the memoised <Select> only skips the WKWebView-dismissing re-commit
+  // when its `options` prop is referentially unchanged.
+  const options: SelectOption[] = useMemo(() => {
+    const defaultOption: SelectOption =
+      mode === 'main'
+        ? { value: DEFAULT_VALUE, label: t('mixer.outputDefault') }
+        : {
+            value: DEFAULT_VALUE,
+            label: mainIsCueCapable
+              ? t('mixer.cueSameAsMain')
+              : t('mixer.cueSameAsMainNoCh'),
+          }
+    return [
+      defaultOption,
+      ...devices.map((device) => ({ value: device.name, label: device.name })),
+      // Keep a persisted-but-currently-absent device visible so its name still
+      // shows rather than silently snapping to the default.
+      ...(value && !devices.some((device) => device.name === value)
+        ? [{ value, label: value }]
+        : []),
+    ]
+  }, [devices, value, mode, mainIsCueCapable, t])
 
   return (
     <div className="mixer__phones-device">

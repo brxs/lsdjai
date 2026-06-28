@@ -62,6 +62,23 @@ function App() {
     loadAppSettings().cueMix ?? INITIAL_CUE_MIX,
     (position) => engine.setCueMix(position),
   )
+  // Stable per-deck model-option arrays so the memoised Settings <Select> isn't
+  // re-committed — and dismissed by WKWebView — on App's ~10 Hz re-render churn.
+  // The fallback (a deck with no available list yet) must not be rebuilt each render.
+  const deckAModelOptions = useMemo(
+    () =>
+      deckA.state.availableModels.length
+        ? deckA.state.availableModels
+        : [deckA.state.model ?? ''],
+    [deckA.state.availableModels, deckA.state.model],
+  )
+  const deckBModelOptions = useMemo(
+    () =>
+      deckB.state.availableModels.length
+        ? deckB.state.availableModels
+        : [deckB.state.model ?? ''],
+    [deckB.state.availableModels, deckB.state.model],
+  )
   // The chosen native MAIN output device by name (empty = system default;
   // master → its ch 1/2) and the headphone CUE device (empty = "same as main",
   // the FLX4 phones on ch 3/4; a different name routes cue to a second device).
@@ -575,18 +592,14 @@ function App() {
           <h3 className="modelmgr__heading">{t('settings.models')}</h3>
           <div className="settings-models">
             {([
-              { id: 'a' as const, deck: deckA },
-              { id: 'b' as const, deck: deckB },
-            ]).map(({ id, deck }) => (
+              { id: 'a' as const, deck: deckA, modelOptions: deckAModelOptions },
+              { id: 'b' as const, deck: deckB, modelOptions: deckBModelOptions },
+            ]).map(({ id, deck, modelOptions }) => (
               <Select
                 key={id}
                 label={t('settings.modelDeck', { id: id.toUpperCase() })}
                 value={deck.state.model ?? ''}
-                options={
-                  deck.state.availableModels.length
-                    ? deck.state.availableModels
-                    : [deck.state.model ?? '']
-                }
+                options={modelOptions}
                 disabled={deck.state.connection !== 'open' || deck.state.switchingModel}
                 onChange={deck.setModel}
               />

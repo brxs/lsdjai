@@ -24,6 +24,30 @@ describe('deckReducer', () => {
     expect(state.audible).toBe(true)
   })
 
+  it('returns the SAME state object when worklet stats are unchanged', () => {
+    // The engine_snapshot rAF poll dispatches worklet_stats ~10 Hz for the whole
+    // session once a channel exists; an unchanged tick must not produce a new state
+    // (which would re-render App ~10 Hz and dismiss an open Settings <select>).
+    const settled = reduce([
+      {
+        type: 'worklet_stats',
+        stats: { underruns: 1, bufferedSeconds: 1.5, playing: false },
+      },
+    ])
+    const same = deckReducer(settled, {
+      type: 'worklet_stats',
+      stats: { underruns: 1, bufferedSeconds: 1.5, playing: false },
+    })
+    expect(same).toBe(settled) // referentially identical → React skips the re-render
+
+    const moved = deckReducer(settled, {
+      type: 'worklet_stats',
+      stats: { underruns: 1, bufferedSeconds: 1.9, playing: false },
+    })
+    expect(moved).not.toBe(settled)
+    expect(moved.bufferedSeconds).toBeCloseTo(1.9)
+  })
+
   it('tracks generation speed from chunk events', () => {
     const state = reduce([
       {
