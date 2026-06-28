@@ -91,6 +91,13 @@ export function rotateMcpToken(): Promise<string> {
   return invoke<string>('rotate_mcp_token')
 }
 
+/** Set + persist the MCP server's loopback port and restart it on that port (the
+ * Settings port field). Resolves to the new port; rejects if it can't be bound (e.g.
+ * the port is already taken), leaving the running server untouched. */
+export function setMcpPort(port: number): Promise<number> {
+  return invoke<number>('set_mcp_port', { port })
+}
+
 /** Fire a command at the Rust engine (or a Tauri plugin, e.g. `plugin:dialog|open`).
  * Rejects (caught by callers that care) when the IPC bridge is absent — never
  * throws synchronously. Exported for the few non-engine native callers

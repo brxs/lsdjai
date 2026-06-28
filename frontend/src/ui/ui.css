@@ -983,6 +983,14 @@
   font: 500 var(--text-xs) var(--font-mono);
   color: var(--color-text-muted);
 }
+.settings-mcp__port-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.settings-mcp__port-input {
+  width: 7rem;
+}
 
 /* Per-deck model pickers (moved out of the deck column): the same stacked
    layout as the audio group. */

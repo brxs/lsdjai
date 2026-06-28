@@ -226,6 +226,14 @@ fn rotate_mcp_token(mcp: tauri::State<'_, mcp::McpServer>) -> Result<String, Str
         .ok_or_else(|| "the MCP server is not running".to_string())
 }
 
+/// Rebind the MCP server to a user-chosen port, persist it, and restart the serving
+/// task (the Settings port field). Returns the new port; errors (e.g. the port is
+/// taken) leave the running server untouched.
+#[tauri::command]
+fn set_mcp_port(port: u16, mcp: tauri::State<'_, mcp::McpServer>) -> Result<u16, String> {
+    mcp.set_port(port)
+}
+
 /// One selectable output device for the picker (serde camelCase → `cueCapable`).
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -471,6 +479,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_info,
             rotate_mcp_token,
+            set_mcp_port,
             list_output_devices,
             set_main_device,
             set_cue_device,

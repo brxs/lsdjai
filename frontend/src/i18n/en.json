@@ -289,6 +289,11 @@
       "vscode": "Add to .vscode/mcp.json in your workspace, then press Start on the server."
     },
     "mcpEndpoint": "Endpoint",
+    "mcpPort": "Port",
+    "mcpApplyPort": "Apply",
+    "mcpPortHint": "1024–65535. Persists across launches; the server restarts on the new port.",
+    "mcpPortRange": "Enter a port between 1024 and 65535.",
+    "mcpPortError": "Couldn't set the port: {{message}}",
     "mcpToken": "Bearer token",
     "mcpRotate": "Rotate token",
     "mcpTokenHint": "Persists across launches. Rotate to revoke a copy you've shared.",

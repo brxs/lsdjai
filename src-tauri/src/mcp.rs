@@ -11,7 +11,7 @@
 //! unadvertised (`port() == None`).
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use axum::extract::Request;
 use axum::http::{header::AUTHORIZATION, StatusCode};
@@ -119,22 +119,26 @@ struct CueArgs {
     on: bool,
 }
 
-/// The Stable Audio 3 pad engines the generation server exposes (`/api/generate`).
-/// `track` (the long-form medium model) is deliberately left out: this tool writes
-/// to the *samples* library (short loops/one-shots), not the songs library.
+/// The pad-generation engines `generate_sample` exposes: Stable Audio 3 `sfx`/`music`
+/// (via `/api/generate`), and `magenta` (the Magenta pad renderer, M18, via
+/// `/api/render`). All write to the *samples* library; SA3's long-form `track` is a
+/// separate tool (the songs library).
 #[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
-enum Sa3Kind {
+enum SampleEngine {
     Sfx,
     Music,
+    Magenta,
 }
 
-impl Sa3Kind {
-    /// The wire value the generation server validates against (`sa3.KINDS`).
+impl SampleEngine {
+    /// The wire value: an SA3 `/api/generate` kind, or `"magenta"` which
+    /// [`McpHandler::generate_clip`] routes to `/api/render` instead.
     fn as_str(self) -> &'static str {
         match self {
-            Sa3Kind::Sfx => "sfx",
-            Sa3Kind::Music => "music",
+            SampleEngine::Sfx => "sfx",
+            SampleEngine::Music => "music",
+            SampleEngine::Magenta => "magenta",
         }
     }
 }
@@ -153,10 +157,10 @@ struct GenerateTrackArgs {
 struct GenerateSampleArgs {
     /// Text prompt describing the sound to generate.
     prompt: String,
-    /// Clip length in seconds (the server validates the range; sfx/music cap at 32 s).
+    /// Clip length in seconds (the server validates the range per engine).
     seconds: f32,
-    /// Engine: "sfx" or "music" (Stable Audio 3 small models).
-    kind: Sa3Kind,
+    /// Engine: "sfx" / "music" (Stable Audio 3), or "magenta" (the Magenta renderer).
+    kind: SampleEngine,
     /// Whether the clip plays once (a one-shot) instead of looping. Defaults to loop.
     #[serde(default)]
     one_shot: bool,
@@ -735,9 +739,10 @@ impl McpHandler {
     /// prompt too long, bad length) come back as the tool's message, like the deck
     /// guards above, rather than failing the call.
     #[tool(
-        description = "Generate a short audio clip (Stable Audio 3) from a text prompt and \
-                       save it to the samples library, where it appears in the Samples tab \
-                       ready to load onto a deck. kind: \"sfx\" or \"music\"."
+        description = "Generate a short audio clip from a text prompt and save it to the \
+                       samples library, where it appears in the Samples tab ready to load \
+                       onto a deck. kind: \"sfx\" or \"music\" (Stable Audio 3), or \
+                       \"magenta\" (the Magenta pad renderer)."
     )]
     async fn generate_sample(
         &self,
@@ -776,8 +781,10 @@ impl McpHandler {
     }
 
     /// POST a generation request to the loopback server and return the WAV bytes.
-    /// Shared by [`generate_sample`] (sfx/music → samples) and [`generate_track`]
-    /// (track → songs), reusing the server's prompt/length validation.
+    /// Shared by [`generate_sample`] (sfx/music/magenta → samples) and
+    /// [`generate_track`] (track → songs), reusing the server's prompt/length
+    /// validation. `magenta` routes to the Magenta renderer (`/api/render`, body
+    /// `{prompt, seconds}`); the rest are Stable Audio 3 (`/api/generate`).
     async fn generate_clip(&self, prompt: &str, seconds: f32, kind: &str) -> Result<Vec<u8>, String> {
         let port = self
             .app
@@ -790,9 +797,14 @@ impl McpHandler {
             .timeout(std::time::Duration::from_secs(600))
             .build()
             .map_err(|e| format!("could not build the http client: {e}"))?;
+        let (path, body) = if kind == "magenta" {
+            ("/api/render", json!({ "prompt": prompt, "seconds": seconds }))
+        } else {
+            ("/api/generate", generate_request_body(prompt, seconds, kind))
+        };
         let response = client
-            .post(format!("http://127.0.0.1:{port}/api/generate"))
-            .json(&generate_request_body(prompt, seconds, kind))
+            .post(format!("http://127.0.0.1:{port}{path}"))
+            .json(&body)
             .send()
             .await
             .map_err(|e| format!("generation request failed: {e}"))?;
@@ -919,56 +931,39 @@ impl ServerHandler for McpHandler {
 }
 
 /// The supervised MCP server: its loopback port and the bearer token (surfaced via
-/// `app_info`), plus the cancellation token that stops the axum task. The token is
-/// **shared + mutable** (`Arc<RwLock<String>>`) so [`rotate`](McpServer::rotate)
-/// swaps it in live without restarting the server, and **persisted** at `token_path`
-/// so a client config stays valid across launches. Held in Tauri managed state;
-/// dropping it (or `shutdown`) stops the server.
+/// `app_info`). The token is **shared + mutable** (`Arc<RwLock<String>>`) so
+/// [`rotate`](McpServer::rotate) swaps it in live without a restart, and **persisted**
+/// at `token_path` so a client config stays valid across launches. The **port** is
+/// likewise persisted at `port_path` and user-settable ([`set_port`](McpServer::set_port)),
+/// which rebinds + restarts the serving task. The live port + the task's cancel token
+/// sit behind a `Mutex` so a restart can swap them. Held in Tauri managed state;
+/// dropping it (or `shutdown`) stops the task.
 pub struct McpServer {
-    port: Option<u16>,
-    token: Option<Arc<RwLock<String>>>,
-    /// Where the token is persisted (under the app data dir); `None` when disabled
-    /// or the dir can't be resolved (then the token is in-memory only).
+    app: AppHandle,
+    token: Arc<RwLock<String>>,
+    /// Where the token is persisted (under the app data dir); `None` if the dir can't
+    /// be resolved (then the token is in-memory only).
     token_path: Option<PathBuf>,
+    /// Where the chosen port is persisted, so it's stable across launches and the
+    /// config snippet doesn't churn; `None` if the dir can't be resolved.
+    port_path: Option<PathBuf>,
+    running: Mutex<RunningServer>,
+}
+
+/// The live serving task: the bound port (`None` if no bind succeeded) and the token
+/// that stops it.
+struct RunningServer {
+    port: Option<u16>,
     cancel: CancellationToken,
 }
 
 impl McpServer {
-    /// Start the MCP server — **always on**. Never fails the app: a failed start (the
-    /// loopback bind couldn't be acquired) yields `port() == None` and the endpoint is
-    /// simply unadvertised. Binds `127.0.0.1` on an ephemeral port; every request must
-    /// carry the bearer token. Reuses the persisted token across launches.
+    /// Start the MCP server — **always on**. Never fails the app: a failed bind yields
+    /// `port() == None` and the endpoint is simply unadvertised. Prefers the persisted
+    /// port (so the config is stable across launches), falling back to an ephemeral
+    /// port — which is then persisted so it's reused next time. Every request must
+    /// carry the bearer token (also persisted).
     pub fn start(app: AppHandle) -> McpServer {
-        let cancel = CancellationToken::new();
-        let disabled = |cancel| McpServer {
-            port: None,
-            token: None,
-            token_path: None,
-            cancel,
-        };
-
-        // Bind synchronously so the port is known before we advertise it; hand the
-        // std listener to tokio inside the task.
-        let listener = match std::net::TcpListener::bind(("127.0.0.1", 0)) {
-            Ok(listener) => listener,
-            Err(e) => {
-                eprintln!("lsdj-app: MCP server bind failed: {e}");
-                return disabled(cancel);
-            }
-        };
-        let port = match listener.local_addr() {
-            Ok(addr) => addr.port(),
-            Err(e) => {
-                eprintln!("lsdj-app: MCP server local_addr failed: {e}");
-                return disabled(cancel);
-            }
-        };
-        if let Err(e) = listener.set_nonblocking(true) {
-            eprintln!("lsdj-app: MCP server set_nonblocking failed: {e}");
-            return disabled(cancel);
-        }
-
-        // Reuse the persisted token across launches; mint + save one on first run.
         let token_path = token_file(&app);
         let token_string = match &token_path {
             Some(path) => load_or_generate_token(path),
@@ -976,77 +971,170 @@ impl McpServer {
         };
         let token = Arc::new(RwLock::new(token_string));
 
-        // The streamable-HTTP MCP service: a fresh handler per session, sharing the
-        // app's managed state through the cloned AppHandle.
-        let service = StreamableHttpService::new(
-            move || Ok(McpHandler::new(app.clone())),
-            Arc::new(LocalSessionManager::default()),
-            StreamableHttpServerConfig::default(),
-        );
+        let port_path = port_file(&app);
+        let desired = port_path.as_deref().and_then(load_port);
+        let running = spawn_server(&app, &token, desired);
 
-        let router = axum::Router::new().nest_service("/mcp", service).layer(
-            axum::middleware::from_fn_with_state(token.clone(), require_token),
-        );
-
-        let serve_cancel = cancel.clone();
-        tauri::async_runtime::spawn(async move {
-            let listener = match tokio::net::TcpListener::from_std(listener) {
-                Ok(listener) => listener,
-                Err(e) => {
-                    eprintln!("lsdj-app: MCP server tokio listener failed: {e}");
-                    return;
-                }
-            };
-            println!("lsdj-app: MCP server on http://127.0.0.1:{port}/mcp");
-            let result = axum::serve(listener, router)
-                .with_graceful_shutdown(async move { serve_cancel.cancelled().await })
-                .await;
-            if let Err(e) = result {
-                eprintln!("lsdj-app: MCP server stopped: {e}");
-            }
-        });
+        // Remember the actually-bound port so an ephemeral assignment is reused.
+        if let (Some(port), Some(path)) = (running.port, &port_path) {
+            save_port(path, port);
+        }
 
         McpServer {
-            port: Some(port),
-            token: Some(token),
+            app,
+            token,
             token_path,
-            cancel,
+            port_path,
+            running: Mutex::new(running),
         }
     }
 
-    /// The loopback port the MCP server bound, or `None` if disabled / failed.
+    /// The loopback port the server is bound to, or `None` if no bind succeeded.
     pub fn port(&self) -> Option<u16> {
-        self.port
+        lock_running(&self.running).port
     }
 
-    /// The current bearer token a client must present, or `None` if disabled.
+    /// The current bearer token a client must present.
     pub fn token(&self) -> Option<String> {
-        self.token.as_ref().map(|t| read_lock(t).clone())
+        Some(read_lock(&self.token).clone())
     }
 
     /// Mint a NEW token, persist it, and swap it in live so the middleware accepts it
-    /// at once (a leaked token is invalidated without restarting). Returns the new
-    /// token, or `None` if the server is disabled.
+    /// at once (a leaked token is invalidated without restarting). Returns the new token.
     pub fn rotate(&self) -> Option<String> {
-        let token = self.token.as_ref()?;
         let next = generate_token();
         if let Some(path) = &self.token_path {
             save_token(path, &next);
         }
-        *write_lock(token) = next.clone();
+        *write_lock(&self.token) = next.clone();
         Some(next)
     }
 
-    /// Stop the server task (graceful shutdown). Called from the app's `Exit` handler.
+    /// Rebind the server to `new_port`, restart the serving task, and persist it so it
+    /// holds across launches. Binds the new port BEFORE stopping the old task, so a
+    /// failed bind (port taken or privileged) leaves the running server untouched.
+    /// Returns the new port.
+    pub fn set_port(&self, new_port: u16) -> Result<u16, String> {
+        if new_port < 1024 {
+            return Err("choose a port between 1024 and 65535".to_string());
+        }
+        // Bind first; if this fails the old server keeps serving.
+        let (listener, port) =
+            bind_loopback(new_port).map_err(|e| format!("could not bind port {new_port}: {e}"))?;
+        let cancel = serve(self.app.clone(), self.token.clone(), listener, port);
+
+        let previous = {
+            let mut running = lock_running(&self.running);
+            std::mem::replace(
+                &mut *running,
+                RunningServer {
+                    port: Some(port),
+                    cancel,
+                },
+            )
+        };
+        previous.cancel.cancel();
+        if let Some(path) = &self.port_path {
+            save_port(path, port);
+        }
+        Ok(port)
+    }
+
+    /// Stop the serving task (graceful shutdown). Called from the app's `Exit` handler.
     pub fn shutdown(&self) {
-        self.cancel.cancel();
+        lock_running(&self.running).cancel.cancel();
     }
 }
 
 impl Drop for McpServer {
     fn drop(&mut self) {
-        self.cancel.cancel();
+        if let Ok(running) = self.running.get_mut() {
+            running.cancel.cancel();
+        }
     }
+}
+
+/// Bind a loopback TCP listener on `port` (0 = ephemeral) and return it with the
+/// actually-bound port, ready to hand to tokio.
+fn bind_loopback(port: u16) -> std::io::Result<(std::net::TcpListener, u16)> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
+    let actual = listener.local_addr()?.port();
+    listener.set_nonblocking(true)?;
+    Ok((listener, actual))
+}
+
+/// Spawn the streamable-HTTP serving task on `listener`; returns the token that stops
+/// it. The handler reaches the app's managed state through the cloned `AppHandle`, and
+/// the auth middleware reads the shared token fresh per request.
+fn serve(
+    app: AppHandle,
+    token: Arc<RwLock<String>>,
+    listener: std::net::TcpListener,
+    port: u16,
+) -> CancellationToken {
+    let service = StreamableHttpService::new(
+        move || Ok(McpHandler::new(app.clone())),
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default(),
+    );
+    let router = axum::Router::new()
+        .nest_service("/mcp", service)
+        .layer(axum::middleware::from_fn_with_state(token, require_token));
+
+    let cancel = CancellationToken::new();
+    let serve_cancel = cancel.clone();
+    tauri::async_runtime::spawn(async move {
+        let listener = match tokio::net::TcpListener::from_std(listener) {
+            Ok(listener) => listener,
+            Err(e) => {
+                eprintln!("lsdj-app: MCP server tokio listener failed: {e}");
+                return;
+            }
+        };
+        println!("lsdj-app: MCP server on http://127.0.0.1:{port}/mcp");
+        let result = axum::serve(listener, router)
+            .with_graceful_shutdown(async move { serve_cancel.cancelled().await })
+            .await;
+        if let Err(e) = result {
+            eprintln!("lsdj-app: MCP server stopped: {e}");
+        }
+    });
+    cancel
+}
+
+/// Bind + serve, preferring `desired` (the persisted / user port) and falling back to
+/// an ephemeral port if that bind fails, so the server still comes up. `port == None`
+/// only if even the ephemeral bind failed.
+fn spawn_server(app: &AppHandle, token: &Arc<RwLock<String>>, desired: Option<u16>) -> RunningServer {
+    let bound = desired
+        .and_then(|port| match bind_loopback(port) {
+            Ok(bound) => Some(bound),
+            Err(e) => {
+                eprintln!("lsdj-app: MCP server bind {port} failed ({e}); using an ephemeral port");
+                None
+            }
+        })
+        .or_else(|| match bind_loopback(0) {
+            Ok(bound) => Some(bound),
+            Err(e) => {
+                eprintln!("lsdj-app: MCP server bind failed: {e}");
+                None
+            }
+        });
+    match bound {
+        Some((listener, port)) => RunningServer {
+            port: Some(port),
+            cancel: serve(app.clone(), token.clone(), listener, port),
+        },
+        None => RunningServer {
+            port: None,
+            cancel: CancellationToken::new(),
+        },
+    }
+}
+
+fn lock_running(running: &Mutex<RunningServer>) -> std::sync::MutexGuard<'_, RunningServer> {
+    running.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 /// Reject any request that does not carry `Authorization: Bearer <token>`. The token
@@ -1084,6 +1172,31 @@ fn token_file(app: &AppHandle) -> Option<PathBuf> {
         .app_data_dir()
         .ok()
         .map(|dir| dir.join("mcp-token"))
+}
+
+/// The port file under the app data dir (`None` if it can't be resolved).
+fn port_file(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join("mcp-port"))
+}
+
+/// Read the persisted port — a plain decimal `u16` ≥ 1024 (privileged ports are
+/// rejected, like [`McpServer::set_port`]); `None` (ephemeral) if absent or invalid.
+fn load_port(path: &Path) -> Option<u16> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| text.trim().parse::<u16>().ok())
+        .filter(|port| *port >= 1024)
+}
+
+/// Persist the chosen port (best-effort) so it's reused next launch.
+fn save_port(path: &Path, port: u16) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, port.to_string());
 }
 
 /// Read the persisted token, or mint + save a new one (first run / empty file).

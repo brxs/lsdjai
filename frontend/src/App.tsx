@@ -9,6 +9,7 @@ import { useInterfaceStore, useProjected } from './audio/interfaceStore'
 import {
   getMcpInfo,
   rotateMcpToken,
+  setMcpPort,
   subscribeLoadTrack,
   subscribeLoadSample,
   subscribeDeckCommand,
@@ -94,13 +95,25 @@ function mcpSnippet(harness: string, endpoint: string, token: string): string {
 function McpSettings({
   info,
   onRotate,
+  onSetPort,
 }: {
   info: McpInfo | null
   onRotate: () => void
+  onSetPort: (port: number) => Promise<void>
 }) {
   const { t } = useTranslation()
   const [harness, setHarness] = useState('claudeCode')
   const [copied, setCopied] = useState(false)
+  const [portDraft, setPortDraft] = useState('')
+  const [portError, setPortError] = useState<string | null>(null)
+  const [seededPort, setSeededPort] = useState<number | null>(null)
+  // Seed / re-seed the port field from the live port (after a successful change) — the
+  // "adjust state during render" pattern, so the input shows the current port without
+  // a sync effect.
+  if (info?.port != null && info.port !== seededPort) {
+    setSeededPort(info.port)
+    setPortDraft(String(info.port))
+  }
   // Stable references for the memoised Select (its memo is load-bearing). Reset the
   // Copied flash whenever the tool changes.
   const harnessOptions = useMemo(
@@ -117,6 +130,17 @@ function McpSettings({
   }
 
   const endpoint = `http://127.0.0.1:${info.port}/mcp`
+  const applyPort = () => {
+    const port = Number(portDraft)
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+      setPortError(t('settings.mcpPortRange'))
+      return
+    }
+    setPortError(null)
+    void onSetPort(port).catch((error) =>
+      setPortError(t('settings.mcpPortError', { message: String(error) })),
+    )
+  }
   const kind = MCP_HARNESSES.find((entry) => entry.id === harness)?.kind ?? 'command'
   const snippet = mcpSnippet(harness, endpoint, info.token)
   const copySnippet = () => {
@@ -156,6 +180,28 @@ function McpSettings({
       <div className="settings-mcp__field">
         <span className="ui-field__label">{t('settings.mcpEndpoint')}</span>
         <code className="settings-mcp__value">{endpoint}</code>
+      </div>
+      <div className="settings-mcp__field">
+        <span className="ui-field__label">{t('settings.mcpPort')}</span>
+        <div className="settings-mcp__port-row">
+          <input
+            className="ui-field__input settings-mcp__port-input"
+            type="number"
+            min={1024}
+            max={65535}
+            value={portDraft}
+            onChange={(event) => {
+              setPortDraft(event.target.value)
+              setPortError(null)
+            }}
+          />
+          <Button onClick={applyPort} disabled={portDraft === String(info.port)}>
+            {t('settings.mcpApplyPort')}
+          </Button>
+        </div>
+        <span className="settings-mcp__note">
+          {portError ?? t('settings.mcpPortHint')}
+        </span>
       </div>
       <div className="settings-mcp__field">
         <span className="ui-field__label">{t('settings.mcpToken')}</span>
@@ -312,6 +358,13 @@ function App() {
     } catch {
       // The server isn't running — leave the displayed token as-is.
     }
+  }, [])
+  // Set + persist the MCP port and restart the server on it; reflect the new port (so
+  // the endpoint + snippets update). Rejects to the caller (McpSettings shows the
+  // error) if the port can't be bound, leaving the running server untouched.
+  const handleSetMcpPort = useCallback(async (port: number) => {
+    const bound = await setMcpPort(port)
+    setMcpInfo((info) => (info ? { ...info, port: bound } : info))
   }, [])
 
   // Hand the restored mix positions to the engine once — it holds them
@@ -875,7 +928,11 @@ function App() {
         <section className="modelmgr__section">
           <h3 className="modelmgr__heading">{t('settings.mcp')}</h3>
           <div className="settings-mcp">
-            <McpSettings info={mcpInfo} onRotate={handleRotateMcp} />
+            <McpSettings
+              info={mcpInfo}
+              onRotate={handleRotateMcp}
+              onSetPort={handleSetMcpPort}
+            />
           </div>
         </section>
       </Drawer>
