@@ -14,7 +14,7 @@ its slice has landed.
 
 ## Setup
 
-- [ ] `just tauri-dev`, app open, both decks audible, mixer visible in the centre,
+- [x] `just tauri-dev`, app open, both decks audible, mixer visible in the centre,
       FLX4 connected (Connect MIDI lit).
 
 ## Store foundation + global mixer projection — **landed**
@@ -23,23 +23,23 @@ The store records every mixer mutation and emits `store://changed`; App projects
 the crossfade and cue-mix from it (optimistic during a drag, reconciled to the
 store).
 
-- [ ] **Crossfader, screen.** Drag the on-screen crossfader end to end: the audio
+- [x] **Crossfader, screen.** Drag the on-screen crossfader end to end: the audio
       blends A↔B smoothly with no stutter or lag, exactly as before.
-- [ ] **Crossfader, hardware.** Move the FLX4 crossfader: the on-screen crossfader
+- [x] **Crossfader, hardware.** Move the FLX4 crossfader: the on-screen crossfader
       follows it and the audio blends — UI and hardware drive the same value.
-- [ ] **Cue mix, screen + hardware.** Move the cue-mix control (screen) and the
+- [x] **Cue mix, screen + hardware.** Move the cue-mix control (screen) and the
       FLX4 HEADPHONES MIX knob: the headphone blend shifts cue↔master and the
       on-screen control tracks the knob.
-- [ ] **No boot flash.** On launch the crossfader and cue-mix sit at their
+- [x] **No boot flash.** On launch the crossfader and cue-mix sit at their
       persisted positions immediately — no visible jump from a centre default.
-- [ ] **Persistence.** Move both, quit, relaunch: they restore where you left them.
+- [x] **Persistence.** Move both, quit, relaunch: they restore where you left them.
 
 ## Per-deck mixer projection — **landed**
 
 useDeck projects volume/EQ/CUE/FX/trim from the store and adopts external store
 changes (the future MCP writer) via a synced-gate reconcile.
 
-- [ ] Volume faders, the three EQ knobs, TRIM, CUE, and the Color FX knob/bank all
+- [x] Volume faders, the three EQ knobs, TRIM, CUE, and the Color FX knob/bank all
       behave exactly as before from the screen and the FLX4; high-rate sweeps stay
       smooth (the optimistic local render).
 
@@ -49,7 +49,7 @@ These are *read-back* state the webview derives and writes UP into the store for
 future MCP read; there is **no operator-facing change** in Phase 1 (nothing reads
 them back into the UI). So the only check is that nothing regressed:
 
-- [ ] Play/stop, model switching, hot-cue set/jump/clear, loading/unloading a
+- [x] Play/stop, model switching, hot-cue set/jump/clear, loading/unloading a
       track, freeze/sample pads, and the 2D style pad all behave exactly as before.
       (Cue state location moved to the store per ADR-0015 → ADR-0020, but the
       set/jump logic and the operator experience are unchanged.)
