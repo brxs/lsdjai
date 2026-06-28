@@ -1107,3 +1107,16 @@ pub fn set_deck_track(
         store.set_deck_track(deck, track);
     }
 }
+
+/// Mirror a deck's freeze/sample loop-slot labels into the store. A read-back the
+/// webview writes up when its slots change; no engine effect.
+#[tauri::command]
+pub fn set_deck_loop_labels(
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    labels: Vec<Option<String>>,
+) {
+    if valid_deck(deck) {
+        store.set_deck_loop_labels(deck, labels);
+    }
+}

@@ -117,6 +117,7 @@ function storeDeck(): DeckSnap {
     playing: false,
     cues: [],
     track: null,
+    loopLabels: [],
   }
 }
 

@@ -27,6 +27,7 @@ const deck = (): DeckSnap => ({
   playing: false,
   cues: [],
   track: null,
+  loopLabels: [],
 })
 
 const sample = (over: Partial<InterfaceState> = {}): InterfaceState => ({

@@ -129,6 +129,10 @@ pub struct DeckSnap {
     /// The loaded track's identity on a playback deck (a read-back the store
     /// mirrors), or `None` on a realtime deck / with no track.
     pub track: Option<TrackIdentitySnap>,
+    /// The freeze/sample loop-slot labels, one per pad (`None` for an empty slot or
+    /// an unlabelled freeze) — a read-back the store mirrors. Empty until the deck
+    /// reports its slots.
+    pub loop_labels: Vec<Option<String>>,
 }
 
 impl Default for DeckSnap {
@@ -152,6 +156,7 @@ impl Default for DeckSnap {
             playing: false,
             cues: Vec::new(),
             track: None,
+            loop_labels: Vec::new(),
         }
     }
 }
@@ -279,6 +284,12 @@ impl InterfaceState {
             d.track = track;
         }
     }
+
+    pub fn set_loop_labels(&mut self, deck: usize, labels: Vec<Option<String>>) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.loop_labels = labels;
+        }
+    }
 }
 
 /// The shell-level store: the locked [`InterfaceState`] plus the [`AppHandle`] used
@@ -380,6 +391,12 @@ impl InterfaceStore {
     pub fn set_deck_track(&self, deck: usize, track: Option<TrackIdentitySnap>) {
         self.mutate(move |s| s.set_track(deck, track));
     }
+
+    /// Mirror the freeze/sample loop-slot labels (a read-back the webview writes up
+    /// when its slots change).
+    pub fn set_deck_loop_labels(&self, deck: usize, labels: Vec<Option<String>>) {
+        self.mutate(move |s| s.set_loop_labels(deck, labels));
+    }
 }
 
 #[cfg(test)]
@@ -402,7 +419,16 @@ mod tests {
             assert!(!deck.playing);
             assert!(deck.cues.is_empty());
             assert_eq!(deck.track, None);
+            assert!(deck.loop_labels.is_empty());
         }
+    }
+
+    #[test]
+    fn loop_labels_are_mirrored_per_deck() {
+        let mut state = InterfaceState::default();
+        state.set_loop_labels(0, vec![Some("kick".to_string()), None]);
+        assert_eq!(state.decks[0].loop_labels, vec![Some("kick".to_string()), None]);
+        assert!(state.decks[1].loop_labels.is_empty());
     }
 
     #[test]

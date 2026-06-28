@@ -23,6 +23,7 @@ import { useAudioEngine } from '../audio/engineContext'
 import {
   getApiBaseUrl,
   setDeckCues,
+  setDeckLoopLabels,
   setDeckRealtime,
   setDeckTrack,
   subscribeModelsChanged,
@@ -476,6 +477,15 @@ export function useDeck(deckId: DeckId): DeckControls {
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deckIndex, track?.title, track?.bpm, track?.duration])
+
+  // Mirror the freeze/sample loop-slot labels UP into the store (ADR-0020): a
+  // read-back the webview writes when its slots change (null for an empty slot).
+  useEffect(() => {
+    setDeckLoopLabels(
+      deckIndex,
+      loop.slots.map((slot) => (slot.state === 'empty' ? null : slot.label)),
+    )
+  }, [deckIndex, loop.slots])
 
   const [primed, setPrimedState] = useState(false)
   const primedRef = useRef(primed)

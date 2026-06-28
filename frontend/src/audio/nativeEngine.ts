@@ -251,6 +251,9 @@ export type DeckSnap = {
   /** The loaded track's identity on a playback deck (a read-back the store
    * mirrors), or null on a realtime deck / with no track. */
   track: { title: string; bpm: number | null; durationSeconds: number } | null
+  /** Freeze/sample loop-slot labels, one per pad (null for an empty/unlabelled
+   * slot) — a read-back the store mirrors. */
+  loopLabels: (string | null)[]
 }
 
 /** The authoritative interface state the webview projects (mirrors Rust
@@ -296,6 +299,12 @@ export function setDeckTrack(
   track: { title: string; bpm: number | null; durationSeconds: number } | null,
 ): void {
   void invoke('set_deck_track', { deck, track }).catch(() => {})
+}
+
+/** Mirror a deck's freeze/sample loop-slot labels into the store. A read-back the
+ * webview writes up when its slots change. Fire-and-forget. */
+export function setDeckLoopLabels(deck: number, labels: (string | null)[]): void {
+  void invoke('set_deck_loop_labels', { deck, labels }).catch(() => {})
 }
 
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }
