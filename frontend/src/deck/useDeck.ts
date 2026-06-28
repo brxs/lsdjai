@@ -470,6 +470,16 @@ export function useDeck(deckId: DeckId): DeckControls {
     setDeckRealtime(deckIndex, state.model, state.playing)
   }, [deckIndex, state.model, state.playing])
 
+  // Adopt an EXTERNAL play/stop from the store (an MCP deck_play / deck_stop) so the
+  // on-screen transport reflects it — the read side the mirror push above pairs with.
+  // The agent's tool already drove the engine + worker, so this flips the reducer's
+  // play intent; our own play/stop keeps store and state equal, so it no-ops.
+  useEffect(() => {
+    const storePlaying = storeState?.decks[deckIndex]?.playing
+    if (storePlaying === undefined || storePlaying === state.playing) return
+    dispatch({ type: storePlaying ? 'play_requested' : 'stop_requested' })
+  }, [storeState, deckIndex, state.playing])
+
   // Mirror the loaded track's hot-cue points UP into the store (ADR-0015 →
   // ADR-0020): the cue STATE LOCATION moves to the store, while the webview keeps
   // the set/jump logic (jump is a plain seek). Empty with no track.

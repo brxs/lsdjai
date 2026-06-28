@@ -440,6 +440,13 @@ impl InterfaceStore {
         });
     }
 
+    /// Set just the realtime deck's play/stop intent (MCP `deck_play` / `deck_stop`).
+    /// The webview adopts it and reflects the transport on screen, leaving the model
+    /// read-back alone.
+    pub fn set_playing(&self, deck: usize, playing: bool) {
+        self.mutate(move |s| s.set_playing(deck, playing));
+    }
+
     /// Mirror the loaded track's hot-cue points (ADR-0015 → ADR-0020). The webview
     /// owns the set/jump logic and writes the current points up.
     pub fn set_deck_cues(&self, deck: usize, cues: Vec<Option<f64>>) {

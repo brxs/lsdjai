@@ -94,6 +94,30 @@ struct DeckArgs {
     deck: usize,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct FxAmountArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// Color FX amount/intensity, 0..1.
+    amount: f32,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct TrimArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// Channel trim in dB (0 = unity).
+    db: f32,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct CueArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// Headphone-cue (PFL) tap on/off.
+    on: bool,
+}
+
 /// The Stable Audio 3 pad engines the generation server exposes (`/api/generate`).
 /// `track` (the long-form medium model) is deliberately left out: this tool writes
 /// to the *samples* library (short loops/one-shots), not the songs library.
@@ -264,17 +288,53 @@ impl McpHandler {
         format!("deck {deck} fx cleared")
     }
 
+    #[tool(description = "Set a deck's Color FX amount/intensity (0..1) — how hard the \
+                          selected effect is driven. deck 0 = A, 1 = B.")]
+    async fn set_fx_amount(
+        &self,
+        Parameters(FxAmountArgs { deck, amount }): Parameters<FxAmountArgs>,
+    ) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        self.app.state::<Host>().set_fx_amount(deck, amount);
+        self.app.state::<InterfaceStore>().set_fx_amount(deck, amount);
+        format!("deck {deck} fx amount = {amount}")
+    }
+
+    #[tool(description = "Set a deck's channel trim in dB (0 = unity gain). deck 0 = A, 1 = B.")]
+    async fn set_trim(&self, Parameters(TrimArgs { deck, db }): Parameters<TrimArgs>) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        self.app.state::<Host>().set_trim(deck, db);
+        self.app.state::<InterfaceStore>().set_trim(deck, db);
+        format!("deck {deck} trim = {db} dB")
+    }
+
+    #[tool(description = "Toggle a deck's headphone cue (PFL) tap on or off. deck 0 = A, 1 = B.")]
+    async fn set_cue(&self, Parameters(CueArgs { deck, on }): Parameters<CueArgs>) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        self.app.state::<Host>().set_cue(deck, on);
+        self.app.state::<InterfaceStore>().set_cue(deck, on);
+        format!("deck {deck} cue {}", if on { "on" } else { "off" })
+    }
+
     #[tool(description = "Start a realtime deck generating.")]
     async fn deck_play(&self, Parameters(DeckArgs { deck }): Parameters<DeckArgs>) -> String {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
         }
         // Open the engine gate, then tell the worker to generate — the same order
-        // the `deck_play` command takes.
+        // the `deck_play` command takes — and record the intent in the store so the
+        // webview reflects the transport on screen (the bidirectional projection).
         self.app.state::<Host>().set_deck_playing(deck, true);
         self.app
             .state::<Sidecars>()
             .send(deck, &json!({ "type": "play" }).to_string());
+        self.app.state::<InterfaceStore>().set_playing(deck, true);
         format!("deck {deck} playing")
     }
 
@@ -287,6 +347,7 @@ impl McpHandler {
         self.app
             .state::<Sidecars>()
             .send(deck, &json!({ "type": "stop" }).to_string());
+        self.app.state::<InterfaceStore>().set_playing(deck, false);
         format!("deck {deck} stopped")
     }
 
