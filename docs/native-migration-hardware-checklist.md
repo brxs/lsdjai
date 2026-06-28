@@ -37,8 +37,10 @@ drawer).
       `list_audio_files` / `read_audio_file` path. A read is scoped to the chosen
       folder — picking a folder then loading a file outside it must fail.)
 - [ ] Freeze pads, generated pads (one-shots + loops), and style-sample capture.
-- [ ] Master recording works: record the master bus, stop, and the downloaded
-      WAV plays back the set (16-bit PCM, capped at 30 min).
+- [ ] Master recording works: record the master bus, stop, and the saved WAV
+      plays back the set (16-bit PCM, streamed to disk — no length cap; ADR-0028).
+      Record past 30 min and confirm the take is whole and RAM stays flat; the file
+      lands in the settings-chosen folder (empty = Downloads).
 - [ ] Jog the wheel while a track plays: the playhead phase-bends to catch up
       (push ahead / drag back for beatmatching) with no click — the engine's
       `nudge_track_phase` rate bend, not a seek. Paused, a jog is a fine seek.

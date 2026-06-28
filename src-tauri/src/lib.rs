@@ -468,6 +468,7 @@ pub fn run() {
             commands::audition_stop,
             commands::start_recording,
             commands::stop_recording,
+            commands::open_recordings_folder,
             commands::list_audio_files,
             commands::read_audio_file,
             commands::list_generated_songs,

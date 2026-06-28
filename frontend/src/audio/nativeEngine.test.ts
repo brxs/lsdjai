@@ -39,7 +39,7 @@ beforeEach(() => {
   const invoke = vi.fn((cmd: string, args?: unknown) => {
     calls.push({ cmd, args })
     if (cmd === 'engine_snapshot') return Promise.resolve(snapshot)
-    if (cmd === 'stop_recording') return Promise.resolve(new ArrayBuffer(44)) // a WAV
+    if (cmd === 'start_recording') return Promise.resolve('/Downloads/lsdj-take.wav') // path opened at start
     return Promise.resolve(undefined)
   })
   vi.stubGlobal('__TAURI__', { core: { invoke } })
@@ -311,15 +311,19 @@ describe('createNativeEngine — snapshot-backed getters', () => {
 })
 
 describe('createNativeEngine — graceful native stubs', () => {
-  it('recording drives the engine commands and returns a WAV blob', async () => {
+  it('recording drives the engine commands and returns the path opened at start', async () => {
     const engine = createNativeEngine()
-    await engine.startRecording()
-    const blob = await engine.stopRecording()
+    // The file opens at start (the take streams to disk), so the folder + stem go
+    // out with start_recording, which returns the path; stop just closes it.
+    const path = await engine.startRecording('/Sets', 'lsdj-take')
+    await engine.stopRecording()
     const cmds = calls.map((c) => c.cmd)
-    expect(cmds).toContain('start_recording')
+    expect(calls).toContainEqual({
+      cmd: 'start_recording',
+      args: { folder: '/Sets', name: 'lsdj-take' },
+    })
     expect(cmds).toContain('stop_recording')
-    expect(blob).toBeInstanceOf(Blob)
-    expect(blob.type).toBe('audio/wav')
+    expect(path).toBe('/Downloads/lsdj-take.wav')
   })
 
   it('resume resolves without throwing and cue-mix goes to the engine', async () => {

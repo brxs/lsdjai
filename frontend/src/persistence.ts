@@ -48,6 +48,11 @@ export type AppSettings = {
    * (clamped to the tray's bounds on load). */
   mediaOpen: boolean
   mediaHeight: number
+  /** Folder master-bus recordings are saved into. Empty = the OS Downloads
+   * folder (the default); a chosen folder is an absolute path the user picked
+   * through the native dialog. The folder may be gone on reload — the Rust save
+   * recreates it, falling back to Downloads only when empty. */
+  recordingsFolder: string
 }
 
 const STORAGE_KEY = 'lsdj:v1'
@@ -187,6 +192,11 @@ export function loadAppSettings(): Partial<AppSettings> {
   }
   if (Number.isFinite(stored.mediaHeight)) {
     settings.mediaHeight = clampMediaHeight(stored.mediaHeight as number)
+  }
+  // A string (including '' — an explicit "back to Downloads") round-trips; any
+  // other shape loads as absent and the default ('') applies.
+  if (typeof stored.recordingsFolder === 'string') {
+    settings.recordingsFolder = stored.recordingsFolder
   }
   return settings
 }

@@ -196,10 +196,14 @@ export type AudioEngine = {
   getMasterLevel: () => number
   /** The limiter's current gain reduction in dB (≤ 0); 0 when idle. */
   getMasterGainReduction: () => number
-  /** Start capturing the master bus (exactly the speaker feed). */
-  startRecording: () => Promise<void>
-  /** Stop capturing and return the session as a WAV blob. */
-  stopRecording: () => Promise<Blob>
+  /** Start capturing the master bus (exactly the speaker feed), streaming it to a
+   *  WAV in `folder` (empty = the OS Downloads folder, the default). The file is
+   *  opened now, so the path is minted at start and resolved here; `name` is the
+   *  filename stem — sanitised to one path component server-side. Streaming to disk
+   *  means the take is bounded by free space, not RAM (no length limit). */
+  startRecording: (folder: string, name: string) => Promise<string>
+  /** Stop capturing: flush the take and close the file opened at start. */
+  stopRecording: () => Promise<void>
 }
 
 /** The wire and graph rate end to end (backend workers generate 48 k). */

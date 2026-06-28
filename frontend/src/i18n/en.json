@@ -129,6 +129,7 @@
     "recordLabel": "REC",
     "stopRecording": "Stop recording",
     "recordingFor": "REC {{time}}",
+    "recordingSaved": "Saved {{name}}",
     "recordingError": "Recording failed: {{message}}",
     "phase": "Beat phase"
   },
@@ -262,7 +263,12 @@
     "audio": "Audio",
     "models": "Deck realtime models",
     "modelDeck": "Deck {{id}}",
-    "modelLibrary": "Model library"
+    "modelLibrary": "Model library",
+    "recording": "Recording",
+    "recordingFolder": "Recordings folder",
+    "recordingFolderDefault": "Downloads (default)",
+    "useDownloads": "Use Downloads",
+    "recordingFolderError": "Couldn't open folder: {{message}}"
   },
   "modelManager": {
     "loading": "Reading model status…",
