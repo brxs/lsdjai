@@ -195,6 +195,22 @@ struct StyleCursorArgs {
     y: f32,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SetModelArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// The realtime model to load (restarts the deck's worker).
+    model: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SetPromptArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// The text prompt the realtime deck should generate from.
+    prompt: String,
+}
+
 /// How many hot-cue pads a deck currently has — the loaded track's cue-bank size, 0
 /// with no track. Read from the store snapshot so the cue tools validate before
 /// writing (and report "no track" / "out of range" rather than silently no-op).
@@ -467,6 +483,56 @@ impl McpHandler {
             .state::<InterfaceStore>()
             .set_deck_cursor(deck, PadPointSnap { x, y });
         format!("deck {deck} style cursor set to ({x:.2}, {y:.2})")
+    }
+
+    /// Switch a realtime deck's model — restarts its worker. The UI reflects the
+    /// switch through the worker's model-loading/ready events (which the reducer
+    /// mirrors back up), so no separate store write is needed.
+    #[tool(
+        description = "Switch a realtime deck's model (restarts the deck's worker). \
+                       deck 0 = A, 1 = B."
+    )]
+    async fn set_model(
+        &self,
+        Parameters(SetModelArgs { deck, model }): Parameters<SetModelArgs>,
+    ) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        if model.is_empty() || model.len() > 64 {
+            return "invalid model name".to_string();
+        }
+        match self.app.state::<Sidecars>().restart(deck, &model) {
+            Ok(()) => format!("deck {deck} switching to model {model}"),
+            Err(e) => format!("could not switch deck {deck} to {model}: {e}"),
+        }
+    }
+
+    /// Set a realtime deck's generation prompt. Routed through the style pad as one
+    /// centred target so it shows on the pad and drives the worker — the same path the
+    /// UI takes (the bidirectional projection), not a hidden raw override.
+    #[tool(
+        description = "Set a realtime deck's generation prompt (appears on the style \
+                       pad as a single target). deck 0 = A, 1 = B."
+    )]
+    async fn set_prompt(
+        &self,
+        Parameters(SetPromptArgs { deck, prompt }): Parameters<SetPromptArgs>,
+    ) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        let center = PadPointSnap { x: 0.5, y: 0.5 };
+        self.app.state::<InterfaceStore>().set_deck_style(
+            deck,
+            vec![StyleTargetSnap {
+                x: 0.5,
+                y: 0.5,
+                text: prompt.clone(),
+            }],
+            center,
+        );
+        format!("deck {deck} prompt set to \"{prompt}\"")
     }
 
     /// Generate a clip via the loopback generation server and save it to the samples
