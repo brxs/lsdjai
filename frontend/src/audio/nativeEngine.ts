@@ -312,15 +312,37 @@ export function setDeckLoopLabels(deck: number, labels: (string | null)[]): void
   void invoke('set_deck_loop_labels', { deck, labels }).catch(() => {})
 }
 
+// Coalesce high-rate mirror writes to ~one invoke per animation frame, like the
+// engine's control coalescer. The style-pad mirror fires per pointermove (and the
+// 14-bit jog can drive cursor changes at 200-600/s); the write-only mirror must not
+// flood the store with full-state broadcasts (each re-renders every projection
+// consumer). Only the latest value per key in a frame is shipped.
+const mirrorPending = new Map<string, () => void>()
+let mirrorFlushScheduled = false
+function coalesceMirror(key: string, run: () => void): void {
+  mirrorPending.set(key, run)
+  if (mirrorFlushScheduled) return
+  mirrorFlushScheduled = true
+  requestAnimationFrame(() => {
+    mirrorFlushScheduled = false
+    const due = [...mirrorPending.values()]
+    mirrorPending.clear()
+    for (const r of due) r()
+  })
+}
+
 /** Mirror a realtime deck's 2D style-pad targets + cursor into the store. The
  * blended prompt still goes to the worker via deck_set_style; this records the UI
- * source for a future MCP read. Fire-and-forget. */
+ * source for a future MCP read. Coalesced to ~one invoke per frame (a style-pad
+ * drag fires this per pointermove). Fire-and-forget. */
 export function setDeckStyle(
   deck: number,
   targets: { x: number; y: number; text: string }[],
   cursor: { x: number; y: number },
 ): void {
-  void invoke('set_deck_style', { deck, targets, cursor }).catch(() => {})
+  coalesceMirror(`set_deck_style:${deck}`, () => {
+    void invoke('set_deck_style', { deck, targets, cursor }).catch(() => {})
+  })
 }
 
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }

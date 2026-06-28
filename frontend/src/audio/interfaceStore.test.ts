@@ -78,16 +78,31 @@ describe('useProjected', () => {
     expect(result.current[0]).toBe(0.2)
   })
 
-  it('adopts an external move that arrives after a local write (MIDI overrides UI)', () => {
-    const emit = vi.fn()
-    const { result, rerender } = renderHook(
-      ({ ext }: { ext: number | undefined }) =>
-        useProjected<number>(ext, 0.5, emit),
-      { initialProps: { ext: undefined as number | undefined } },
-    )
-    act(() => result.current[1](0.8)) // our gesture → synced + lastWrite 0.8
-    rerender({ ext: 0.1 }) // hardware moves it elsewhere
-    expect(result.current[0]).toBe(0.1)
+  it('suppresses a lagging echo mid-gesture, then adopts a settled external move', () => {
+    vi.useFakeTimers()
+    try {
+      const emit = vi.fn()
+      const { result, rerender } = renderHook(
+        ({ ext }: { ext: number | undefined }) =>
+          useProjected<number>(ext, 0.5, emit),
+        { initialProps: { ext: undefined as number | undefined } },
+      )
+      act(() => result.current[1](0.8)) // our gesture → synced + lastWrite 0.8
+
+      // A differing value within the settle window is a lagging coalesced echo,
+      // not an external move — adopting it would snap the control back a frame.
+      rerender({ ext: 0.1 })
+      expect(result.current[0]).toBe(0.8)
+
+      // Once the gesture settles, a genuine external move (MIDI / MCP) is adopted.
+      act(() => {
+        vi.advanceTimersByTime(200)
+      })
+      rerender({ ext: 0.3 })
+      expect(result.current[0]).toBe(0.3)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

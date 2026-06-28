@@ -70,6 +70,12 @@ export function useInterfaceStore(): InterfaceState | null {
  * seeds the first render before the store has reported (typically the persisted
  * value, so there is no flash). Use a primitive `T` (number/boolean/string): an
  * object would never compare equal across snapshots and would fight the gesture. */
+/** Suppress adopting a store value for this long after a local write. A fast drag
+ * emits coalesced moves whose echoes lag our latest write by a frame or two;
+ * adopting one would snap the control back (jitter). A settled external change
+ * (MIDI / MCP) arrives after the gesture, so it is still taken. */
+const SETTLE_MS = 120
+
 export function useProjected<T>(
   external: T | undefined,
   initial: T,
@@ -77,6 +83,7 @@ export function useProjected<T>(
 ): [T, (value: T) => void] {
   const [local, setLocal] = useState<T>(initial)
   const lastWrite = useRef<T>(initial)
+  const lastWriteAt = useRef(0)
   // Until the store confirms our seed (boot hydration replays the persisted value),
   // ignore a differing store value — it's the pre-hydration Rust default, not an
   // external change. Once the store echoes our value we are synced, and every later
@@ -89,11 +96,15 @@ export function useProjected<T>(
       return
     }
     if (!synced.current) return
+    // A differing value that lands while we are still driving the control is a
+    // lagging echo, not an external move — taking it would revert the thumb a frame.
+    if (Date.now() - lastWriteAt.current < SETTLE_MS) return
     lastWrite.current = external
     setLocal(external)
   }, [external])
   const set = (value: T) => {
     lastWrite.current = value
+    lastWriteAt.current = Date.now()
     synced.current = true
     setLocal(value)
     emit(value)

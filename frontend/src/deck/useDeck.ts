@@ -408,11 +408,21 @@ export function useDeck(deckId: DeckId): DeckControls {
     const mix = storeState?.decks[deckIndex]
     if (!mix) return
     if (!mixerSyncedRef.current) {
-      if (
+      // Sync only once the store reflects the WHOLE mixer tuple this deck holds, so
+      // a coincidental partial match (e.g. a persisted volume of exactly 1.0 — the
+      // store default — before the lazy boot replay runs) can't flip the gate and
+      // adopt store defaults over the persisted FX/cue/EQ. When the full tuple
+      // matches, adopting is a no-op anyway.
+      const synced =
         mix.volume === volumeRef.current &&
         mix.eq.low === eqRef.current.low &&
+        mix.eq.mid === eqRef.current.mid &&
+        mix.eq.high === eqRef.current.high &&
+        mix.cue === cueRef.current &&
+        fxKindFromSnap(mix.fx.kind) === fxRef.current.kind &&
+        mix.fx.amount === fxRef.current.amount &&
         mix.trimDb === trimRef.current.db
-      ) {
+      if (synced) {
         mixerSyncedRef.current = true
       } else {
         return

@@ -350,10 +350,19 @@ impl InterfaceStore {
     /// The clone happens under the lock and the emit after it drops, so serialisation
     /// never holds the mutex. A poisoned lock is recovered (a panic in another
     /// holder must not wedge every later control).
+    ///
+    /// A mutation that leaves the state unchanged emits nothing — many mirror writers
+    /// re-push identical values (a boot replay, a `track?.cues` reference change with
+    /// the same points), and a redundant `store://changed` would re-render every
+    /// projection consumer for no reason.
     fn mutate(&self, f: impl FnOnce(&mut InterfaceState)) {
         let snapshot = {
             let mut state = self.lock();
+            let before = state.clone();
             f(&mut state);
+            if *state == before {
+                return;
+            }
             state.clone()
         };
         let _ = self.app.emit(STORE_CHANGED_EVENT, &snapshot);

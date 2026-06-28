@@ -1766,6 +1766,24 @@ describe('useDeck mixer projection (ADR-0020)', () => {
     act(() => fireStore({ volume: 1 }))
     expect(result.current.volume).toBe(0.8)
   })
+
+  it('does not clobber FX when the store volume coincides with the default pre-sync', () => {
+    const { result } = renderDeck(makeFakeEngine().engine)
+    // Put the deck where the OLD partial gate (volume/eq.low/trim) would mis-fire:
+    // volume at exactly 1.0 (the Rust store default), with a persisted FX selected.
+    act(() => {
+      result.current.setVolume(1)
+    })
+    act(() => {
+      result.current.setFx('filter')
+    })
+    expect(result.current.fx.kind).toBe('filter')
+
+    // A pre-hydration snapshot whose volume/EQ/trim coincide with the defaults but
+    // whose fx is still null must NOT flip the gate and clobber the FX.
+    act(() => fireStore({ volume: 1, fx: { kind: null, amount: 0 } }))
+    expect(result.current.fx.kind).toBe('filter')
+  })
 })
 
 describe('useDeck realtime mirror (ADR-0020)', () => {
