@@ -943,12 +943,45 @@
   color: var(--color-text-muted);
 }
 
-/* The config JSON keeps its formatting and scrolls rather than wrapping. */
-.settings-mcp__code {
+/* The connection snippet: its own bordered block (a module, like the rest of the
+   instrument), with a silkscreen action header + Copy button over the code body. */
+.settings-mcp__snippet {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-inset);
+}
+.settings-mcp__snippet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+.settings-mcp__action {
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-silkscreen);
+}
+/* The snippet keeps its formatting and scrolls rather than wrapping; brighter than
+   the muted raw values so the copy target reads clearly. */
+.settings-mcp__snippet-body {
   margin: 0;
+  padding: var(--space-3);
+  font: 500 var(--text-s) var(--font-mono);
+  color: var(--color-text);
   white-space: pre;
-  word-break: normal;
   overflow-x: auto;
+  user-select: all;
+}
+.settings-mcp__divider {
+  height: 1px;
+  background: var(--color-border);
+  margin: var(--space-1) 0;
+}
+.settings-mcp__note {
+  font: 500 var(--text-xs) var(--font-mono);
+  color: var(--color-text-muted);
 }
 
 /* Per-deck model pickers (moved out of the deck column): the same stacked

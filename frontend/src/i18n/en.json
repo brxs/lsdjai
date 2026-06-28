@@ -270,13 +270,28 @@
     "useDownloads": "Use Downloads",
     "recordingFolderError": "Couldn't open folder: {{message}}",
     "mcp": "AI co-DJ (MCP)",
-    "mcpHint": "Connect Claude Desktop or Claude Code to drive the decks, mixer, and FX and read the live state. Use the snippets below — the endpoint and bearer token are filled in for this session.",
+    "mcpHint": "Connect your AI tool to drive the decks, mixer, FX, cues, and style — and read the live state. Pick your tool and copy the snippet; the endpoint and token are filled in for this session.",
+    "mcpHarness": "Your AI tool",
+    "mcpHarnesses": {
+      "claudeCode": "Claude Code",
+      "claudeDesktop": "Claude Desktop",
+      "cursor": "Cursor",
+      "vscode": "VS Code"
+    },
+    "mcpRunLabel": "Run in your terminal",
+    "mcpConfigLabel": "Config — JSON",
+    "mcpCopy": "Copy",
+    "mcpCopied": "Copied ✓",
+    "mcpStep": {
+      "claudeCode": "Run this once — LSDJ shows up as a tool. Needs the Claude Code CLI.",
+      "claudeDesktop": "Add to ~/Library/Application Support/Claude/claude_desktop_config.json, then fully quit and reopen Claude Desktop.",
+      "cursor": "Add to .cursor/mcp.json in your project, or ~/.cursor/mcp.json for every project.",
+      "vscode": "Add to .vscode/mcp.json in your workspace, then press Start on the server."
+    },
     "mcpEndpoint": "Endpoint",
     "mcpToken": "Bearer token",
-    "mcpClaudeCode": "Claude Code (terminal)",
-    "mcpConfig": "Claude Desktop / Cursor (config file)",
-    "mcpConfigPath": "For Claude Desktop, add the block above to ~/Library/Application Support/Claude/claude_desktop_config.json and restart it; for Cursor, use .cursor/mcp.json. The token persists across launches — rotate it to invalidate a copy you've shared.",
     "mcpRotate": "Rotate token",
+    "mcpTokenHint": "Persists across launches. Rotate to revoke a copy you've shared.",
     "mcpDisabled": "The MCP server couldn't start — its loopback port was unavailable. Relaunch the app to try again."
   },
   "modelManager": {

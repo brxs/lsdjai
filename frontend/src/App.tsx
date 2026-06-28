@@ -45,10 +45,45 @@ import { phaseOffsetBeats } from './audio/track'
 import { handleShortcutKey } from './shortcuts'
 import { sameMask } from './selectionMask'
 
-/** The "AI co-DJ (MCP)" Settings body (ADR-0020 Phase 2): the live endpoint +
- * bearer token, with copy-paste connection snippets for the common agent
- * harnesses. The server is always on; the fallback hint shows only if the
- * loopback bind failed. */
+/** The agent harnesses we tailor a connection snippet for. A `command` harness gets
+ * a one-line CLI; a `config` harness gets a JSON block for its settings file (the
+ * per-tool file path lives in the step copy). */
+const MCP_HARNESSES: { id: string; kind: 'command' | 'config' }[] = [
+  { id: 'claudeCode', kind: 'command' },
+  { id: 'claudeDesktop', kind: 'config' },
+  { id: 'cursor', kind: 'config' },
+  { id: 'vscode', kind: 'config' },
+]
+
+/** Build the copy-paste connection snippet for one harness with the live endpoint +
+ * token baked in. VS Code keys servers under `servers`; the others use `mcpServers`
+ * (and Claude Code adds it via its CLI). */
+function mcpSnippet(harness: string, endpoint: string, token: string): string {
+  const headers = { Authorization: `Bearer ${token}` }
+  switch (harness) {
+    case 'claudeCode':
+      return `claude mcp add --transport http lsdj ${endpoint} --header "Authorization: Bearer ${token}"`
+    case 'vscode':
+      return JSON.stringify(
+        { servers: { lsdj: { type: 'http', url: endpoint, headers } } },
+        null,
+        2,
+      )
+    case 'cursor':
+      return JSON.stringify({ mcpServers: { lsdj: { url: endpoint, headers } } }, null, 2)
+    default:
+      return JSON.stringify(
+        { mcpServers: { lsdj: { type: 'http', url: endpoint, headers } } },
+        null,
+        2,
+      )
+  }
+}
+
+/** The "AI co-DJ (MCP)" Settings body (ADR-0020 Phase 2): pick your AI tool, copy a
+ * tailored connection snippet (the live endpoint + bearer token baked in), with the
+ * raw endpoint/token and a rotate control below. The server is always on; the
+ * fallback hint shows only if the loopback bind failed. */
 function McpSettings({
   info,
   onRotate,
@@ -57,23 +92,60 @@ function McpSettings({
   onRotate: () => void
 }) {
   const { t } = useTranslation()
+  const [harness, setHarness] = useState('claudeCode')
+  const [copied, setCopied] = useState(false)
+  // Stable references for the memoised Select (its memo is load-bearing). Reset the
+  // Copied flash whenever the tool changes.
+  const harnessOptions = useMemo(
+    () => MCP_HARNESSES.map(({ id }) => ({ value: id, label: t(`settings.mcpHarnesses.${id}`) })),
+    [t],
+  )
+  const pickHarness = useCallback((value: string) => {
+    setHarness(value)
+    setCopied(false)
+  }, [])
+
   if (!info?.port || !info.token) {
     return <p className="settings-mcp__hint">{t('settings.mcpDisabled')}</p>
   }
+
   const endpoint = `http://127.0.0.1:${info.port}/mcp`
-  const claudeCode = `claude mcp add --transport http lsdj ${endpoint} --header "Authorization: Bearer ${info.token}"`
-  const configJson = `{
-  "mcpServers": {
-    "lsdj": {
-      "type": "http",
-      "url": "${endpoint}",
-      "headers": { "Authorization": "Bearer ${info.token}" }
-    }
+  const kind = MCP_HARNESSES.find((entry) => entry.id === harness)?.kind ?? 'command'
+  const snippet = mcpSnippet(harness, endpoint, info.token)
+  const copySnippet = () => {
+    void navigator.clipboard
+      ?.writeText(snippet)
+      .then(() => {
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 1500)
+      })
+      .catch(() => {})
   }
-}`
+
   return (
     <>
       <p className="settings-mcp__hint">{t('settings.mcpHint')}</p>
+      <Select
+        label={t('settings.mcpHarness')}
+        value={harness}
+        options={harnessOptions}
+        onChange={pickHarness}
+      />
+      <div className="settings-mcp__snippet">
+        <div className="settings-mcp__snippet-head">
+          <span className="settings-mcp__action">
+            {kind === 'command' ? t('settings.mcpRunLabel') : t('settings.mcpConfigLabel')}
+          </span>
+          <Button variant="primary" onClick={copySnippet}>
+            {copied ? t('settings.mcpCopied') : t('settings.mcpCopy')}
+          </Button>
+        </div>
+        <pre className="settings-mcp__snippet-body">{snippet}</pre>
+      </div>
+      <p className="settings-mcp__hint">{t(`settings.mcpStep.${harness}`)}</p>
+
+      <div className="settings-mcp__divider" />
+
       <div className="settings-mcp__field">
         <span className="ui-field__label">{t('settings.mcpEndpoint')}</span>
         <code className="settings-mcp__value">{endpoint}</code>
@@ -82,16 +154,8 @@ function McpSettings({
         <span className="ui-field__label">{t('settings.mcpToken')}</span>
         <code className="settings-mcp__value">{info.token}</code>
         <Button onClick={onRotate}>{t('settings.mcpRotate')}</Button>
+        <span className="settings-mcp__note">{t('settings.mcpTokenHint')}</span>
       </div>
-      <div className="settings-mcp__field">
-        <span className="ui-field__label">{t('settings.mcpClaudeCode')}</span>
-        <code className="settings-mcp__value">{claudeCode}</code>
-      </div>
-      <div className="settings-mcp__field">
-        <span className="ui-field__label">{t('settings.mcpConfig')}</span>
-        <pre className="settings-mcp__value settings-mcp__code">{configJson}</pre>
-      </div>
-      <p className="settings-mcp__hint">{t('settings.mcpConfigPath')}</p>
     </>
   )
 }
