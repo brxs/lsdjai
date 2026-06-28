@@ -22,6 +22,16 @@ export function Drawer({
   children: ReactNode
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
+  // Keep the latest onClose in a ref so the focus/keydown effect below does NOT
+  // depend on it. onClose is typically an inline closure (a fresh reference every
+  // parent render); listing it would re-run the effect on EVERY render, and its
+  // `panel.focus()` would steal focus back from an open child — dismissing an open
+  // native <select>. While a deck plays App re-renders ~10 Hz, so any open Settings
+  // select closed at once. Focus must move in only when `open` flips true.
+  const onCloseRef = useRef(onClose)
+  useEffect(() => {
+    onCloseRef.current = onClose
+  }, [onClose])
 
   useEffect(() => {
     if (!open) return
@@ -30,7 +40,7 @@ export function Drawer({
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         e.stopPropagation()
-        onClose()
+        onCloseRef.current()
         return
       }
       if (e.key !== 'Tab' || !panel) return
@@ -57,7 +67,7 @@ export function Drawer({
     }
     document.addEventListener('keydown', onKeyDown, true)
     return () => document.removeEventListener('keydown', onKeyDown, true)
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
 
