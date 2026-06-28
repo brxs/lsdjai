@@ -84,6 +84,13 @@ export function getMcpInfo(): Promise<McpInfo> {
     .catch(() => ({ port: null, token: null }))
 }
 
+/** Mint a new MCP bearer token, persist it, and swap it in live (the Settings
+ * "Rotate token" button) — invalidating a leaked token without an app restart.
+ * Resolves to the new token. */
+export function rotateMcpToken(): Promise<string> {
+  return invoke<string>('rotate_mcp_token')
+}
+
 /** Fire a command at the Rust engine (or a Tauri plugin, e.g. `plugin:dialog|open`).
  * Rejects (caught by callers that care) when the IPC bridge is absent — never
  * throws synchronously. Exported for the few non-engine native callers

@@ -6,7 +6,7 @@ import { uploadStyleSample } from './audio/styleSample'
 import { invoke } from './audio/nativeEngine'
 import { useAudioEngine } from './audio/engineContext'
 import { useInterfaceStore, useProjected } from './audio/interfaceStore'
-import { getMcpInfo, type McpInfo } from './audio/nativeEngine'
+import { getMcpInfo, rotateMcpToken, type McpInfo } from './audio/nativeEngine'
 import { FX_KINDS } from './audio/fx'
 import { applyAppIntent } from './control/appIntents'
 import { useControlBus } from './control/busContext'
@@ -48,7 +48,13 @@ import { sameMask } from './selectionMask'
 /** The "AI co-DJ (MCP)" Settings body (ADR-0020 Phase 2): the live endpoint +
  * bearer token, with copy-paste connection snippets for the common agent
  * harnesses. A hint to enable the server when it's off (`LSDJ_MCP` unset). */
-function McpSettings({ info }: { info: McpInfo | null }) {
+function McpSettings({
+  info,
+  onRotate,
+}: {
+  info: McpInfo | null
+  onRotate: () => void
+}) {
   const { t } = useTranslation()
   if (!info?.port || !info.token) {
     return <p className="settings-mcp__hint">{t('settings.mcpDisabled')}</p>
@@ -74,6 +80,7 @@ function McpSettings({ info }: { info: McpInfo | null }) {
       <div className="settings-mcp__field">
         <span className="ui-field__label">{t('settings.mcpToken')}</span>
         <code className="settings-mcp__value">{info.token}</code>
+        <Button onClick={onRotate}>{t('settings.mcpRotate')}</Button>
       </div>
       <div className="settings-mcp__field">
         <span className="ui-field__label">{t('settings.mcpClaudeCode')}</span>
@@ -223,6 +230,16 @@ function App() {
   const [mcpInfo, setMcpInfo] = useState<McpInfo | null>(null)
   useEffect(() => {
     void getMcpInfo().then(setMcpInfo)
+  }, [])
+  // Rotate the MCP bearer token: mint + persist a new one and show it (the old one
+  // stops working at once). A no-op surfaced as nothing if the server is off.
+  const handleRotateMcp = useCallback(async () => {
+    try {
+      const token = await rotateMcpToken()
+      setMcpInfo((info) => (info ? { ...info, token } : info))
+    } catch {
+      // The server isn't running — leave the displayed token as-is.
+    }
   }, [])
 
   // Hand the restored mix positions to the engine once — it holds them
@@ -742,7 +759,7 @@ function App() {
         <section className="modelmgr__section">
           <h3 className="modelmgr__heading">{t('settings.mcp')}</h3>
           <div className="settings-mcp">
-            <McpSettings info={mcpInfo} />
+            <McpSettings info={mcpInfo} onRotate={handleRotateMcp} />
           </div>
         </section>
       </Drawer>

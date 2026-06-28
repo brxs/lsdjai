@@ -228,6 +228,14 @@ fn app_info(
     }
 }
 
+/// Mint a new MCP bearer token, persist it, and swap it in live (the Settings
+/// "Rotate token" button). Returns the new token; errors if the server isn't running.
+#[tauri::command]
+fn rotate_mcp_token(mcp: tauri::State<'_, mcp::McpServer>) -> Result<String, String> {
+    mcp.rotate()
+        .ok_or_else(|| "the MCP server is not running".to_string())
+}
+
 /// One selectable output device for the picker (serde camelCase → `cueCapable`).
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -472,6 +480,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            rotate_mcp_token,
             list_output_devices,
             set_main_device,
             set_cue_device,

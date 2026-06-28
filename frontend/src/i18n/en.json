@@ -275,7 +275,8 @@
     "mcpToken": "Bearer token",
     "mcpClaudeCode": "Claude Code (terminal)",
     "mcpConfig": "Claude Desktop / Cursor (config file)",
-    "mcpConfigPath": "For Claude Desktop, add the block above to ~/Library/Application Support/Claude/claude_desktop_config.json and restart it; for Cursor, use .cursor/mcp.json. The token changes each launch.",
+    "mcpConfigPath": "For Claude Desktop, add the block above to ~/Library/Application Support/Claude/claude_desktop_config.json and restart it; for Cursor, use .cursor/mcp.json. The token persists across launches — rotate it to invalidate a copy you've shared.",
+    "mcpRotate": "Rotate token",
     "mcpDisabled": "The MCP server is off. Relaunch with LSDJ_MCP=1 to enable it."
   },
   "modelManager": {
