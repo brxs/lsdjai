@@ -28,9 +28,12 @@ use rmcp::transport::streamable_http_server::tower::{
 };
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler};
 use serde::Deserialize;
+use serde_json::json;
 use tauri::{AppHandle, Manager};
 use tokio_util::sync::CancellationToken;
 
+use crate::commands::{valid_deck, EqBandArg, FxKindArg};
+use crate::sidecar::Sidecars;
 use crate::store::InterfaceStore;
 use lsdj_engine::host::Host;
 
@@ -47,6 +50,44 @@ pub struct McpHandler {
 struct CrossfadeArgs {
     /// Crossfader position, 0 = deck A, 1 = deck B.
     position: f32,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DeckGainArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// Channel volume, 0..1.
+    gain: f32,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DeckEqArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// EQ band.
+    band: EqBandArg,
+    /// EQ amount, 0..1 (0.5 = flat).
+    value: f32,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct CueMixArgs {
+    /// Headphone cue/master blend, 0 = cue only, 1 = master.
+    position: f32,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DeckFxArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// Color FX kind.
+    kind: FxKindArg,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DeckArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
 }
 
 #[tool_router]
@@ -69,6 +110,91 @@ impl McpHandler {
         self.app.state::<Host>().set_crossfade(position);
         self.app.state::<InterfaceStore>().set_crossfade(position);
         format!("crossfade set to {position}")
+    }
+
+    #[tool(description = "Set a deck's channel volume (0..1). deck 0 = A, 1 = B.")]
+    async fn set_volume(
+        &self,
+        Parameters(DeckGainArgs { deck, gain }): Parameters<DeckGainArgs>,
+    ) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        self.app.state::<Host>().set_volume(deck, gain);
+        self.app.state::<InterfaceStore>().set_volume(deck, gain);
+        format!("deck {deck} volume = {gain}")
+    }
+
+    #[tool(description = "Set a deck's EQ band (low/mid/high) amount (0..1; 0.5 = flat).")]
+    async fn set_eq(
+        &self,
+        Parameters(DeckEqArgs { deck, band, value }): Parameters<DeckEqArgs>,
+    ) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        self.app.state::<Host>().set_eq(deck, band.into(), value);
+        self.app.state::<InterfaceStore>().set_eq(deck, band.into(), value);
+        format!("deck {deck} eq updated")
+    }
+
+    #[tool(description = "Set the headphone cue/master blend (0 = cue only, 1 = master).")]
+    async fn set_cue_mix(
+        &self,
+        Parameters(CueMixArgs { position }): Parameters<CueMixArgs>,
+    ) -> String {
+        self.app.state::<Host>().set_cue_mix(position);
+        self.app.state::<InterfaceStore>().set_cue_mix(position);
+        format!("cue mix = {position}")
+    }
+
+    #[tool(description = "Select a deck's Color FX: filter, dubEcho, space, crush, noise, or sweep.")]
+    async fn set_fx(
+        &self,
+        Parameters(DeckFxArgs { deck, kind }): Parameters<DeckFxArgs>,
+    ) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        self.app.state::<Host>().set_fx(deck, kind.into());
+        self.app.state::<InterfaceStore>().set_fx(deck, kind.into());
+        format!("deck {deck} fx selected")
+    }
+
+    #[tool(description = "Remove a deck's Color FX.")]
+    async fn clear_fx(&self, Parameters(DeckArgs { deck }): Parameters<DeckArgs>) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        self.app.state::<Host>().clear_fx(deck);
+        self.app.state::<InterfaceStore>().clear_fx(deck);
+        format!("deck {deck} fx cleared")
+    }
+
+    #[tool(description = "Start a realtime deck generating.")]
+    async fn deck_play(&self, Parameters(DeckArgs { deck }): Parameters<DeckArgs>) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        // Open the engine gate, then tell the worker to generate — the same order
+        // the `deck_play` command takes.
+        self.app.state::<Host>().set_deck_playing(deck, true);
+        self.app
+            .state::<Sidecars>()
+            .send(deck, &json!({ "type": "play" }).to_string());
+        format!("deck {deck} playing")
+    }
+
+    #[tool(description = "Stop a realtime deck.")]
+    async fn deck_stop(&self, Parameters(DeckArgs { deck }): Parameters<DeckArgs>) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        self.app.state::<Host>().set_deck_playing(deck, false);
+        self.app
+            .state::<Sidecars>()
+            .send(deck, &json!({ "type": "stop" }).to_string());
+        format!("deck {deck} stopped")
     }
 }
 

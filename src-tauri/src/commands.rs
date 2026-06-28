@@ -39,8 +39,9 @@ use crate::songs::{NewSong, SongEntry, SongLibrary};
 use crate::store::{InterfaceState, InterfaceStore};
 
 /// Reject a deck index outside `[0, DECK_COUNT)`. A bad index from the webview is
-/// a no-op (the command returns without touching the engine), never a panic.
-fn valid_deck(deck: usize) -> bool {
+/// a no-op (the command returns without touching the engine), never a panic. Shared
+/// with the MCP server (`crate::mcp`), so an agent's deck index hits the same guard.
+pub(crate) fn valid_deck(deck: usize) -> bool {
     deck < DECK_COUNT
 }
 
@@ -51,7 +52,8 @@ fn valid_slot(slot: usize) -> bool {
 
 /// The EQ band as it crosses the IPC boundary. Mirrors the engine [`EqBand`] but
 /// is a serde enum so the webview names bands by intent, not a magic index.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// `JsonSchema` too, so the MCP tool surface (`crate::mcp`) reuses it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum EqBandArg {
     Low,
@@ -71,8 +73,8 @@ impl From<EqBandArg> for EqBand {
 
 /// The Color FX kind as it crosses the IPC boundary (the six `fx.ts` effects).
 /// A serde enum so an unknown effect name is a clean deserialization `Err` rather
-/// than a silent fallback.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// than a silent fallback. `JsonSchema` too, for the MCP tool surface (`crate::mcp`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum FxKindArg {
     Filter,
