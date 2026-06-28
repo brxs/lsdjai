@@ -1120,3 +1120,18 @@ pub fn set_deck_loop_labels(
         store.set_deck_loop_labels(deck, labels);
     }
 }
+
+/// Mirror a realtime deck's 2D style-pad targets + cursor into the store (the UI
+/// source DeckColumn blends into the worker prompt). A read-back the webview writes
+/// up on change; no engine effect (the blended prompt still goes via deck_set_style).
+#[tauri::command]
+pub fn set_deck_style(
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    targets: Vec<crate::store::StyleTargetSnap>,
+    cursor: crate::store::PadPointSnap,
+) {
+    if valid_deck(deck) {
+        store.set_deck_style(deck, targets, cursor);
+    }
+}

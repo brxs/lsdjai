@@ -100,6 +100,25 @@ pub struct TrackIdentitySnap {
     pub duration_seconds: f64,
 }
 
+/// A point on the 2D style pad (0..1 each axis). `Deserialize` too — the cursor
+/// crosses as a `set_deck_style` command argument.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PadPointSnap {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// One style-pad target: a prompt at a pad position (the sampled-target embedding
+/// id is session-only and stays out, like the persisted layout). `Deserialize` too
+/// — targets cross as a `set_deck_style` argument.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StyleTargetSnap {
+    pub x: f32,
+    pub y: f32,
+    pub text: String,
+}
+
 /// One deck's state in the store: the mixer channel plus the realtime-deck
 /// read-backs the store mirrors (model / playing). Not `Copy` — `model` is a
 /// `String`.
@@ -133,6 +152,11 @@ pub struct DeckSnap {
     /// an unlabelled freeze) — a read-back the store mirrors. Empty until the deck
     /// reports its slots.
     pub loop_labels: Vec<Option<String>>,
+    /// The realtime deck's 2D style-pad targets (prompt + position) — the UI source
+    /// the deck blends into the worker prompt. Mirrored up by `DeckColumn`.
+    pub style_targets: Vec<StyleTargetSnap>,
+    /// The 2D style-pad cursor (the blend point).
+    pub cursor: PadPointSnap,
 }
 
 impl Default for DeckSnap {
@@ -157,6 +181,8 @@ impl Default for DeckSnap {
             cues: Vec::new(),
             track: None,
             loop_labels: Vec::new(),
+            style_targets: Vec::new(),
+            cursor: PadPointSnap { x: 0.5, y: 0.5 },
         }
     }
 }
@@ -290,6 +316,13 @@ impl InterfaceState {
             d.loop_labels = labels;
         }
     }
+
+    pub fn set_style(&mut self, deck: usize, targets: Vec<StyleTargetSnap>, cursor: PadPointSnap) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.style_targets = targets;
+            d.cursor = cursor;
+        }
+    }
 }
 
 /// The shell-level store: the locked [`InterfaceState`] plus the [`AppHandle`] used
@@ -397,6 +430,12 @@ impl InterfaceStore {
     pub fn set_deck_loop_labels(&self, deck: usize, labels: Vec<Option<String>>) {
         self.mutate(move |s| s.set_loop_labels(deck, labels));
     }
+
+    /// Mirror the realtime deck's 2D style-pad targets + cursor (the UI source the
+    /// deck blends into the worker prompt). `DeckColumn` writes them up on change.
+    pub fn set_deck_style(&self, deck: usize, targets: Vec<StyleTargetSnap>, cursor: PadPointSnap) {
+        self.mutate(move |s| s.set_style(deck, targets, cursor));
+    }
 }
 
 #[cfg(test)]
@@ -420,7 +459,29 @@ mod tests {
             assert!(deck.cues.is_empty());
             assert_eq!(deck.track, None);
             assert!(deck.loop_labels.is_empty());
+            assert!(deck.style_targets.is_empty());
+            assert_eq!(deck.cursor, PadPointSnap { x: 0.5, y: 0.5 });
         }
+    }
+
+    #[test]
+    fn style_targets_and_cursor_are_mirrored_per_deck() {
+        let mut state = InterfaceState::default();
+        state.set_style(
+            0,
+            vec![StyleTargetSnap {
+                x: 0.2,
+                y: 0.8,
+                text: "dub".to_string(),
+            }],
+            PadPointSnap { x: 0.3, y: 0.4 },
+        );
+        assert_eq!(state.decks[0].style_targets.len(), 1);
+        assert_eq!(state.decks[0].style_targets[0].text, "dub");
+        assert_eq!(state.decks[0].cursor, PadPointSnap { x: 0.3, y: 0.4 });
+        // The other deck is untouched.
+        assert!(state.decks[1].style_targets.is_empty());
+        assert_eq!(state.decks[1].cursor, PadPointSnap { x: 0.5, y: 0.5 });
     }
 
     #[test]

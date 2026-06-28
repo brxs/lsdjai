@@ -254,6 +254,11 @@ export type DeckSnap = {
   /** Freeze/sample loop-slot labels, one per pad (null for an empty/unlabelled
    * slot) — a read-back the store mirrors. */
   loopLabels: (string | null)[]
+  /** The realtime deck's 2D style-pad targets (prompt + position), mirrored from
+   * DeckColumn (sampled-target embedding ids stay out). */
+  styleTargets: { x: number; y: number; text: string }[]
+  /** The 2D style-pad cursor (the blend point). */
+  cursor: { x: number; y: number }
 }
 
 /** The authoritative interface state the webview projects (mirrors Rust
@@ -305,6 +310,17 @@ export function setDeckTrack(
  * webview writes up when its slots change. Fire-and-forget. */
 export function setDeckLoopLabels(deck: number, labels: (string | null)[]): void {
   void invoke('set_deck_loop_labels', { deck, labels }).catch(() => {})
+}
+
+/** Mirror a realtime deck's 2D style-pad targets + cursor into the store. The
+ * blended prompt still goes to the worker via deck_set_style; this records the UI
+ * source for a future MCP read. Fire-and-forget. */
+export function setDeckStyle(
+  deck: number,
+  targets: { x: number; y: number; text: string }[],
+  cursor: { x: number; y: number },
+): void {
+  void invoke('set_deck_style', { deck, targets, cursor }).catch(() => {})
 }
 
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }
