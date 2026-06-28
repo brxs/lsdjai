@@ -4,6 +4,11 @@
 - **Date:** 2026-06-13
 - **Deciders:** Daniel Peter
 
+> **Partially superseded by [ADR-0020](0020-rust-interface-state-store-and-mcp-server.md)
+> (2026-06-28).** The *location* of hot-cue state moves out of React/TS deck state
+> into the Rust interface store (issue #37 Phase 1). The other decision recorded
+> here — loops live on the buffer source's native `loopStart`/`loopEnd` — stands.
+
 ## Context
 
 M19 gave a deck a playback mode (ADR-0013) and M20 gave the loaded
