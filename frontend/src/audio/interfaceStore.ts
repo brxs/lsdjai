@@ -10,11 +10,28 @@
 
 import { useEffect, useRef, useState } from 'react'
 
+import type { FxKind } from './fx'
 import {
   storeSnapshot,
   subscribeStoreChanged,
+  type FxKindSnap,
   type InterfaceState,
 } from './nativeEngine'
+
+/** Map a store FX kind (camelCase wire value) back to the TS `FxKind` (snake) —
+ * the inverse of `nativeEngine`'s `FX_ARG`, for adopting an external FX change. */
+const FX_KIND_FROM_SNAP: Record<FxKindSnap, FxKind> = {
+  filter: 'filter',
+  dubEcho: 'dub_echo',
+  space: 'space',
+  crush: 'crush',
+  noise: 'noise',
+  sweep: 'sweep',
+}
+
+export function fxKindFromSnap(kind: FxKindSnap | null): FxKind | null {
+  return kind === null ? null : FX_KIND_FROM_SNAP[kind]
+}
 
 /** Follow the authoritative store: hydrate from `store_snapshot` on mount, then
  * track `store://changed`. Null until the first snapshot resolves. */

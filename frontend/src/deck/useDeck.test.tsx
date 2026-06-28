@@ -15,6 +15,7 @@ import * as beatModule from '../audio/beat'
 import { updateDeckSettings } from '../persistence'
 import { clickTrack } from '../test/clickTrack'
 import type { AudioEngine, DeckChannel } from '../audio/types'
+import type { DeckMixSnap, InterfaceState } from '../audio/nativeEngine'
 import { useDeck } from './useDeck'
 
 /** Wrap useDeck's beat tracker so a test can watch what reaches the live
@@ -45,11 +46,13 @@ type NativeChannel = { onmessage: ((buffer: ArrayBuffer) => void) | null }
 const native: {
   invoke: ReturnType<typeof vi.fn>
   statusCb: ((e: { payload: { deck: number; json: string } }) => void) | null
+  storeCb: ((e: { payload: InterfaceState }) => void) | null
   pcmChannel: NativeChannel | null
-} = { invoke: vi.fn(), statusCb: null, pcmChannel: null }
+} = { invoke: vi.fn(), statusCb: null, storeCb: null, pcmChannel: null }
 
 function installNativeTauri() {
   native.statusCb = null
+  native.storeCb = null
   native.pcmChannel = null
   native.invoke = vi.fn((cmd: string) =>
     // app_info feeds getApiBaseUrl(); null port → '' (relative fetches).
@@ -64,8 +67,11 @@ function installNativeTauri() {
     }
   }
   const listen = vi.fn(
-    (event: string, cb: (e: { payload: { deck: number; json: string } }) => void) => {
-      if (event === 'sidecar://status') native.statusCb = cb
+    (event: string, cb: (e: { payload: unknown }) => void) => {
+      if (event === 'sidecar://status')
+        native.statusCb = cb as unknown as typeof native.statusCb
+      if (event === 'store://changed')
+        native.storeCb = cb as unknown as typeof native.storeCb
       return Promise.resolve(() => {})
     },
   )
@@ -96,6 +102,28 @@ const socket = (deck: number) => ({
  * the native replacement for the old socket PCM feed. */
 function feedPcm(buffer: ArrayBuffer) {
   native.pcmChannel?.onmessage?.(buffer)
+}
+
+/** A neutral store deck-mix channel (matches the Rust `DeckMixSnap` default). */
+function storeDeck(): DeckMixSnap {
+  return {
+    volume: 1,
+    eq: { low: 0.5, mid: 0.5, high: 0.5 },
+    trimDb: 0,
+    cue: false,
+    onAir: true,
+    fx: { kind: null, amount: 0 },
+  }
+}
+
+/** Fire a `store://changed` event with deck 'a' (index 0) carrying `mix`. */
+function fireStore(mix: Partial<DeckMixSnap>) {
+  const payload: InterfaceState = {
+    decks: [{ ...storeDeck(), ...mix }, storeDeck()],
+    crossfade: 0.5,
+    cueMix: 0.5,
+  }
+  native.storeCb?.({ payload })
 }
 
 function makeFakeEngine(overrides: Partial<AudioEngine> = {}) {
@@ -1707,5 +1735,28 @@ describe('useDeck beat clocks (M20)', () => {
     vi.mocked(channel.clearTrackLoop).getMockImplementation()?.()
     act(() => void vi.advanceTimersByTime(250))
     expect(result.current.track!.loop).toBeNull()
+  })
+})
+
+describe('useDeck mixer projection (ADR-0020)', () => {
+  it('adopts an external store change after the store echoes our value', () => {
+    const { result } = renderDeck(makeFakeEngine().engine)
+    expect(result.current.volume).toBe(0.8)
+
+    // The store echoes our boot-applied channel (volume/eq/trim match) → synced.
+    act(() => fireStore({ volume: 0.8 }))
+    // A later differing value is an external move (a future MCP agent) → adopt it.
+    act(() => fireStore({ volume: 0.3 }))
+    expect(result.current.volume).toBe(0.3)
+  })
+
+  it('ignores the pre-hydration default before syncing (no flash)', () => {
+    const { result } = renderDeck(makeFakeEngine().engine)
+    expect(result.current.volume).toBe(0.8)
+
+    // A store value differing from our seed before sync is the Rust default — not
+    // an external move — so it must be ignored.
+    act(() => fireStore({ volume: 1 }))
+    expect(result.current.volume).toBe(0.8)
   })
 })

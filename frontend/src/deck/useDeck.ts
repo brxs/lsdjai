@@ -21,6 +21,7 @@ import { createLoudnessTracker, trimDbFor } from '../audio/master'
 import { STYLE_SAMPLE_SECONDS } from '../audio/styleSample'
 import { useAudioEngine } from '../audio/engineContext'
 import { getApiBaseUrl, subscribeModelsChanged } from '../audio/nativeEngine'
+import { fxKindFromSnap, useInterfaceStore } from '../audio/interfaceStore'
 import {
   sendNativeDeckCommand,
   subscribeSidecarStatus,
@@ -386,6 +387,60 @@ export function useDeck(deckId: DeckId): DeckControls {
     },
     [deckId],
   )
+
+  // Project the per-deck mixer from the store (ADR-0020): adopt EXTERNAL changes
+  // (a future MCP writer) into the rendered state. UI/MIDI moves already ran through
+  // the setters below — which update these refs and the store together — so they
+  // read here as "no change" and never echo-loop. A synced gate ignores the
+  // pre-hydration Rust defaults until boot hydration (createDeckChannel replays our
+  // persisted volume/EQ/trim) lands, so there is no flash.
+  const deckIndex = deckId === 'a' ? 0 : 1
+  const storeState = useInterfaceStore()
+  const mixerSyncedRef = useRef(false)
+  useEffect(() => {
+    const mix = storeState?.decks[deckIndex]
+    if (!mix) return
+    if (!mixerSyncedRef.current) {
+      if (
+        mix.volume === volumeRef.current &&
+        mix.eq.low === eqRef.current.low &&
+        mix.trimDb === trimRef.current.db
+      ) {
+        mixerSyncedRef.current = true
+      } else {
+        return
+      }
+    }
+    if (mix.volume !== volumeRef.current) {
+      volumeRef.current = mix.volume
+      setVolumeState(mix.volume)
+    }
+    if (
+      mix.eq.low !== eqRef.current.low ||
+      mix.eq.mid !== eqRef.current.mid ||
+      mix.eq.high !== eqRef.current.high
+    ) {
+      const next = { low: mix.eq.low, mid: mix.eq.mid, high: mix.eq.high }
+      eqRef.current = next
+      setEqState(next)
+    }
+    if (mix.cue !== cueRef.current) {
+      cueRef.current = mix.cue
+      setCueState(mix.cue)
+    }
+    const fxKind = fxKindFromSnap(mix.fx.kind)
+    if (fxKind !== fxRef.current.kind || mix.fx.amount !== fxRef.current.amount) {
+      const next = { kind: fxKind, amount: mix.fx.amount }
+      fxRef.current = next
+      setFxState(next)
+    }
+    if (mix.trimDb !== trimRef.current.db) {
+      const next = { ...trimRef.current, db: mix.trimDb }
+      trimRef.current = next
+      setTrimState(next)
+    }
+  }, [storeState, deckIndex])
+
   const [primed, setPrimedState] = useState(false)
   const primedRef = useRef(primed)
 
