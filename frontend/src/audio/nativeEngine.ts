@@ -73,6 +73,17 @@ export function getApiBaseUrl(): Promise<string> {
   return apiBaseUrlPromise
 }
 
+/** The native MCP server endpoint + bearer token (ADR-0020 Phase 2), reported by
+ * `app_info`. `port` is null when `LSDJ_MCP` is unset / the server failed; the
+ * Settings drawer surfaces these so a client can be pointed at the loopback URL. */
+export type McpInfo = { port: number | null; token: string | null }
+
+export function getMcpInfo(): Promise<McpInfo> {
+  return invoke<{ mcpPort: number | null; mcpToken: string | null }>('app_info')
+    .then((info) => ({ port: info.mcpPort ?? null, token: info.mcpToken ?? null }))
+    .catch(() => ({ port: null, token: null }))
+}
+
 /** Fire a command at the Rust engine (or a Tauri plugin, e.g. `plugin:dialog|open`).
  * Rejects (caught by callers that care) when the IPC bridge is absent — never
  * throws synchronously. Exported for the few non-engine native callers

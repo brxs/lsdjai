@@ -914,6 +914,35 @@
   margin-top: var(--space-3);
 }
 
+/* AI co-DJ (MCP): a read-only endpoint + token to copy into a client config. */
+.settings-mcp {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.settings-mcp__hint {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.settings-mcp__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.settings-mcp__value {
+  font: 500 var(--text-s) var(--font-mono);
+  word-break: break-all;
+  user-select: all;
+  padding: var(--space-2);
+  border-radius: var(--radius-s);
+  background: var(--color-surface-inset);
+  color: var(--color-text-muted);
+}
+
 /* Per-deck model pickers (moved out of the deck column): the same stacked
    layout as the audio group. */
 .settings-models {

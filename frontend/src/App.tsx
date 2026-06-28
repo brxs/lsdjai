@@ -6,6 +6,7 @@ import { uploadStyleSample } from './audio/styleSample'
 import { invoke } from './audio/nativeEngine'
 import { useAudioEngine } from './audio/engineContext'
 import { useInterfaceStore, useProjected } from './audio/interfaceStore'
+import { getMcpInfo, type McpInfo } from './audio/nativeEngine'
 import { FX_KINDS } from './audio/fx'
 import { applyAppIntent } from './control/appIntents'
 import { useControlBus } from './control/busContext'
@@ -173,6 +174,13 @@ function App() {
 
   // The settings drawer (issue #43): the appearance pickers + the model manager.
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // The native MCP server's endpoint + token (ADR-0020 Phase 2), shown in Settings
+  // so a Claude Desktop / Code client can connect. Fetched once; null until app_info
+  // resolves (and `port` stays null when LSDJ_MCP is unset).
+  const [mcpInfo, setMcpInfo] = useState<McpInfo | null>(null)
+  useEffect(() => {
+    void getMcpInfo().then(setMcpInfo)
+  }, [])
 
   // Hand the restored mix positions to the engine once — it holds them
   // until the bus is built on first play. Later moves go through the
@@ -618,6 +626,29 @@ function App() {
               onSelect={handleCueDevice}
               mainDeviceName={mainDevice}
             />
+          </div>
+        </section>
+        {/* The native MCP server (ADR-0020 Phase 2): point a Claude Desktop /
+            Code client at the loopback endpoint with the bearer token. Shown only
+            when the server is up (LSDJ_MCP=1); otherwise a hint to enable it. */}
+        <section className="modelmgr__section">
+          <h3 className="modelmgr__heading">{t('settings.mcp')}</h3>
+          <div className="settings-mcp">
+            {mcpInfo?.port ? (
+              <>
+                <p className="settings-mcp__hint">{t('settings.mcpHint')}</p>
+                <div className="settings-mcp__field">
+                  <span className="ui-field__label">{t('settings.mcpEndpoint')}</span>
+                  <code className="settings-mcp__value">{`http://127.0.0.1:${mcpInfo.port}/mcp`}</code>
+                </div>
+                <div className="settings-mcp__field">
+                  <span className="ui-field__label">{t('settings.mcpToken')}</span>
+                  <code className="settings-mcp__value">{mcpInfo.token}</code>
+                </div>
+              </>
+            ) : (
+              <p className="settings-mcp__hint">{t('settings.mcpDisabled')}</p>
+            )}
           </div>
         </section>
         {/* Where master-bus recordings are saved. Empty = the OS Downloads

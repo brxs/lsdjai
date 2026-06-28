@@ -268,7 +268,12 @@
     "recordingFolder": "Recordings folder",
     "recordingFolderDefault": "Downloads (default)",
     "useDownloads": "Use Downloads",
-    "recordingFolderError": "Couldn't open folder: {{message}}"
+    "recordingFolderError": "Couldn't open folder: {{message}}",
+    "mcp": "AI co-DJ (MCP)",
+    "mcpHint": "Connect Claude Desktop or Claude Code to drive the decks, mixer, and FX and read the live state. Point your MCP client at the endpoint below with the bearer token.",
+    "mcpEndpoint": "Endpoint",
+    "mcpToken": "Bearer token",
+    "mcpDisabled": "The MCP server is off. Relaunch with LSDJ_MCP=1 to enable it."
   },
   "modelManager": {
     "loading": "Reading model status…",
