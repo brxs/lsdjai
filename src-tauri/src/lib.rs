@@ -44,6 +44,7 @@ mod models;
 mod samples;
 mod sidecar;
 mod songs;
+mod store;
 mod watcher;
 
 /// The default per-deck model the sidecars load (mirrors `controller.py`
@@ -442,6 +443,11 @@ pub fn run() {
             app.manage(models::InstallManager::new());
             watcher::watch_models(app.handle().clone(), models::magenta_models_dir());
             app.manage(host);
+            // The shell-level interface-state store (ADR-0020): the single source of
+            // truth for the semantic / audio-param interface state the webview
+            // projects. Mutated by the same commands that drive the engine, it emits
+            // `store://changed` on every change.
+            app.manage(store::InterfaceStore::new(app.handle().clone()));
             app.manage(audio_state);
             app.manage(sidecars);
             app.manage(taps);
@@ -503,6 +509,12 @@ pub fn run() {
             commands::loop_slots,
             commands::track_peaks,
             commands::engine_snapshot,
+            commands::store_snapshot,
+            commands::set_deck_realtime,
+            commands::set_deck_cues,
+            commands::set_deck_track,
+            commands::set_deck_loop_labels,
+            commands::set_deck_style,
             commands::deck_play,
             commands::deck_stop,
             commands::deck_set_prompt,

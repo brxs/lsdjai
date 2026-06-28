@@ -20,7 +20,15 @@ import {
 import { createLoudnessTracker, trimDbFor } from '../audio/master'
 import { STYLE_SAMPLE_SECONDS } from '../audio/styleSample'
 import { useAudioEngine } from '../audio/engineContext'
-import { getApiBaseUrl, subscribeModelsChanged } from '../audio/nativeEngine'
+import {
+  getApiBaseUrl,
+  setDeckCues,
+  setDeckLoopLabels,
+  setDeckRealtime,
+  setDeckTrack,
+  subscribeModelsChanged,
+} from '../audio/nativeEngine'
+import { fxKindFromSnap, useInterfaceStore } from '../audio/interfaceStore'
 import {
   sendNativeDeckCommand,
   subscribeSidecarStatus,
@@ -386,6 +394,109 @@ export function useDeck(deckId: DeckId): DeckControls {
     },
     [deckId],
   )
+
+  // Project the per-deck mixer from the store (ADR-0020): adopt EXTERNAL changes
+  // (a future MCP writer) into the rendered state. UI/MIDI moves already ran through
+  // the setters below — which update these refs and the store together — so they
+  // read here as "no change" and never echo-loop. A synced gate ignores the
+  // pre-hydration Rust defaults until boot hydration (createDeckChannel replays our
+  // persisted volume/EQ/trim) lands, so there is no flash.
+  const deckIndex = deckId === 'a' ? 0 : 1
+  const storeState = useInterfaceStore()
+  const mixerSyncedRef = useRef(false)
+  useEffect(() => {
+    const mix = storeState?.decks[deckIndex]
+    if (!mix) return
+    if (!mixerSyncedRef.current) {
+      // Sync only once the store reflects the WHOLE mixer tuple this deck holds, so
+      // a coincidental partial match (e.g. a persisted volume of exactly 1.0 — the
+      // store default — before the lazy boot replay runs) can't flip the gate and
+      // adopt store defaults over the persisted FX/cue/EQ. When the full tuple
+      // matches, adopting is a no-op anyway.
+      const synced =
+        mix.volume === volumeRef.current &&
+        mix.eq.low === eqRef.current.low &&
+        mix.eq.mid === eqRef.current.mid &&
+        mix.eq.high === eqRef.current.high &&
+        mix.cue === cueRef.current &&
+        fxKindFromSnap(mix.fx.kind) === fxRef.current.kind &&
+        mix.fx.amount === fxRef.current.amount &&
+        mix.trimDb === trimRef.current.db
+      if (synced) {
+        mixerSyncedRef.current = true
+      } else {
+        return
+      }
+    }
+    if (mix.volume !== volumeRef.current) {
+      volumeRef.current = mix.volume
+      setVolumeState(mix.volume)
+    }
+    if (
+      mix.eq.low !== eqRef.current.low ||
+      mix.eq.mid !== eqRef.current.mid ||
+      mix.eq.high !== eqRef.current.high
+    ) {
+      const next = { low: mix.eq.low, mid: mix.eq.mid, high: mix.eq.high }
+      eqRef.current = next
+      setEqState(next)
+    }
+    if (mix.cue !== cueRef.current) {
+      cueRef.current = mix.cue
+      setCueState(mix.cue)
+    }
+    const fxKind = fxKindFromSnap(mix.fx.kind)
+    if (fxKind !== fxRef.current.kind || mix.fx.amount !== fxRef.current.amount) {
+      const next = { kind: fxKind, amount: mix.fx.amount }
+      fxRef.current = next
+      setFxState(next)
+    }
+    if (mix.trimDb !== trimRef.current.db) {
+      const next = { ...trimRef.current, db: mix.trimDb }
+      trimRef.current = next
+      setTrimState(next)
+    }
+  }, [storeState, deckIndex])
+
+  // Mirror the realtime deck's derived read-backs (model + playing) UP into the
+  // store, so a future MCP agent observes them (ADR-0020). The webview owns the
+  // derivation (worker status + play/stop, in the reducer); this is a write-only
+  // push, not a projection — nothing reads it back into React.
+  useEffect(() => {
+    setDeckRealtime(deckIndex, state.model, state.playing)
+  }, [deckIndex, state.model, state.playing])
+
+  // Mirror the loaded track's hot-cue points UP into the store (ADR-0015 →
+  // ADR-0020): the cue STATE LOCATION moves to the store, while the webview keeps
+  // the set/jump logic (jump is a plain seek). Empty with no track. A write-only
+  // push; the bidirectional projection lands with the Phase-2 MCP cue setter.
+  useEffect(() => {
+    setDeckCues(deckIndex, track?.cues ?? [])
+  }, [deckIndex, track?.cues])
+
+  // Mirror the loaded-track identity UP into the store (ADR-0020): title, BPM, and
+  // duration on a playback deck, null with no track. A write-only read-back mirror,
+  // keyed on the identity fields (not the whole track object) so cue/transport
+  // churn doesn't re-push it.
+  useEffect(() => {
+    setDeckTrack(
+      deckIndex,
+      track
+        ? { title: track.title, bpm: track.bpm, durationSeconds: track.duration }
+        : null,
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deckIndex, track?.title, track?.bpm, track?.duration])
+
+  // Mirror the freeze/sample loop-slot labels UP into the store (ADR-0020): a
+  // read-back the webview writes when its slots change (null for an empty slot).
+  useEffect(() => {
+    setDeckLoopLabels(
+      deckIndex,
+      loop.slots.map((slot) => (slot.state === 'empty' ? null : slot.label)),
+    )
+  }, [deckIndex, loop.slots])
+
   const [primed, setPrimedState] = useState(false)
   const primedRef = useRef(primed)
 

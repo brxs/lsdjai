@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import type { DeckId } from '../audio/types'
 import { FX_KINDS, fxRestPosition, type FxKind } from '../audio/fx'
 import { LOOP_LENGTH_OPTIONS, LOOP_SLOT_COUNT } from '../audio/loops'
+import { setDeckStyle } from '../audio/nativeEngine'
 import { useControlBus } from '../control/busContext'
 import { Button } from '../ui/Button'
 import { Knob } from '../ui/Knob'
@@ -354,6 +355,18 @@ export function DeckColumn({
       targets: targets.filter((target) => !target.sample),
       cursor,
     })
+  }, [deckId, targets, cursor])
+
+  // Mirror the 2D style-pad targets + cursor UP into the store (ADR-0020): the UI
+  // source the deck blends into the worker prompt. The blended prompt still goes to
+  // the worker via the throttled style send; this is a write-only read-back mirror
+  // (sampled-target embedding ids stay out, like the persisted layout).
+  useEffect(() => {
+    setDeckStyle(
+      deckId === 'a' ? 0 : 1,
+      targets.map((target) => ({ x: target.x, y: target.y, text: target.text })),
+      cursor,
+    )
   }, [deckId, targets, cursor])
 
   // A worker restart (crash or model switch) drops its sample cache;

@@ -1,4 +1,4 @@
-import { useId } from 'react'
+import { memo, useId } from 'react'
 
 /** Plain strings double as value and label; pair options decouple the
  * stable value from translated display copy. */
@@ -15,7 +15,26 @@ type SelectProps = {
   onReopen?: () => void
 }
 
-export function Select({ label, value, options, disabled, onChange, onReopen }: SelectProps) {
+/**
+ * `memo` is LOAD-BEARING, not an optimization. This is a controlled native
+ * `<select>`; React re-commits an HostComponent on a referential props change
+ * (a fresh props object every parent render) and `updateOptions` then re-asserts
+ * the selected `<option>` unconditionally. WKWebView treats that value re-sync as
+ * a reason to dismiss an OPEN native popup — so any parent re-render (the ~10 Hz
+ * `worklet_stats` churn, a `store://changed` event) would close the menu before a
+ * choice could be made (the same mechanism as the per-picker fix in commit
+ * 3838069). Memoising here skips the commit entirely when value/options/handlers
+ * are referentially unchanged, so callers MUST pass stable `options`/`onChange`/
+ * `onReopen` references (useMemo/useCallback) for it to bite.
+ */
+export const Select = memo(function Select({
+  label,
+  value,
+  options,
+  disabled,
+  onChange,
+  onReopen,
+}: SelectProps) {
   const id = useId()
   const entries = options.map((option) =>
     typeof option === 'string' ? { value: option, label: option } : option,
@@ -45,4 +64,4 @@ export function Select({ label, value, options, disabled, onChange, onReopen }: 
       </div>
     </div>
   )
-}
+})

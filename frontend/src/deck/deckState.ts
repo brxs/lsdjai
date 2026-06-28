@@ -101,13 +101,22 @@ export function deckReducer(state: DeckState, action: DeckAction): DeckState {
       return { ...state, error: action.error }
     case 'deck_info':
       return { ...state, availableModels: action.models, ramInfo: action.ramInfo }
-    case 'worklet_stats':
-      return {
-        ...state,
-        bufferedSeconds: action.stats.bufferedSeconds,
-        underruns: action.stats.underruns,
-        audible: action.stats.playing,
+    case 'worklet_stats': {
+      // The engine_snapshot rAF poll dispatches this ~10 Hz for the whole session
+      // once a deck channel exists (it has no playing-gate and never stops). Bail
+      // to the SAME state object when nothing changed, so an idle/stopped deck does
+      // not re-render App ~10 Hz (which, with the Settings drawer inline, would
+      // re-commit and dismiss any open native <select> — see ui/Select.tsx).
+      const { bufferedSeconds, underruns, playing } = action.stats
+      if (
+        state.bufferedSeconds === bufferedSeconds &&
+        state.underruns === underruns &&
+        state.audible === playing
+      ) {
+        return state
       }
+      return { ...state, bufferedSeconds, underruns, audible: playing }
+    }
     case 'server_event':
       return applyServerEvent(state, action.event)
   }

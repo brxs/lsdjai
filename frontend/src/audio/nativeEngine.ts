@@ -223,6 +223,128 @@ export function subscribeModelProgress(onProgress: (p: ModelProgress) => void): 
   return listenTo<ModelProgress>('model://progress', onProgress)
 }
 
+// --- The interface-state store (ADR-0020, issue #37 Phase 1) ---
+//
+// Rust owns the semantic/audio-param interface state; the webview projects it.
+// These mirror the Rust `store::InterfaceState` serde shape (camelCase). The FX
+// kind is the camelCase wire value (`dubEcho`), matching `FX_ARG`.
+
+/** A Color FX kind as it appears in the store snapshot (the camelCase wire value). */
+export type FxKindSnap = 'filter' | 'dubEcho' | 'space' | 'crush' | 'noise' | 'sweep'
+
+/** One deck's state in the store: the mixer channel plus the realtime read-backs
+ * the store mirrors (model / playing). */
+export type DeckSnap = {
+  volume: number
+  eq: { low: number; mid: number; high: number }
+  trimDb: number
+  cue: boolean
+  onAir: boolean
+  fx: { kind: FxKindSnap | null; amount: number }
+  /** The realtime deck's loaded model (a sidecar read-back the store mirrors). */
+  model: string | null
+  /** Whether the realtime deck is generating (a derived read-back the store mirrors). */
+  playing: boolean
+  /** Hot-cue points on the loaded track in track seconds, one per pad (empty with
+   * no track). ADR-0015's cue state, mirrored here per ADR-0020. */
+  cues: (number | null)[]
+  /** The loaded track's identity on a playback deck (a read-back the store
+   * mirrors), or null on a realtime deck / with no track. */
+  track: { title: string; bpm: number | null; durationSeconds: number } | null
+  /** Freeze/sample loop-slot labels, one per pad (null for an empty/unlabelled
+   * slot) — a read-back the store mirrors. */
+  loopLabels: (string | null)[]
+  /** The realtime deck's 2D style-pad targets (prompt + position), mirrored from
+   * DeckColumn (sampled-target embedding ids stay out). */
+  styleTargets: { x: number; y: number; text: string }[]
+  /** The 2D style-pad cursor (the blend point). */
+  cursor: { x: number; y: number }
+}
+
+/** The authoritative interface state the webview projects (mirrors Rust
+ * `store::InterfaceState`). View state is deliberately absent — it stays in React
+ * (the ADR-0020 narrowing). */
+export type InterfaceState = {
+  decks: DeckSnap[]
+  crossfade: number
+  cueMix: number
+}
+
+/** Fetch the current interface-state snapshot (the projection's initial hydrate). */
+export function storeSnapshot(): Promise<InterfaceState> {
+  return invoke<InterfaceState>('store_snapshot')
+}
+
+/** Subscribe to `store://changed` — the store emits the fresh snapshot on every
+ * mutation (from any controller: UI, MIDI, or a future MCP agent). Returns an
+ * unsubscribe fn. */
+export function subscribeStoreChanged(onChange: (state: InterfaceState) => void): () => void {
+  return listenTo<InterfaceState>('store://changed', onChange)
+}
+
+/** Mirror a realtime deck's derived state (model + playing) into the store. The
+ * webview owns the derivation (worker status + play/stop); this writes the current
+ * value up so the store stays the single source of truth — no engine effect.
+ * Fire-and-forget (a dropped mirror write must never surface as a rejection). */
+export function setDeckRealtime(deck: number, model: string | null, playing: boolean): void {
+  void invoke('set_deck_realtime', { deck, model, playing }).catch(() => {})
+}
+
+/** Mirror a playback deck's hot-cue points into the store (ADR-0015 → ADR-0020).
+ * The webview owns the set/jump logic; this writes the current points up.
+ * Fire-and-forget. */
+export function setDeckCues(deck: number, cues: (number | null)[]): void {
+  void invoke('set_deck_cues', { deck, cues }).catch(() => {})
+}
+
+/** Mirror a playback deck's loaded-track identity into the store (null clears it).
+ * A read-back the webview writes up; no engine effect. Fire-and-forget. */
+export function setDeckTrack(
+  deck: number,
+  track: { title: string; bpm: number | null; durationSeconds: number } | null,
+): void {
+  void invoke('set_deck_track', { deck, track }).catch(() => {})
+}
+
+/** Mirror a deck's freeze/sample loop-slot labels into the store. A read-back the
+ * webview writes up when its slots change. Fire-and-forget. */
+export function setDeckLoopLabels(deck: number, labels: (string | null)[]): void {
+  void invoke('set_deck_loop_labels', { deck, labels }).catch(() => {})
+}
+
+// Coalesce high-rate mirror writes to ~one invoke per animation frame, like the
+// engine's control coalescer. The style-pad mirror fires per pointermove (and the
+// 14-bit jog can drive cursor changes at 200-600/s); the write-only mirror must not
+// flood the store with full-state broadcasts (each re-renders every projection
+// consumer). Only the latest value per key in a frame is shipped.
+const mirrorPending = new Map<string, () => void>()
+let mirrorFlushScheduled = false
+function coalesceMirror(key: string, run: () => void): void {
+  mirrorPending.set(key, run)
+  if (mirrorFlushScheduled) return
+  mirrorFlushScheduled = true
+  requestAnimationFrame(() => {
+    mirrorFlushScheduled = false
+    const due = [...mirrorPending.values()]
+    mirrorPending.clear()
+    for (const r of due) r()
+  })
+}
+
+/** Mirror a realtime deck's 2D style-pad targets + cursor into the store. The
+ * blended prompt still goes to the worker via deck_set_style; this records the UI
+ * source for a future MCP read. Coalesced to ~one invoke per frame (a style-pad
+ * drag fires this per pointermove). Fire-and-forget. */
+export function setDeckStyle(
+  deck: number,
+  targets: { x: number; y: number; text: string }[],
+  cursor: { x: number; y: number },
+): void {
+  coalesceMirror(`set_deck_style:${deck}`, () => {
+    void invoke('set_deck_style', { deck, targets, cursor }).catch(() => {})
+  })
+}
+
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }
 
 /** Map the TS `FxKind` (snake) to the Rust `FxKindArg` (camel, serde). */

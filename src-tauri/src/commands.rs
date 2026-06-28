@@ -34,6 +34,7 @@ use tauri_plugin_opener::OpenerExt;
 use crate::samples::{NewSample, SampleEntry, SampleLibrary};
 use crate::sidecar::{PcmTaps, Sidecars};
 use crate::songs::{NewSong, SongEntry, SongLibrary};
+use crate::store::{InterfaceState, InterfaceStore};
 
 /// Reject a deck index outside `[0, DECK_COUNT)`. A bad index from the webview is
 /// a no-op (the command returns without touching the engine), never a panic.
@@ -212,74 +213,132 @@ pub struct EngineSnapshotDto {
 // --- Mixer / channel control ---
 
 #[tauri::command]
-pub fn set_crossfade(state: tauri::State<'_, Host>, position: f32) {
+pub fn set_crossfade(
+    state: tauri::State<'_, Host>,
+    store: tauri::State<'_, InterfaceStore>,
+    position: f32,
+) {
     state.set_crossfade(position);
+    store.set_crossfade(position);
 }
 
 #[tauri::command]
-pub fn set_eq(state: tauri::State<'_, Host>, deck: usize, band: EqBandArg, value: f32) {
+pub fn set_eq(
+    state: tauri::State<'_, Host>,
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    band: EqBandArg,
+    value: f32,
+) {
     if valid_deck(deck) {
         state.set_eq(deck, band.into(), value);
+        store.set_eq(deck, band.into(), value);
     }
 }
 
 #[tauri::command]
-pub fn set_volume(state: tauri::State<'_, Host>, deck: usize, gain: f32) {
+pub fn set_volume(
+    state: tauri::State<'_, Host>,
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    gain: f32,
+) {
     if valid_deck(deck) {
         state.set_volume(deck, gain);
+        store.set_volume(deck, gain);
     }
 }
 
 #[tauri::command]
-pub fn set_fx(state: tauri::State<'_, Host>, deck: usize, kind: FxKindArg) {
+pub fn set_fx(
+    state: tauri::State<'_, Host>,
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    kind: FxKindArg,
+) {
     if valid_deck(deck) {
         state.set_fx(deck, kind.into());
+        store.set_fx(deck, kind.into());
     }
 }
 
 #[tauri::command]
-pub fn set_fx_amount(state: tauri::State<'_, Host>, deck: usize, amount: f32) {
+pub fn set_fx_amount(
+    state: tauri::State<'_, Host>,
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    amount: f32,
+) {
     if valid_deck(deck) {
         state.set_fx_amount(deck, amount);
+        store.set_fx_amount(deck, amount);
     }
 }
 
 /// Remove a deck's Color FX (no effect selected) — mirrors `setFx(null)`.
 #[tauri::command]
-pub fn clear_fx(state: tauri::State<'_, Host>, deck: usize) {
+pub fn clear_fx(
+    state: tauri::State<'_, Host>,
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+) {
     if valid_deck(deck) {
         state.clear_fx(deck);
+        store.clear_fx(deck);
     }
 }
 
 /// Chain-head trim in dB (M17 gain staging; 0 dB = unity).
 #[tauri::command]
-pub fn set_trim(state: tauri::State<'_, Host>, deck: usize, db: f32) {
+pub fn set_trim(
+    state: tauri::State<'_, Host>,
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    db: f32,
+) {
     if valid_deck(deck) {
         state.set_trim(deck, db);
+        store.set_trim(deck, db);
     }
 }
 
 /// On-air state (M10 primed deck): off-air mutes the master feed only.
 #[tauri::command]
-pub fn set_on_air(state: tauri::State<'_, Host>, deck: usize, on: bool) {
+pub fn set_on_air(
+    state: tauri::State<'_, Host>,
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    on: bool,
+) {
     if valid_deck(deck) {
         state.set_on_air(deck, on);
+        store.set_on_air(deck, on);
     }
 }
 
 /// Headphone-cue (PFL) tap for a deck (Slice 5).
 #[tauri::command]
-pub fn set_cue(state: tauri::State<'_, Host>, deck: usize, on: bool) {
+pub fn set_cue(
+    state: tauri::State<'_, Host>,
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    on: bool,
+) {
     if valid_deck(deck) {
         state.set_cue(deck, on);
+        store.set_cue(deck, on);
     }
 }
 
 /// Cue/master headphone blend (0 = cue only, 1 = master).
 #[tauri::command]
-pub fn set_cue_mix(state: tauri::State<'_, Host>, position: f32) {
+pub fn set_cue_mix(
+    state: tauri::State<'_, Host>,
+    store: tauri::State<'_, InterfaceStore>,
+    position: f32,
+) {
     state.set_cue_mix(position);
+    store.set_cue_mix(position);
 }
 
 /// Preview a decoded buffer into the headphone/cue feed (ADR-0027). The payload is
@@ -994,5 +1053,85 @@ pub fn engine_snapshot(state: tauri::State<'_, Host>) -> EngineSnapshotDto {
         health: state.health().into(),
         tracks,
         loops,
+    }
+}
+
+/// The full interface-state snapshot the webview hydrates its projection from on
+/// mount (ADR-0020). Thereafter the projection follows the `store://changed` event;
+/// this is the one-shot initial read. Unlike `engine_snapshot` (the per-frame audio
+/// read-back), this is the *semantic / audio-param* state the store owns.
+#[tauri::command]
+pub fn store_snapshot(store: tauri::State<'_, InterfaceStore>) -> InterfaceState {
+    store.snapshot()
+}
+
+/// Mirror a realtime deck's derived read-backs (model + playing) into the store.
+/// These are derived in the webview from worker status + play/stop, so — unlike the
+/// mixer setters — the webview WRITES the current value up (no engine effect); the
+/// store holds it for a future MCP read (ADR-0020).
+#[tauri::command]
+pub fn set_deck_realtime(
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    model: Option<String>,
+    playing: bool,
+) {
+    if valid_deck(deck) {
+        store.set_realtime(deck, model, playing);
+    }
+}
+
+/// Mirror a playback deck's hot-cue points into the store (ADR-0015 → ADR-0020).
+/// The webview owns the set/jump logic (jump is a plain seek) and writes the
+/// current points up; no engine effect.
+#[tauri::command]
+pub fn set_deck_cues(
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    cues: Vec<Option<f64>>,
+) {
+    if valid_deck(deck) {
+        store.set_deck_cues(deck, cues);
+    }
+}
+
+/// Mirror a playback deck's loaded-track identity into the store (`None` clears it
+/// on unload / a realtime deck). A read-back the webview writes up; no engine effect.
+#[tauri::command]
+pub fn set_deck_track(
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    track: Option<crate::store::TrackIdentitySnap>,
+) {
+    if valid_deck(deck) {
+        store.set_deck_track(deck, track);
+    }
+}
+
+/// Mirror a deck's freeze/sample loop-slot labels into the store. A read-back the
+/// webview writes up when its slots change; no engine effect.
+#[tauri::command]
+pub fn set_deck_loop_labels(
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    labels: Vec<Option<String>>,
+) {
+    if valid_deck(deck) {
+        store.set_deck_loop_labels(deck, labels);
+    }
+}
+
+/// Mirror a realtime deck's 2D style-pad targets + cursor into the store (the UI
+/// source DeckColumn blends into the worker prompt). A read-back the webview writes
+/// up on change; no engine effect (the blended prompt still goes via deck_set_style).
+#[tauri::command]
+pub fn set_deck_style(
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    targets: Vec<crate::store::StyleTargetSnap>,
+    cursor: crate::store::PadPointSnap,
+) {
+    if valid_deck(deck) {
+        store.set_deck_style(deck, targets, cursor);
     }
 }
