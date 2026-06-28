@@ -41,7 +41,9 @@
 //! path, neither of which exists yet. This decoupled design keeps every alloc off
 //! the callback today with no engine reshaping.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::fs::File;
+use std::io::{BufWriter, Seek, SeekFrom, Write};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -85,83 +87,224 @@ const COMMAND_QUEUE_DEPTH: usize = 1024;
 /// plenty, with slack so a double-press never blocks.
 const CAPTURE_REPLY_DEPTH: usize = 8;
 
-/// Max master-recording length, in interleaved samples — 30 min of stereo. A
-/// forgotten recording stops growing here rather than exhausting RAM (int16, so
-/// ~345 MB at the cap).
-const RECORDING_MAX_SAMPLES: usize = 30 * 60 * SAMPLE_RATE as usize * CHANNELS as usize;
+/// Anti-OOM backstop for the capture buffer, in interleaved samples (~60 s of
+/// stereo). This is NOT a recording-length limit — the take streams to disk and is
+/// bounded only by free space. It caps how far the buffer may grow if the writer
+/// thread stalls (e.g. a wedged disk); in normal operation the writer drains every
+/// [`WRITER_PARK`] tick, keeping the buffer far below this.
+const RECORDING_BACKPRESSURE_SAMPLES: usize = 60 * SAMPLE_RATE as usize * CHANNELS as usize;
 
-/// The master-bus recorder: the render thread appends each rendered master block
-/// (as int16 PCM) while `active`, and the IPC thread starts/stops + drains it to a
-/// WAV. The append runs on the render thread (NOT the cpal callback), which may
-/// lock + allocate; when inactive it is one relaxed atomic load and returns.
+/// Hard ceiling on a take's length, in interleaved samples: the largest count whose
+/// byte size still fits a canonical WAV's 32-bit RIFF/data size fields
+/// (`36 + samples * 2 <= u32::MAX`, floored to a whole stereo frame). At 48 kHz
+/// stereo that's ~6 h 12 m — past any real set, but a plain WAV simply cannot address
+/// more without RF64/WAVE64. Capture stops here so the header stays valid rather than
+/// wrapping the size fields into a malformed file; a longer take would need a format
+/// change, tracked in ADR-0028.
+const RECORDING_MAX_SAMPLES: usize = ((u32::MAX as usize - 36) / 4) * 2;
+
+/// How long the recorder's writer thread parks when the capture buffer is empty
+/// before checking again. Short enough that buffered (un-written) audio — and thus
+/// RAM — stays tiny; long enough to avoid a busy-spin.
+const WRITER_PARK: Duration = Duration::from_millis(50);
+
+/// The master-bus recorder. While `active`, the render thread appends each rendered
+/// master block (as int16 PCM) into `buffer`; a dedicated writer thread swaps the
+/// buffer empty each tick and streams it to a WAV on disk, so memory stays flat and
+/// the take is bounded by disk space, not RAM. The append runs on the render thread
+/// (NOT the cpal callback), which may lock + allocate; when inactive it is one
+/// relaxed atomic load and returns.
 struct Recorder {
     active: AtomicBool,
-    buffer: Mutex<Vec<i16>>,
+    /// Captured samples awaiting the writer thread. `Arc` so the writer thread holds
+    /// the same buffer the render thread appends to; both touch it only under the
+    /// `Mutex`, briefly.
+    buffer: Arc<Mutex<Vec<i16>>>,
+    /// The disk-writer thread + its stop flag — present only while recording.
+    writer: Mutex<Option<WriterHandle>>,
+    /// Interleaved samples captured so far this take. Capture stops appending once
+    /// this reaches [`RECORDING_MAX_SAMPLES`], so the streamed WAV's 32-bit size
+    /// fields never overflow. Written only on the render thread (reset at `start`,
+    /// under the writer lock).
+    captured: AtomicUsize,
+}
+
+/// Handle to the running writer thread: its stop flag and join handle. Joining
+/// returns the thread's final write result (header patched, file flushed).
+struct WriterHandle {
+    stop: Arc<AtomicBool>,
+    join: JoinHandle<Result<(), String>>,
 }
 
 impl Recorder {
     fn new() -> Self {
         Recorder {
             active: AtomicBool::new(false),
-            buffer: Mutex::new(Vec::new()),
+            buffer: Arc::new(Mutex::new(Vec::new())),
+            writer: Mutex::new(None),
+            captured: AtomicUsize::new(0),
         }
     }
 
     /// Append a rendered master block (interleaved-stereo f32) as int16 PCM. A
-    /// no-op when not recording; caps at [`RECORDING_MAX_SAMPLES`].
+    /// no-op when not recording. Bounded by two independent caps: the buffer stops
+    /// growing at [`RECORDING_BACKPRESSURE_SAMPLES`] so a stalled writer can't exhaust
+    /// RAM, and the take stops capturing at [`RECORDING_MAX_SAMPLES`] so the WAV's
+    /// 32-bit size fields never overflow.
     fn capture(&self, block: &[f32]) {
         if !self.active.load(Ordering::Relaxed) {
             return;
         }
+        let captured = self.captured.load(Ordering::Relaxed);
         let mut buf = self.buffer.lock().unwrap_or_else(|p| p.into_inner());
-        let room = RECORDING_MAX_SAMPLES.saturating_sub(buf.len());
-        for &s in block.iter().take(room) {
+        let buffer_room = RECORDING_BACKPRESSURE_SAMPLES.saturating_sub(buf.len());
+        let format_room = RECORDING_MAX_SAMPLES.saturating_sub(captured);
+        let before = buf.len();
+        for &s in block.iter().take(buffer_room.min(format_room)) {
             buf.push((s.clamp(-1.0, 1.0) * 32767.0) as i16);
+        }
+        let pushed = buf.len() - before;
+        drop(buf);
+        if pushed > 0 {
+            self.captured.fetch_add(pushed, Ordering::Relaxed);
         }
     }
 
-    fn start(&self) {
+    /// Take ownership of an already-opened `file`, write a placeholder WAV header, and
+    /// spawn the writer thread that streams captured audio to it. The caller opens the
+    /// file atomically (so path safety stays at the trust boundary, not here); this
+    /// only errors if a take is already in progress or the writer thread can't spawn.
+    /// On success, capture begins.
+    fn start(&self, file: File) -> Result<(), String> {
+        let mut slot = self.writer.lock().unwrap_or_else(|p| p.into_inner());
+        if slot.is_some() {
+            return Err("a recording is already in progress".into());
+        }
         self.buffer.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        self.captured.store(0, Ordering::Relaxed);
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let buffer = self.buffer.clone();
+        let thread_stop = stop.clone();
+        let join = thread::Builder::new()
+            .name("lsdj-recorder".into())
+            .spawn(move || {
+                let mut out = BufWriter::new(file);
+                drain_to_wav(&buffer, &thread_stop, &mut out)
+            })
+            .map_err(|e| format!("cannot spawn recorder thread: {e}"))?;
+
+        *slot = Some(WriterHandle { stop, join });
+        // Activate only once the writer is ready, so no block is captured (and then
+        // dropped) before there is somewhere to stream it.
         self.active.store(true, Ordering::Release);
+        Ok(())
     }
 
-    /// Stop and return the recording as a 16-bit PCM WAV (interleaved stereo,
-    /// 48 kHz), or an empty WAV if nothing was captured.
-    fn stop(&self) -> Vec<u8> {
+    /// Stop the take: deactivate capture, signal the writer to flush the remaining
+    /// samples + patch the WAV header, and join it. A no-op (`Ok`) when not
+    /// recording. Returns the writer thread's final write result.
+    fn stop(&self) -> Result<(), String> {
         self.active.store(false, Ordering::Release);
-        let pcm = std::mem::take(&mut *self.buffer.lock().unwrap_or_else(|p| p.into_inner()));
-        encode_wav_i16(&pcm)
+        let handle = self
+            .writer
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        let Some(handle) = handle else {
+            return Ok(());
+        };
+        handle.stop.store(true, Ordering::Release);
+        match handle.join.join() {
+            Ok(result) => result,
+            Err(_) => Err("recorder thread panicked".into()),
+        }
     }
 }
 
-/// Encode interleaved-stereo int16 samples as a 48 kHz WAV (the speaker feed,
-/// exactly — recorded post-limiter/clip-guard). A minimal PCM WAV writer.
-fn encode_wav_i16(samples: &[i16]) -> Vec<u8> {
+/// Stream the captured int16 samples in `buffer` to `out` as a 48 kHz / stereo /
+/// 16-bit PCM WAV (the speaker feed exactly — post-limiter/clip-guard). Writes a
+/// placeholder header, drains the buffer in swapped chunks until `stop` is set and
+/// the buffer is empty, then seeks back and patches the RIFF + data sizes. Runs on
+/// the writer thread (`out` is a `BufWriter<File>`); a `Cursor` stands in for the
+/// file in tests.
+fn drain_to_wav<W: Write + Seek>(
+    buffer: &Mutex<Vec<i16>>,
+    stop: &AtomicBool,
+    out: &mut W,
+) -> Result<(), String> {
+    fn run<W: Write + Seek>(
+        buffer: &Mutex<Vec<i16>>,
+        stop: &AtomicBool,
+        out: &mut W,
+    ) -> std::io::Result<()> {
+        write_wav_header(out, 0)?; // placeholder; patched once the length is known
+        // Ping-ponged with the render thread's buffer so neither side reallocates
+        // after warmup: each tick we swap our empty Vec in and write what came out.
+        let mut scratch: Vec<i16> = Vec::new();
+        let mut total: usize = 0;
+        loop {
+            let stopping = stop.load(Ordering::Acquire);
+            {
+                let mut buf = buffer.lock().unwrap_or_else(|p| p.into_inner());
+                std::mem::swap(&mut *buf, &mut scratch);
+            }
+            if scratch.is_empty() {
+                // `stop` is set only after capture is deactivated, so an empty buffer
+                // while stopping means every captured sample has been drained.
+                if stopping {
+                    break;
+                }
+                thread::sleep(WRITER_PARK);
+                continue;
+            }
+            for &s in &scratch {
+                out.write_all(&s.to_le_bytes())?;
+            }
+            total += scratch.len();
+            scratch.clear();
+        }
+        patch_wav_sizes(out, total)?;
+        out.flush()
+    }
+    run(buffer, stop, out).map_err(|e| format!("recording write failed: {e}"))
+}
+
+/// Write the 44-byte canonical WAV header for 48 kHz / stereo / 16-bit PCM with the
+/// given data-chunk length in bytes (0 as a placeholder while streaming).
+fn write_wav_header<W: Write>(out: &mut W, data_len: u32) -> std::io::Result<()> {
     let channels = CHANNELS as u32;
     let sample_rate = SAMPLE_RATE;
     let bits = 16u32;
     let byte_rate = sample_rate * channels * bits / 8;
     let block_align = (channels * bits / 8) as u16;
-    let data_len = (samples.len() * 2) as u32;
 
-    let mut wav = Vec::with_capacity(44 + samples.len() * 2);
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
-    wav.extend_from_slice(b"WAVE");
-    wav.extend_from_slice(b"fmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
-    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    wav.extend_from_slice(&(channels as u16).to_le_bytes());
-    wav.extend_from_slice(&sample_rate.to_le_bytes());
-    wav.extend_from_slice(&byte_rate.to_le_bytes());
-    wav.extend_from_slice(&block_align.to_le_bytes());
-    wav.extend_from_slice(&(bits as u16).to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&data_len.to_le_bytes());
-    for &s in samples {
-        wav.extend_from_slice(&s.to_le_bytes());
-    }
-    wav
+    out.write_all(b"RIFF")?;
+    out.write_all(&(36 + data_len).to_le_bytes())?;
+    out.write_all(b"WAVE")?;
+    out.write_all(b"fmt ")?;
+    out.write_all(&16u32.to_le_bytes())?; // fmt chunk size
+    out.write_all(&1u16.to_le_bytes())?; // PCM
+    out.write_all(&(channels as u16).to_le_bytes())?;
+    out.write_all(&sample_rate.to_le_bytes())?;
+    out.write_all(&byte_rate.to_le_bytes())?;
+    out.write_all(&block_align.to_le_bytes())?;
+    out.write_all(&(bits as u16).to_le_bytes())?;
+    out.write_all(b"data")?;
+    out.write_all(&data_len.to_le_bytes())
+}
+
+/// Patch the RIFF + data sizes into an already-written WAV once `total_samples` is
+/// known, then leave the cursor at the end. The two size fields live at fixed
+/// offsets 4 (RIFF chunk) and 40 (data chunk) in the canonical header above.
+fn patch_wav_sizes<W: Write + Seek>(out: &mut W, total_samples: usize) -> std::io::Result<()> {
+    let data_len = (total_samples * 2) as u32;
+    out.seek(SeekFrom::Start(4))?;
+    out.write_all(&(36 + data_len).to_le_bytes())?;
+    out.seek(SeekFrom::Start(40))?;
+    out.write_all(&data_len.to_le_bytes())?;
+    out.seek(SeekFrom::End(0))?;
+    Ok(())
 }
 
 /// A control command enqueued by the IPC/control thread and applied on the render
@@ -444,13 +587,16 @@ impl Host {
     }
 
     /// Start recording the master bus (exactly the speaker feed — post-limiter and
-    /// clip-guard). Clears any prior take.
-    pub fn start_recording(&self) {
-        self.recorder.start();
+    /// clip-guard), streaming it to the already-opened `file` as a 16-bit PCM WAV. The
+    /// caller opens the file (atomically, at the trust boundary) so this layer never
+    /// touches paths. Errors if a take is already in progress.
+    pub fn start_recording(&self, file: File) -> Result<(), String> {
+        self.recorder.start(file)
     }
 
-    /// Stop recording and return the take as a 16-bit PCM WAV.
-    pub fn stop_recording(&self) -> Vec<u8> {
+    /// Stop recording: flush the remaining audio, patch the WAV header, and close
+    /// the file. A no-op when not recording. Returns any write error from the take.
+    pub fn stop_recording(&self) -> Result<(), String> {
         self.recorder.stop()
     }
 
@@ -766,6 +912,9 @@ impl Host {
 
 impl Drop for Host {
     fn drop(&mut self) {
+        // Finish any in-flight take first, so its writer thread flushes and exits
+        // rather than being orphaned when the render thread (its feed) stops.
+        let _ = self.recorder.stop();
         // Signal the render thread and join it so the Engine is dropped cleanly.
         self.stop.store(true, Ordering::Release);
         if let Some(handle) = self.render_thread.take() {
@@ -1392,36 +1541,75 @@ mod tests {
     }
 
     #[test]
-    fn recorder_captures_master_to_a_pcm_wav() {
+    fn capture_converts_a_master_block_to_int16_when_active() {
         let rec = Recorder::new();
 
-        // Not recording → capture is a no-op; an empty stop is a valid header-only
-        // WAV.
-        rec.capture(&[0.5, -0.5, 0.5, -0.5]);
-        let empty = rec.stop();
-        assert_eq!(&empty[0..4], b"RIFF");
-        assert_eq!(&empty[8..12], b"WAVE");
-        assert_eq!(empty.len(), 44, "no samples → header only");
-
-        // Record two stereo frames.
-        rec.start();
+        // Not recording → capture is a no-op.
         rec.capture(&[0.5, -0.5]);
-        rec.capture(&[0.25, -0.25]);
-        let wav = rec.stop();
+        assert!(rec.buffer.lock().unwrap().is_empty());
+
+        // Active → blocks are clamped and scaled to int16 in the shared buffer (the
+        // writer thread streams that buffer to disk).
+        rec.active.store(true, Ordering::Relaxed);
+        rec.capture(&[0.5, -0.5]);
+        rec.capture(&[2.0, -2.0]); // out of range → clamped to ±full scale
+        let buf = rec.buffer.lock().unwrap();
+        // 0.5 → round(0.5 * 32767) ≈ 16383; clamp pins the overshoot at ±32767.
+        assert!((buf[0] - 16383).abs() <= 1, "0.5 should encode near +16383, got {}", buf[0]);
+        assert!((buf[1] + 16383).abs() <= 1);
+        assert_eq!(buf[2], 32767);
+        assert_eq!(buf[3], -32767);
+    }
+
+    #[test]
+    fn capture_stops_at_the_wav_size_ceiling() {
+        // Past ~6 h a plain WAV's 32-bit size fields would overflow; capture must stop
+        // appending at the ceiling rather than wrap the header into a malformed file.
+        let rec = Recorder::new();
+        rec.active.store(true, Ordering::Relaxed);
+        // Pretend all but two samples of the budget are already on disk.
+        rec.captured.store(RECORDING_MAX_SAMPLES - 2, Ordering::Relaxed);
+
+        rec.capture(&[0.1, 0.2, 0.3, 0.4]); // a 4-sample block, only 2 of which fit
+        assert_eq!(rec.buffer.lock().unwrap().len(), 2, "only the remaining budget is kept");
+        assert_eq!(rec.captured.load(Ordering::Relaxed), RECORDING_MAX_SAMPLES);
+
+        rec.capture(&[0.5, 0.6]); // budget exhausted → nothing more is captured
+        assert_eq!(rec.buffer.lock().unwrap().len(), 2, "capture is a no-op at the ceiling");
+    }
+
+    #[test]
+    fn drain_to_wav_streams_a_patched_pcm_wav() {
+        use std::io::Cursor;
+
+        // Two stereo frames already captured, stop already requested: drain writes
+        // the header, streams the samples, and patches the sizes — all synchronously
+        // (the empty-buffer-while-stopping path breaks the loop, no sleeping).
+        let buffer = Mutex::new(vec![16383i16, -16383, 8191, -8191]);
+        let stop = AtomicBool::new(true);
+        let mut out = Cursor::new(Vec::new());
+        drain_to_wav(&buffer, &stop, &mut out).expect("drain succeeds");
+        let wav = out.into_inner();
 
         assert_eq!(&wav[0..4], b"RIFF");
         assert_eq!(&wav[8..12], b"WAVE");
         assert_eq!(&wav[36..40], b"data");
         // 44-byte header + 4 int16 samples (8 bytes).
         assert_eq!(wav.len(), 44 + 8);
-        // First sample 0.5 → round(0.5 * 32767) ≈ 16383.
-        let s0 = i16::from_le_bytes([wav[44], wav[45]]);
-        assert!((s0 - 16383).abs() <= 1, "0.5 should encode near +16383, got {s0}");
+        // Sizes were patched from the placeholder 0: RIFF = 36 + data, data = 8.
+        assert_eq!(u32::from_le_bytes([wav[4], wav[5], wav[6], wav[7]]), 36 + 8);
+        assert_eq!(u32::from_le_bytes([wav[40], wav[41], wav[42], wav[43]]), 8);
+        assert_eq!(i16::from_le_bytes([wav[44], wav[45]]), 16383);
+        // The buffer was drained.
+        assert!(buffer.lock().unwrap().is_empty());
 
-        // A fresh start clears the prior take.
-        rec.start();
-        let cleared = rec.stop();
-        assert_eq!(cleared.len(), 44);
+        // Nothing captured → a valid header-only WAV with zero-length data.
+        let empty_buffer = Mutex::new(Vec::new());
+        let mut empty_out = Cursor::new(Vec::new());
+        drain_to_wav(&empty_buffer, &AtomicBool::new(true), &mut empty_out).unwrap();
+        let empty = empty_out.into_inner();
+        assert_eq!(empty.len(), 44, "no samples → header only");
+        assert_eq!(u32::from_le_bytes([empty[40], empty[41], empty[42], empty[43]]), 0);
     }
 
     /// Switching the MAIN output device: a `SwapMasterRing` command re-points the

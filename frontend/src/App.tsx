@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 
 import { INITIAL_CROSSFADE, INITIAL_CUE_MIX, type DeckId } from './audio/types'
 import { uploadStyleSample } from './audio/styleSample'
+import { invoke } from './audio/nativeEngine'
 import { useAudioEngine } from './audio/engineContext'
 import { useInterfaceStore, useProjected } from './audio/interfaceStore'
 import { FX_KINDS } from './audio/fx'
@@ -134,6 +135,41 @@ function App() {
     setAccent(value)
     updateAppSettings({ accent: value })
   }, [])
+
+  // Where master-bus recordings are saved (empty = the OS Downloads folder, the
+  // default). App owns the persisted choice; RecordControl reads it to save the
+  // take, the Rust side recreates the folder and falls back to Downloads.
+  const [recordingsFolder, setRecordingsFolder] = useState(
+    () => loadAppSettings().recordingsFolder ?? '',
+  )
+  const [recordingsFolderError, setRecordingsFolderError] = useState<string | null>(
+    null,
+  )
+  const handleRecordingsFolder = useCallback((path: string) => {
+    setRecordingsFolder(path)
+    updateAppSettings({ recordingsFolder: path })
+  }, [])
+  const chooseRecordingsFolder = useCallback(async () => {
+    setRecordingsFolderError(null)
+    // The native folder picker (dialog plugin); WKWebView has no File System
+    // Access API, so the chosen path comes back from Rust.
+    try {
+      const dir = await invoke<string | null>('plugin:dialog|open', {
+        options: { directory: true, multiple: false },
+      })
+      if (dir) handleRecordingsFolder(dir) // null = the user dismissed it
+    } catch (error) {
+      setRecordingsFolderError(error instanceof Error ? error.message : String(error))
+    }
+  }, [handleRecordingsFolder])
+  const openRecordingsFolder = useCallback(async () => {
+    setRecordingsFolderError(null)
+    try {
+      await invoke('open_recordings_folder', { folder: recordingsFolder })
+    } catch (error) {
+      setRecordingsFolderError(error instanceof Error ? error.message : String(error))
+    }
+  }, [recordingsFolder])
 
   // The settings drawer (issue #43): the appearance pickers + the model manager.
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -535,7 +571,7 @@ function App() {
             onSelectDevice={midi.selectDevice}
             readMonitor={midi.readMonitor}
           />
-          <RecordControl />
+          <RecordControl recordingsFolder={recordingsFolder} />
           <Button onClick={() => setSettingsOpen(true)}>{t('settings.open')}</Button>
         </div>
       </header>
@@ -582,6 +618,42 @@ function App() {
               onSelect={handleCueDevice}
               mainDeviceName={mainDevice}
             />
+          </div>
+        </section>
+        {/* Where master-bus recordings are saved. Empty = the OS Downloads
+            folder (the default); choosing a folder routes takes there. */}
+        <section className="modelmgr__section">
+          <h3 className="modelmgr__heading">{t('settings.recording')}</h3>
+          <div className="settings-recording">
+            <div className="settings-recording__folder">
+              <span className="settings-recording__label">
+                {t('settings.recordingFolder')}
+              </span>
+              <span
+                className="settings-recording__path"
+                title={recordingsFolder || undefined}
+              >
+                {recordingsFolder || t('settings.recordingFolderDefault')}
+              </span>
+            </div>
+            <div className="settings-recording__actions">
+              <Button onClick={() => void chooseRecordingsFolder()}>
+                {t('media.folder.choose')}
+              </Button>
+              {recordingsFolder && (
+                <Button onClick={() => handleRecordingsFolder('')}>
+                  {t('settings.useDownloads')}
+                </Button>
+              )}
+              <Button onClick={() => void openRecordingsFolder()}>
+                {t('modelManager.openFolder')}
+              </Button>
+            </div>
+            {recordingsFolderError && (
+              <p className="settings-recording__error" role="alert">
+                {t('settings.recordingFolderError', { message: recordingsFolderError })}
+              </p>
+            )}
           </div>
         </section>
         {/* Which model each deck runs live — a once-per-session setup choice,

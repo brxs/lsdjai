@@ -19,50 +19,67 @@ function makeEngine(overrides: Partial<AudioEngine> = {}): AudioEngine {
     listOutputDevices: vi.fn(async () => []),
     setMainDevice: vi.fn(async () => {}),
     setCueDevice: vi.fn(async () => {}),
-    startRecording: vi.fn(async () => {}),
-    stopRecording: vi.fn(async () => new Blob(['x'], { type: 'audio/wav' })),
+    startRecording: vi.fn(async () => '/Users/dj/Downloads/lsdj-take.wav'),
+    stopRecording: vi.fn(async () => {}),
     getMasterLevel: vi.fn(() => 0),
     getMasterGainReduction: vi.fn(() => 0),
     ...overrides,
   }
 }
 
-function renderRecord(engine: AudioEngine, bus: ControlBus = createControlBus()) {
+function renderRecord(
+  engine: AudioEngine,
+  bus: ControlBus = createControlBus(),
+  recordingsFolder = '',
+) {
   return render(
     <AudioEngineProvider engine={engine}>
       <ControlBusProvider bus={bus}>
-        <RecordControl />
+        <RecordControl recordingsFolder={recordingsFolder} />
       </ControlBusProvider>
     </AudioEngineProvider>,
   )
 }
 
 describe('RecordControl', () => {
-  it('records the master bus and downloads the WAV on stop', async () => {
+  it('opens the take in the chosen folder on start and confirms it on stop', async () => {
     const engine = makeEngine()
-    const objectUrl = vi
-      .spyOn(URL, 'createObjectURL')
-      .mockReturnValue('blob:fake')
-    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
-    try {
-      renderRecord(engine)
+    renderRecord(engine, createControlBus(), '/Users/dj/Sets')
 
-      fireEvent.click(screen.getByRole('button', { name: 'Record' }))
-      await waitFor(() =>
-        expect(
-          screen.getByRole('button', { name: 'Stop recording' }),
-        ).toBeVisible(),
-      )
-      expect(engine.startRecording).toHaveBeenCalled()
-      expect(engine.resume).toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Record' }))
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Stop recording' }),
+      ).toBeVisible(),
+    )
+    // The take streams to disk, so the file is opened at start: the configured
+    // folder and a timestamped stem reach the engine right away.
+    expect(engine.startRecording).toHaveBeenCalledWith(
+      '/Users/dj/Sets',
+      expect.stringMatching(/^lsdj-/),
+    )
+    expect(engine.resume).toHaveBeenCalled()
 
-      fireEvent.click(screen.getByRole('button', { name: 'Stop recording' }))
-      await waitFor(() => expect(engine.stopRecording).toHaveBeenCalled())
-      await waitFor(() => expect(objectUrl).toHaveBeenCalled())
-      expect(screen.getByRole('button', { name: 'Record' })).toBeVisible()
-    } finally {
-      vi.restoreAllMocks()
-    }
+    fireEvent.click(screen.getByRole('button', { name: 'Stop recording' }))
+    expect(engine.stopRecording).toHaveBeenCalled()
+    // The basename of the path returned at start is surfaced as reassurance.
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent('lsdj-take.wav'),
+    )
+    expect(screen.getByRole('button', { name: 'Record' })).toBeVisible()
+  })
+
+  it('opens in the default (empty folder = Downloads) when none is chosen', async () => {
+    const engine = makeEngine()
+    renderRecord(engine)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Record' }))
+    await waitFor(() =>
+      expect(engine.startRecording).toHaveBeenCalledWith(
+        '',
+        expect.stringMatching(/^lsdj-/),
+      ),
+    )
   })
 
   it('surfaces a recording failure instead of swallowing it', async () => {

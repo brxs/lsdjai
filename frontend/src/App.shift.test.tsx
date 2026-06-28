@@ -39,8 +39,8 @@ function makeEngine(): AudioEngine {
     listOutputDevices: vi.fn(async () => []),
     setMainDevice: vi.fn(async () => {}),
     setCueDevice: vi.fn(async () => {}),
-    startRecording: vi.fn(async () => {}),
-    stopRecording: vi.fn(async () => new Blob()),
+    startRecording: vi.fn(async () => '/Downloads/lsdj-take.wav'),
+    stopRecording: vi.fn(async () => {}),
     getMasterLevel: vi.fn(() => 0),
     getMasterGainReduction: vi.fn(() => 0),
   }

@@ -923,6 +923,44 @@
   margin-top: var(--space-3);
 }
 
+/* Recordings folder: the saved-take destination. A labelled read-only path line
+   above the pick / reset-to-Downloads / reveal actions, keeping the stacked
+   rhythm of the other settings groups. */
+.settings-recording {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+.settings-recording__folder {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.settings-recording__label {
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+.settings-recording__path {
+  font: 500 var(--text-s) var(--font-mono);
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-recording__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.settings-recording__error {
+  font: 500 var(--text-s) var(--font-ui);
+  color: var(--color-led-danger);
+  margin: 0;
+}
+
 /* --- Model manager (issue #43) ------------------------------------------- */
 .modelmgr__section + .modelmgr__section {
   margin-top: var(--space-5);

@@ -124,6 +124,22 @@ describe('persistence', () => {
     expect(loadAppSettings().mediaHeight).toBe(320)
   })
 
+  it('round-trips the recordings folder, including an explicit reset to Downloads', () => {
+    updateAppSettings({ recordingsFolder: '/Users/dj/Sets' })
+    expect(loadAppSettings().recordingsFolder).toBe('/Users/dj/Sets')
+    // '' is a real value — "back to the Downloads default" — not a dropped field.
+    updateAppSettings({ recordingsFolder: '' })
+    expect(loadAppSettings().recordingsFolder).toBe('')
+  })
+
+  it('drops a non-string recordings folder', () => {
+    localStorage.setItem(
+      'lsdj:v1',
+      JSON.stringify({ app: { recordingsFolder: 42 } }),
+    )
+    expect(loadAppSettings().recordingsFolder).toBeUndefined()
+  })
+
   it('clamps the media height and drops a non-boolean open flag', () => {
     localStorage.setItem(
       'lsdj:v1',

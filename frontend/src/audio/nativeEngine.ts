@@ -756,11 +756,11 @@ export function createNativeEngine(): AudioEngine {
     setCueDevice: (name) => invoke('set_cue_device', { name }),
     getMasterLevel: () => snapshot?.health.masterPeak ?? 0,
     getMasterGainReduction: () => snapshot?.health.masterGainReductionDb ?? 0,
-    // The engine taps the master bus on its render thread; stop returns a WAV.
-    startRecording: () => invoke('start_recording'),
-    stopRecording: () =>
-      invoke<ArrayBuffer>('stop_recording').then(
-        (wav) => new Blob([wav], { type: 'audio/wav' }),
-      ),
+    // The engine taps the master bus on its render thread and streams it straight to
+    // disk from Rust (the WAV never crosses IPC). The file opens at start, so the
+    // path comes back from start_recording; stop just flushes and closes it.
+    startRecording: (folder, name) =>
+      invoke<string>('start_recording', { folder, name }),
+    stopRecording: () => invoke('stop_recording'),
   }
 }

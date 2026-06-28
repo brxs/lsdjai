@@ -29,8 +29,10 @@ use lsdj_engine::{
 };
 
 use tauri::ipc::{Channel, InvokeResponseBody};
+use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 
+use crate::library;
 use crate::samples::{NewSample, SampleEntry, SampleLibrary};
 use crate::sidecar::{PcmTaps, Sidecars};
 use crate::songs::{NewSong, SongEntry, SongLibrary};
@@ -361,17 +363,71 @@ pub fn audition_stop(state: tauri::State<'_, Host>) {
     state.audition_stop();
 }
 
-/// Start recording the master bus (exactly the speaker feed).
-#[tauri::command]
-pub fn start_recording(state: tauri::State<'_, Host>) {
-    state.start_recording();
+/// Resolve the folder takes are written to: the webview-chosen `folder`, or the OS
+/// Downloads folder when none is set (recordings' historical default). `folder` is a
+/// directory the user picked through the native dialog; only the filename is minted
+/// server-side, so a take can never land outside the directory the user chose.
+fn recordings_dir(app: &tauri::AppHandle, folder: &str) -> Result<std::path::PathBuf, String> {
+    if folder.is_empty() {
+        app.path()
+            .download_dir()
+            .map_err(|e| format!("no Downloads folder: {e}"))
+    } else {
+        Ok(std::path::PathBuf::from(folder))
+    }
 }
 
-/// Stop recording and return the take as a 16-bit PCM WAV (binary — the take can
-/// be many MB, so a JSON number array is not viable).
+/// Start recording the master bus (exactly the speaker feed), streaming it straight
+/// to a 16-bit PCM WAV in `folder` (empty = the OS Downloads folder, today's
+/// default) and returning the file path. Streaming to disk means the take is bounded
+/// by free space, not RAM — only the WAV format's own 32-bit ceiling (~6 h at 48 kHz
+/// stereo) caps the length, far past the old 30-min in-memory limit.
+///
+/// The path is minted here, at start, because the file is opened now: `name` is an
+/// untrusted display stem, sanitised to a single filename component via
+/// [`library::safe_stem`] (so it can't escape the folder). [`library::create_unique_wav`]
+/// then opens a fresh take atomically (`create_new`), so the pick-and-open is one step
+/// — no window for another process to slip a file or symlink into the path, and an
+/// existing take is never truncated.
 #[tauri::command]
-pub fn stop_recording(state: tauri::State<'_, Host>) -> tauri::ipc::Response {
-    tauri::ipc::Response::new(state.stop_recording())
+pub fn start_recording(
+    state: tauri::State<'_, Host>,
+    app: tauri::AppHandle,
+    folder: String,
+    name: String,
+) -> Result<String, String> {
+    let dir = recordings_dir(&app, &folder)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create recordings folder: {e}"))?;
+    let stem = library::safe_stem(&name, "lsdj-recording");
+    let (file, path) = library::create_unique_wav(&dir, &stem)?;
+    if let Err(e) = state.start_recording(file) {
+        // The take never started (e.g. one already in progress); don't leave the
+        // empty file we just created lying around.
+        let _ = std::fs::remove_file(&path);
+        return Err(e);
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Stop recording: the engine flushes the remaining audio, patches the WAV header,
+/// and closes the file that [`start_recording`] opened. The path was already
+/// returned at start, so nothing comes back here but success or a write error.
+#[tauri::command]
+pub fn stop_recording(state: tauri::State<'_, Host>) -> Result<(), String> {
+    state.stop_recording()
+}
+
+/// Reveal the recordings folder in the OS file manager (driven from Rust, no opener
+/// capability granted to the webview). Empty `folder` falls back to Downloads — where
+/// takes land by default — and the folder is created first so it opens even before the
+/// first recording.
+#[tauri::command]
+pub fn open_recordings_folder(app: tauri::AppHandle, folder: String) -> Result<(), String> {
+    let dir = recordings_dir(&app, &folder)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create recordings folder: {e}"))?;
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("cannot open recordings folder: {e}"))
 }
 
 // --- Playback deck transport ---
@@ -649,7 +705,7 @@ pub fn save_loop_slot(
 /// Encode interleaved-stereo f32 samples as a 48 kHz IEEE-float WAV (`WAVE_FORMAT_
 /// IEEE_FLOAT`, the same shape the backend's `float32_wav` produces and the webview's
 /// `decodeAudioData` reads). A minimal float PCM WAV writer, mirroring the recorder's
-/// int16 [`encode_wav_i16`](lsdj_engine) but lossless for a loop's f32 buffer.
+/// streaming int16 WAV but lossless for a loop's f32 buffer.
 fn encode_wav_f32(samples: &[f32]) -> Vec<u8> {
     let channels = CHANNELS as u32;
     let sample_rate = SAMPLE_RATE;
