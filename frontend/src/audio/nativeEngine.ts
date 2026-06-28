@@ -223,6 +223,46 @@ export function subscribeModelProgress(onProgress: (p: ModelProgress) => void): 
   return listenTo<ModelProgress>('model://progress', onProgress)
 }
 
+// --- The interface-state store (ADR-0020, issue #37 Phase 1) ---
+//
+// Rust owns the semantic/audio-param interface state; the webview projects it.
+// These mirror the Rust `store::InterfaceState` serde shape (camelCase). The FX
+// kind is the camelCase wire value (`dubEcho`), matching `FX_ARG`.
+
+/** A Color FX kind as it appears in the store snapshot (the camelCase wire value). */
+export type FxKindSnap = 'filter' | 'dubEcho' | 'space' | 'crush' | 'noise' | 'sweep'
+
+/** One deck's mixer-channel state in the store. */
+export type DeckMixSnap = {
+  volume: number
+  eq: { low: number; mid: number; high: number }
+  trimDb: number
+  cue: boolean
+  onAir: boolean
+  fx: { kind: FxKindSnap | null; amount: number }
+}
+
+/** The authoritative interface state the webview projects (mirrors Rust
+ * `store::InterfaceState`). View state is deliberately absent — it stays in React
+ * (the ADR-0020 narrowing). */
+export type InterfaceState = {
+  decks: DeckMixSnap[]
+  crossfade: number
+  cueMix: number
+}
+
+/** Fetch the current interface-state snapshot (the projection's initial hydrate). */
+export function storeSnapshot(): Promise<InterfaceState> {
+  return invoke<InterfaceState>('store_snapshot')
+}
+
+/** Subscribe to `store://changed` — the store emits the fresh snapshot on every
+ * mutation (from any controller: UI, MIDI, or a future MCP agent). Returns an
+ * unsubscribe fn. */
+export function subscribeStoreChanged(onChange: (state: InterfaceState) => void): () => void {
+  return listenTo<InterfaceState>('store://changed', onChange)
+}
+
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }
 
 /** Map the TS `FxKind` (snake) to the Rust `FxKindArg` (camel, serde). */

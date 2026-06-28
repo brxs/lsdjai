@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { INITIAL_CROSSFADE, INITIAL_CUE_MIX, type DeckId } from './audio/types'
 import { uploadStyleSample } from './audio/styleSample'
 import { useAudioEngine } from './audio/engineContext'
+import { useInterfaceStore, useProjected } from './audio/interfaceStore'
 import { FX_KINDS } from './audio/fx'
 import { applyAppIntent } from './control/appIntents'
 import { useControlBus } from './control/busContext'
@@ -45,13 +46,21 @@ import { sameMask } from './selectionMask'
 function App() {
   const { t } = useTranslation()
   const engine = useAudioEngine()
+  // The authoritative interface-state store (ADR-0020): the webview projects it.
+  const store = useInterfaceStore()
   const deckA = useDeck('a')
   const deckB = useDeck('b')
-  const [crossfade, setCrossfade] = useState(
-    () => loadAppSettings().crossfade ?? INITIAL_CROSSFADE,
+  // Crossfade / cue-mix are projections of the store, rendered optimistically
+  // during a drag and reconciled to the store (a MIDI move arrives the same way).
+  const [crossfade, setCrossfade] = useProjected(
+    store?.crossfade,
+    loadAppSettings().crossfade ?? INITIAL_CROSSFADE,
+    (position) => engine.setCrossfade(position),
   )
-  const [cueMix, setCueMix] = useState(
-    () => loadAppSettings().cueMix ?? INITIAL_CUE_MIX,
+  const [cueMix, setCueMix] = useProjected(
+    store?.cueMix,
+    loadAppSettings().cueMix ?? INITIAL_CUE_MIX,
+    (position) => engine.setCueMix(position),
   )
   // The chosen native MAIN output device by name (empty = system default;
   // master → its ch 1/2) and the headphone CUE device (empty = "same as main",
@@ -169,21 +178,21 @@ function App() {
   // Every source — slider, keyboard, hardware — lands here.
   const handleCrossfade = useCallback(
     (position: number) => {
-      engine.setCrossfade(position)
+      // The projected setter renders optimistically and emits engine.setCrossfade,
+      // which records the move into the store (the single source of truth).
       setCrossfade(position)
       updateAppSettings({ crossfade: position })
     },
-    [engine],
+    [setCrossfade],
   )
 
   // The one place a cue-mix move is defined, mirroring handleCrossfade.
   const handleCueMix = useCallback(
     (position: number) => {
-      engine.setCueMix(position)
       setCueMix(position)
       updateAppSettings({ cueMix: position })
     },
-    [engine],
+    [setCueMix],
   )
 
   // Deck-to-deck style sampling (M15): capture the OTHER deck's tail,
