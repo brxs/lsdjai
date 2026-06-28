@@ -38,7 +38,7 @@ use crate::commands::{valid_deck, EqBandArg, FxKindArg};
 use crate::generation::GenerationServer;
 use crate::samples::{NewSample, SampleLibrary};
 use crate::sidecar::Sidecars;
-use crate::songs::SongLibrary;
+use crate::songs::{NewSong, SongLibrary};
 use crate::store::{InterfaceStore, PadPointSnap, StyleTargetSnap};
 use lsdj_engine::host::Host;
 
@@ -140,6 +140,16 @@ impl Sa3Kind {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct GenerateTrackArgs {
+    /// Deck index to load the finished track onto: 0 = A, 1 = B.
+    deck: usize,
+    /// Text prompt describing the track to generate.
+    prompt: String,
+    /// Length in seconds (the server caps tracks at 380 s).
+    seconds: f32,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct GenerateSampleArgs {
     /// Text prompt describing the sound to generate.
     prompt: String,
@@ -153,9 +163,10 @@ struct GenerateSampleArgs {
 }
 
 /// The `/api/generate` request body, matching the generation server's contract
-/// (`prompt`/`seconds`/`kind`). Pulled out so the wire shape is unit-testable.
-fn generate_request_body(prompt: &str, seconds: f32, kind: Sa3Kind) -> serde_json::Value {
-    json!({ "prompt": prompt, "seconds": seconds, "kind": kind.as_str() })
+/// (`prompt`/`seconds`/`kind`). Pulled out so the wire shape is unit-testable. `kind`
+/// is the wire string (`sfx`/`music`/`track`).
+fn generate_request_body(prompt: &str, seconds: f32, kind: &str) -> serde_json::Value {
+    json!({ "prompt": prompt, "seconds": seconds, "kind": kind })
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -746,35 +757,7 @@ impl McpHandler {
             kind,
             one_shot,
         } = args;
-        let port = self
-            .app
-            .state::<GenerationServer>()
-            .port()
-            .ok_or("the generation server is not running")?;
-
-        // sa3 generation is serialised and can take many seconds; allow generous
-        // headroom but never wait forever for a wedged worker.
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .build()
-            .map_err(|e| format!("could not build the http client: {e}"))?;
-        let response = client
-            .post(format!("http://127.0.0.1:{port}/api/generate"))
-            .json(&generate_request_body(&prompt, seconds, kind))
-            .send()
-            .await
-            .map_err(|e| format!("generation request failed: {e}"))?;
-        if !response.status().is_success() {
-            // The server returns a JSON `{detail}` (FastAPI HTTPException); surface it.
-            let status = response.status();
-            let detail = response.text().await.unwrap_or_default();
-            return Err(format!("generation failed ({status}): {detail}"));
-        }
-        let wav = response
-            .bytes()
-            .await
-            .map_err(|e| format!("could not read the generated audio: {e}"))?;
-
+        let wav = self.generate_clip(&prompt, seconds, kind.as_str()).await?;
         let entry = self.app.state::<SampleLibrary>().record(
             NewSample {
                 title: prompt.clone(),
@@ -788,6 +771,90 @@ impl McpHandler {
             "generated a {} sample, saved to the samples library as {} (\"{}\")",
             kind.as_str(),
             entry.file,
+            entry.title
+        ))
+    }
+
+    /// POST a generation request to the loopback server and return the WAV bytes.
+    /// Shared by [`generate_sample`] (sfx/music → samples) and [`generate_track`]
+    /// (track → songs), reusing the server's prompt/length validation.
+    async fn generate_clip(&self, prompt: &str, seconds: f32, kind: &str) -> Result<Vec<u8>, String> {
+        let port = self
+            .app
+            .state::<GenerationServer>()
+            .port()
+            .ok_or("the generation server is not running")?;
+        // sa3 generation is serialised; a full track (medium model) can take minutes,
+        // so allow generous headroom but never wait forever for a wedged worker.
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(600))
+            .build()
+            .map_err(|e| format!("could not build the http client: {e}"))?;
+        let response = client
+            .post(format!("http://127.0.0.1:{port}/api/generate"))
+            .json(&generate_request_body(prompt, seconds, kind))
+            .send()
+            .await
+            .map_err(|e| format!("generation request failed: {e}"))?;
+        if !response.status().is_success() {
+            // The server returns a JSON `{detail}` (FastAPI HTTPException); surface it.
+            let status = response.status();
+            let detail = response.text().await.unwrap_or_default();
+            return Err(format!("generation failed ({status}): {detail}"));
+        }
+        response
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|e| format!("could not read the generated audio: {e}"))
+    }
+
+    /// Generate a full track and load it onto a deck (the user's "compose a track and
+    /// drop it on a deck"). Saves to the songs library, then asks the webview to load
+    /// it — the same path as `load_track`, so the deck flips to playback and shows it.
+    #[tool(
+        description = "Generate a full track (Stable Audio 3, long-form) from a text \
+                       prompt, save it to the songs library, and load it onto a deck \
+                       (flipping it to playback). deck 0 = A, 1 = B."
+    )]
+    async fn generate_track(
+        &self,
+        Parameters(GenerateTrackArgs {
+            deck,
+            prompt,
+            seconds,
+        }): Parameters<GenerateTrackArgs>,
+    ) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        match self.generate_track_inner(deck, prompt, seconds).await {
+            Ok(message) | Err(message) => message,
+        }
+    }
+
+    /// The fallible body of [`generate_track`].
+    async fn generate_track_inner(
+        &self,
+        deck: usize,
+        prompt: String,
+        seconds: f32,
+    ) -> Result<String, String> {
+        let wav = self.generate_clip(&prompt, seconds, "track").await?;
+        let entry = self.app.state::<SongLibrary>().record(
+            NewSong {
+                title: prompt.clone(),
+                prompt,
+                model: "track".to_string(),
+            },
+            &wav,
+        )?;
+        let _ = self.app.emit(
+            "mcp://load-track",
+            json!({ "deck": deck, "file": entry.file, "title": entry.title }),
+        );
+        Ok(format!(
+            "generated \"{}\" and loading it onto deck {deck}",
             entry.title
         ))
     }
@@ -1055,16 +1122,16 @@ fn generate_token() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{generate_request_body, generate_token, load_or_generate_token, save_token, Sa3Kind};
+    use super::{generate_request_body, generate_token, load_or_generate_token, save_token};
 
     #[test]
     fn generate_body_matches_the_server_contract() {
         // The keys + the wire `kind` value must match what `/api/generate` validates.
-        let body = generate_request_body("warm pad", 4.0, Sa3Kind::Music);
+        let body = generate_request_body("warm pad", 4.0, "music");
         assert_eq!(body["prompt"], "warm pad");
         assert_eq!(body["seconds"], 4.0);
         assert_eq!(body["kind"], "music");
-        assert_eq!(generate_request_body("", 1.0, Sa3Kind::Sfx)["kind"], "sfx");
+        assert_eq!(generate_request_body("epic", 60.0, "track")["kind"], "track");
     }
 
     #[test]
