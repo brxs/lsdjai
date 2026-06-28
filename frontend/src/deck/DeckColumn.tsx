@@ -656,19 +656,6 @@ export function DeckColumn({
         </span>
       </header>
 
-      {/* Deliberately usable while the worker is dead: switching to a model
-          that fits is the recovery path when the chosen one cannot load.
-          Hidden in playback — the worker is parked (ADR-0013). */}
-      {mode !== 'playback' && (
-        <Select
-          label={t('deck.model.label')}
-          value={state.model ?? ''}
-          options={state.availableModels.length ? state.availableModels : [state.model ?? '']}
-          disabled={!connected || state.switchingModel}
-          onChange={onSetModel}
-        />
-      )}
-
       {/* Playback mode (M19, ADR-0013): the style pane gives way to the
           loaded track — its envelope is the deck's seekable surface. */}
       {mode === 'playback' && track ? (
@@ -1132,6 +1119,16 @@ export function DeckColumn({
       {state.workerDied && (
         <div className="deck__recovery" role="alert">
           <p className="deck__error">{t('deck.worker.died')}</p>
+          {/* The model picker normally lives in settings, but switching to a
+              model that fits is the recovery path when the chosen one cannot
+              load — so it rides along here, where the crash is surfaced. */}
+          <Select
+            label={t('deck.model.label')}
+            value={state.model ?? ''}
+            options={state.availableModels.length ? state.availableModels : [state.model ?? '']}
+            disabled={!connected || state.switchingModel}
+            onChange={onSetModel}
+          />
           <Button onClick={onRestart} disabled={!connected}>
             {t('deck.worker.restart')}
           </Button>

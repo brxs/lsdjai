@@ -96,3 +96,17 @@ describe('App crossfade ownership', () => {
     expect(screen.getByLabelText('Crossfade')).toHaveValue('0.75')
   })
 })
+
+describe('App settings drawer', () => {
+  it('hosts a per-deck model picker (moved out of the deck columns)', () => {
+    const engine = makeEngine()
+    renderApp(engine)
+    // The decks no longer carry a model picker; it lives in settings now.
+    expect(screen.queryByLabelText('Deck A')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    expect(screen.getByLabelText('Deck A')).toBeInTheDocument()
+    expect(screen.getByLabelText('Deck B')).toBeInTheDocument()
+  })
+})

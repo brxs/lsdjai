@@ -22,6 +22,7 @@ import { RecordControl } from './mixer/RecordControl'
 import { AccentPicker } from './ui/AccentPicker'
 import { OutputDevicePicker } from './ui/OutputDevicePicker'
 import { BeatViewPicker } from './ui/BeatViewPicker'
+import { Select } from './ui/Select'
 import {
   deletePreset,
   loadAppSettings,
@@ -557,7 +558,40 @@ function App() {
             />
           </div>
         </section>
-        <ModelManager />
+        {/* Which model each deck runs live — a once-per-session setup choice,
+            moved out of the deck column so it stops competing with the style pad
+            for height. A crashed worker still offers its own picker in the
+            recovery block (the "switch to a model that fits" path). */}
+        <section className="modelmgr__section">
+          <h3 className="modelmgr__heading">{t('settings.models')}</h3>
+          <div className="settings-models">
+            {([
+              { id: 'a' as const, deck: deckA },
+              { id: 'b' as const, deck: deckB },
+            ]).map(({ id, deck }) => (
+              <Select
+                key={id}
+                label={t('settings.modelDeck', { id: id.toUpperCase() })}
+                value={deck.state.model ?? ''}
+                options={
+                  deck.state.availableModels.length
+                    ? deck.state.availableModels
+                    : [deck.state.model ?? '']
+                }
+                disabled={deck.state.connection !== 'open' || deck.state.switchingModel}
+                onChange={deck.setModel}
+              />
+            ))}
+          </div>
+        </section>
+        {/* The model library: install / manage the realtime (Magenta) and
+            generation (Stable Audio 3) weights on disk. The umbrella section
+            keeps the install families grouped under one heading and restores the
+            inter-section rhythm across the ModelManager boundary. */}
+        <section className="modelmgr__section settings-model-library">
+          <h3 className="modelmgr__heading">{t('settings.modelLibrary')}</h3>
+          <ModelManager />
+        </section>
       </Drawer>
       {beatView === 'top' && (
         <BeatView

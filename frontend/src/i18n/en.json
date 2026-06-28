@@ -259,7 +259,10 @@
     "title": "Settings",
     "close": "Close",
     "appearance": "Appearance",
-    "audio": "Audio"
+    "audio": "Audio",
+    "models": "Deck realtime models",
+    "modelDeck": "Deck {{id}}",
+    "modelLibrary": "Model library"
   },
   "modelManager": {
     "loading": "Reading model status…",
