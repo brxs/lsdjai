@@ -300,6 +300,27 @@ export function subscribeStoreChanged(onChange: (state: InterfaceState) => void)
   return listenTo<InterfaceState>('store://changed', onChange)
 }
 
+/** An MCP agent's `load_track` (Rust emits `mcp://load-track`). The webview owns the
+ * decode + beatgrid analysis, so it reads the WAV and runs the deck's load flow. */
+export function subscribeLoadTrack(
+  onLoad: (payload: { deck: number; file: string; title: string }) => void,
+): () => void {
+  return listenTo('mcp://load-track', onLoad)
+}
+
+/** An MCP agent's `load_sample` (Rust emits `mcp://load-sample`); the webview installs
+ * it into the deck's pad bank. */
+export function subscribeLoadSample(
+  onLoad: (payload: {
+    deck: number
+    file: string
+    oneShot: boolean
+    label: string
+  }) => void,
+): () => void {
+  return listenTo('mcp://load-sample', onLoad)
+}
+
 /** Mirror a realtime deck's derived state (model + playing) into the store. The
  * webview owns the derivation (worker status + play/stop); this writes the current
  * value up so the store stays the single source of truth — no engine effect.

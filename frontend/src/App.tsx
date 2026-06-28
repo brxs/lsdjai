@@ -6,7 +6,13 @@ import { uploadStyleSample } from './audio/styleSample'
 import { invoke } from './audio/nativeEngine'
 import { useAudioEngine } from './audio/engineContext'
 import { useInterfaceStore, useProjected } from './audio/interfaceStore'
-import { getMcpInfo, rotateMcpToken, type McpInfo } from './audio/nativeEngine'
+import {
+  getMcpInfo,
+  rotateMcpToken,
+  subscribeLoadTrack,
+  subscribeLoadSample,
+  type McpInfo,
+} from './audio/nativeEngine'
 import { FX_KINDS } from './audio/fx'
 import { applyAppIntent } from './control/appIntents'
 import { useControlBus } from './control/busContext'
@@ -493,6 +499,27 @@ function App() {
     [engine],
   )
   const handleStopPreview = useCallback(() => engine.auditionStop(), [engine])
+
+  // An MCP agent's load_track / load_sample (Rust emits the event): read the library
+  // WAV and run the deck's load flow — the same path the Media Explorer takes, so the
+  // deck reflects the load (playback mode + overview + cues, or the pad slot).
+  useEffect(() => {
+    const toDeck = (n: number): DeckId => (n === 0 ? 'a' : 'b')
+    const unTrack = subscribeLoadTrack(({ deck, file, title }) => {
+      void invoke<ArrayBuffer>('read_generated_song', { name: file })
+        .then((wav) => handleLoadTrack(toDeck(deck), wav, title))
+        .catch(() => {})
+    })
+    const unSample = subscribeLoadSample(({ deck, file, oneShot, label }) => {
+      void invoke<ArrayBuffer>('read_generated_sample', { name: file })
+        .then((wav) => handleLoadSample(toDeck(deck), wav, oneShot, label))
+        .catch(() => {})
+    })
+    return () => {
+      unTrack()
+      unSample()
+    }
+  }, [handleLoadTrack, handleLoadSample])
 
   // Beat-matching (M20, ADR-0014): SYNC matches a track deck to the
   // other deck's effective tempo — gated stream BPM, or grid BPM ×

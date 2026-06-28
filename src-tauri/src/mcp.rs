@@ -31,13 +31,14 @@ use rmcp::transport::streamable_http_server::tower::{
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler};
 use serde::Deserialize;
 use serde_json::json;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::{valid_deck, EqBandArg, FxKindArg};
 use crate::generation::GenerationServer;
 use crate::samples::{NewSample, SampleLibrary};
 use crate::sidecar::Sidecars;
+use crate::songs::SongLibrary;
 use crate::store::{InterfaceStore, PadPointSnap, StyleTargetSnap};
 use lsdj_engine::host::Host;
 
@@ -209,6 +210,14 @@ struct SetPromptArgs {
     deck: usize,
     /// The text prompt the realtime deck should generate from.
     prompt: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct LoadFromLibraryArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// The library `file` name (from list_songs / list_samples).
+    file: String,
 }
 
 /// How many hot-cue pads a deck currently has — the loaded track's cue-bank size, 0
@@ -533,6 +542,88 @@ impl McpHandler {
             center,
         );
         format!("deck {deck} prompt set to \"{prompt}\"")
+    }
+
+    #[tool(
+        description = "List the generated songs/tracks available to load onto a deck — \
+                       each has a `file` (pass to load_track) plus title + prompt."
+    )]
+    async fn list_songs(&self) -> String {
+        match self.app.state::<SongLibrary>().list() {
+            Ok(entries) => serde_json::to_string(&entries)
+                .unwrap_or_else(|e| format!("could not serialise songs: {e}")),
+            Err(e) => format!("could not list songs: {e}"),
+        }
+    }
+
+    #[tool(
+        description = "List the generated samples/loops available to load onto a deck's \
+                       pad — each has a `file` (pass to load_sample)."
+    )]
+    async fn list_samples(&self) -> String {
+        match self.app.state::<SampleLibrary>().list() {
+            Ok(entries) => serde_json::to_string(&entries)
+                .unwrap_or_else(|e| format!("could not serialise samples: {e}")),
+            Err(e) => format!("could not list samples: {e}"),
+        }
+    }
+
+    /// Load a generated song onto a deck (flipping it to playback). The webview owns
+    /// the decode + beatgrid analysis (ADR-0017), so this validates the file and asks
+    /// the webview to run its load flow — the same path the Media Explorer's "load to
+    /// deck" takes, so the deck shows the track, overview, and cues.
+    #[tool(
+        description = "Load a generated song/track (by its `file` from list_songs) onto a \
+                       deck, flipping it to playback. deck 0 = A, 1 = B."
+    )]
+    async fn load_track(
+        &self,
+        Parameters(LoadFromLibraryArgs { deck, file }): Parameters<LoadFromLibraryArgs>,
+    ) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        let entries = match self.app.state::<SongLibrary>().list() {
+            Ok(entries) => entries,
+            Err(e) => return format!("could not read the song library: {e}"),
+        };
+        let Some(entry) = entries.into_iter().find(|e| e.file == file) else {
+            return format!("no song named {file} — call list_songs for the available files");
+        };
+        let title = entry.title;
+        let _ = self.app.emit(
+            "mcp://load-track",
+            json!({ "deck": deck, "file": file, "title": title }),
+        );
+        format!("loading \"{title}\" onto deck {deck}")
+    }
+
+    /// Load a generated sample/loop onto a deck's pad bank. Like load_track, the webview
+    /// runs its sample-load flow (decode + slot install) so the pad reflects it.
+    #[tool(
+        description = "Load a generated sample/loop (by its `file` from list_samples) onto \
+                       a deck's pad. deck 0 = A, 1 = B."
+    )]
+    async fn load_sample(
+        &self,
+        Parameters(LoadFromLibraryArgs { deck, file }): Parameters<LoadFromLibraryArgs>,
+    ) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        let entries = match self.app.state::<SampleLibrary>().list() {
+            Ok(entries) => entries,
+            Err(e) => return format!("could not read the sample library: {e}"),
+        };
+        let Some(entry) = entries.into_iter().find(|e| e.file == file) else {
+            return format!("no sample named {file} — call list_samples for the available files");
+        };
+        let (label, one_shot) = (entry.title, entry.one_shot);
+        let _ = self.app.emit(
+            "mcp://load-sample",
+            json!({ "deck": deck, "file": file, "oneShot": one_shot, "label": label }),
+        );
+        format!("loading \"{label}\" onto deck {deck}")
     }
 
     /// Generate a clip via the loopback generation server and save it to the samples
