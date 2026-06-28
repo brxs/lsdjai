@@ -100,18 +100,18 @@ pub struct TrackIdentitySnap {
     pub duration_seconds: f64,
 }
 
-/// A point on the 2D style pad (0..1 each axis). `Deserialize` too — the cursor
-/// crosses as a `set_deck_style` command argument.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// A point on the 2D style pad (0..1 each axis). `Deserialize`/`JsonSchema` too — the
+/// cursor crosses as a `set_deck_style` / `set_style_cursor` argument (UI/MIDI and MCP).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PadPointSnap {
     pub x: f32,
     pub y: f32,
 }
 
 /// One style-pad target: a prompt at a pad position (the sampled-target embedding
-/// id is session-only and stays out, like the persisted layout). `Deserialize` too
-/// — targets cross as a `set_deck_style` argument.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// id is session-only and stays out, like the persisted layout). `Deserialize`/
+/// `JsonSchema` too — targets cross as a `set_deck_style` argument (UI/MIDI and MCP).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct StyleTargetSnap {
     pub x: f32,
@@ -323,6 +323,24 @@ impl InterfaceState {
             d.cursor = cursor;
         }
     }
+
+    /// Set one hot-cue pad's point in track seconds, or clear it (`None`). A no-track
+    /// deck (empty cue vec) or an out-of-range pad is a no-op — the MCP tool validates
+    /// and reports first.
+    pub fn set_cue_point(&mut self, deck: usize, index: usize, seconds: Option<f64>) {
+        if let Some(d) = self.deck_mut(deck) {
+            if let Some(slot) = d.cues.get_mut(index) {
+                *slot = seconds;
+            }
+        }
+    }
+
+    /// Set just the style-pad cursor (the blend point), leaving the targets.
+    pub fn set_cursor(&mut self, deck: usize, cursor: PadPointSnap) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.cursor = cursor;
+        }
+    }
 }
 
 /// The shell-level store: the locked [`InterfaceState`] plus the [`AppHandle`] used
@@ -445,6 +463,18 @@ impl InterfaceStore {
     pub fn set_deck_style(&self, deck: usize, targets: Vec<StyleTargetSnap>, cursor: PadPointSnap) {
         self.mutate(move |s| s.set_style(deck, targets, cursor));
     }
+
+    /// Set one hot-cue pad's point (MCP `set_hot_cue` / `clear_hot_cue`). The webview
+    /// adopts the change and re-renders the pad; jump stays a transport seek.
+    pub fn set_deck_cue(&self, deck: usize, index: usize, seconds: Option<f64>) {
+        self.mutate(move |s| s.set_cue_point(deck, index, seconds));
+    }
+
+    /// Set just the style-pad cursor (MCP `set_style_cursor`). `DeckColumn` adopts it
+    /// and re-pushes the blended prompt to the worker.
+    pub fn set_deck_cursor(&self, deck: usize, cursor: PadPointSnap) {
+        self.mutate(move |s| s.set_cursor(deck, cursor));
+    }
 }
 
 #[cfg(test)]
@@ -539,6 +569,42 @@ mod tests {
         state.set_cues(0, vec![Some(1.5), None, Some(3.0)]);
         assert_eq!(state.decks[0].cues, vec![Some(1.5), None, Some(3.0)]);
         assert!(state.decks[1].cues.is_empty());
+    }
+
+    #[test]
+    fn set_cue_point_sets_or_clears_one_pad_in_range() {
+        let mut state = InterfaceState::default();
+        // A no-track deck (empty cue vec) is a silent no-op — the MCP tool reports it.
+        state.set_cue_point(0, 0, Some(4.0));
+        assert!(state.decks[0].cues.is_empty());
+        // With a cue bank, set one pad and clear it; the neighbours are untouched.
+        state.set_cues(0, vec![None, None, None]);
+        state.set_cue_point(0, 1, Some(12.5));
+        assert_eq!(state.decks[0].cues, vec![None, Some(12.5), None]);
+        state.set_cue_point(0, 1, None);
+        assert_eq!(state.decks[0].cues, vec![None, None, None]);
+        // An out-of-range pad on a loaded deck is a no-op too.
+        state.set_cue_point(0, 9, Some(1.0));
+        assert_eq!(state.decks[0].cues, vec![None, None, None]);
+    }
+
+    #[test]
+    fn set_cursor_moves_the_blend_point_leaving_targets() {
+        let mut state = InterfaceState::default();
+        state.set_style(
+            0,
+            vec![StyleTargetSnap {
+                x: 0.1,
+                y: 0.2,
+                text: "a".to_string(),
+            }],
+            PadPointSnap { x: 0.5, y: 0.5 },
+        );
+        state.set_cursor(0, PadPointSnap { x: 0.7, y: 0.3 });
+        assert_eq!(state.decks[0].cursor, PadPointSnap { x: 0.7, y: 0.3 });
+        // The targets are left exactly as they were.
+        assert_eq!(state.decks[0].style_targets.len(), 1);
+        assert_eq!(state.decks[0].style_targets[0].text, "a");
     }
 
     #[test]

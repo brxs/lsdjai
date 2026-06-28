@@ -38,7 +38,7 @@ use crate::commands::{valid_deck, EqBandArg, FxKindArg};
 use crate::generation::GenerationServer;
 use crate::samples::{NewSample, SampleLibrary};
 use crate::sidecar::Sidecars;
-use crate::store::InterfaceStore;
+use crate::store::{InterfaceStore, PadPointSnap, StyleTargetSnap};
 use lsdj_engine::host::Host;
 
 /// The MCP request handler. Holds the [`AppHandle`] so a tool reaches the same
@@ -131,6 +131,56 @@ struct GenerateSampleArgs {
 /// (`prompt`/`seconds`/`kind`). Pulled out so the wire shape is unit-testable.
 fn generate_request_body(prompt: &str, seconds: f32, kind: Sa3Kind) -> serde_json::Value {
     json!({ "prompt": prompt, "seconds": seconds, "kind": kind.as_str() })
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct HotCueArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// Hot-cue pad index (0-based).
+    index: usize,
+    /// Cue position in track seconds.
+    seconds: f64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct HotCuePadArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// Hot-cue pad index (0-based).
+    index: usize,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SetStyleArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// The full set of style-pad targets (prompt + x/y position, 0..1) to install.
+    targets: Vec<StyleTargetSnap>,
+    /// The blend cursor on the pad (x/y, 0..1).
+    cursor: PadPointSnap,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct StyleCursorArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// Cursor x (0..1).
+    x: f32,
+    /// Cursor y (0..1).
+    y: f32,
+}
+
+/// How many hot-cue pads a deck currently has — the loaded track's cue-bank size, 0
+/// with no track. Read from the store snapshot so the cue tools validate before
+/// writing (and report "no track" / "out of range" rather than silently no-op).
+fn cue_pad_count(store: &InterfaceStore, deck: usize) -> usize {
+    store
+        .snapshot()
+        .decks
+        .get(deck)
+        .map(|d| d.cues.len())
+        .unwrap_or(0)
 }
 
 #[tool_router]
@@ -238,6 +288,124 @@ impl McpHandler {
             .state::<Sidecars>()
             .send(deck, &json!({ "type": "stop" }).to_string());
         format!("deck {deck} stopped")
+    }
+
+    /// Set a hot-cue point on a playback deck's loaded track. Writes the store; the
+    /// webview adopts the change and lights the pad (the bidirectional projection). A
+    /// realtime deck / no track, or an out-of-range pad, comes back as a message.
+    #[tool(
+        description = "Set a hot-cue point on a deck's loaded track at the given time \
+                       (track seconds). deck 0 = A, 1 = B; index is the 0-based pad."
+    )]
+    async fn set_hot_cue(
+        &self,
+        Parameters(HotCueArgs {
+            deck,
+            index,
+            seconds,
+        }): Parameters<HotCueArgs>,
+    ) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        let store = self.app.state::<InterfaceStore>();
+        let pads = cue_pad_count(&store, deck);
+        if pads == 0 {
+            return format!("deck {deck} has no loaded track, so no hot cues");
+        }
+        if index >= pads {
+            return format!("hot-cue pad {index} is out of range (deck {deck} has {pads})");
+        }
+        store.set_deck_cue(deck, index, Some(seconds));
+        format!("deck {deck} hot cue {index} set to {seconds:.2}s")
+    }
+
+    #[tool(description = "Clear a hot-cue pad on a deck's loaded track. deck 0 = A, 1 = B.")]
+    async fn clear_hot_cue(
+        &self,
+        Parameters(HotCuePadArgs { deck, index }): Parameters<HotCuePadArgs>,
+    ) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        let store = self.app.state::<InterfaceStore>();
+        if index >= cue_pad_count(&store, deck) {
+            return format!("deck {deck} has no hot-cue pad {index}");
+        }
+        store.set_deck_cue(deck, index, None);
+        format!("deck {deck} hot cue {index} cleared")
+    }
+
+    /// Jump the deck's track to a hot cue — a transport seek straight to the engine
+    /// (the cue point is read from the store), like the UI's filled-pad tap.
+    #[tool(
+        description = "Jump (seek) a deck's track to a previously set hot cue. \
+                       deck 0 = A, 1 = B."
+    )]
+    async fn jump_to_hot_cue(
+        &self,
+        Parameters(HotCuePadArgs { deck, index }): Parameters<HotCuePadArgs>,
+    ) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        let cue = self
+            .app
+            .state::<InterfaceStore>()
+            .snapshot()
+            .decks
+            .get(deck)
+            .and_then(|d| d.cues.get(index).copied().flatten());
+        match cue {
+            Some(seconds) => {
+                let frames = seconds * f64::from(lsdj_engine::SAMPLE_RATE);
+                self.app.state::<Host>().seek_track(deck, frames);
+                format!("deck {deck} jumped to hot cue {index} ({seconds:.2}s)")
+            }
+            None => format!("deck {deck} has no hot cue at pad {index}"),
+        }
+    }
+
+    /// Replace a realtime deck's whole style pad (targets + cursor). Writes the store;
+    /// `DeckColumn` adopts it and pushes the blended prompt to the worker.
+    #[tool(
+        description = "Replace a realtime deck's style pad: the targets (each a prompt at \
+                       an x/y position, 0..1) and the blend cursor (x/y, 0..1). \
+                       deck 0 = A, 1 = B."
+    )]
+    async fn set_style(
+        &self,
+        Parameters(SetStyleArgs {
+            deck,
+            targets,
+            cursor,
+        }): Parameters<SetStyleArgs>,
+    ) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        let count = targets.len();
+        self.app
+            .state::<InterfaceStore>()
+            .set_deck_style(deck, targets, cursor);
+        format!("deck {deck} style set ({count} target(s))")
+    }
+
+    #[tool(
+        description = "Move a realtime deck's style-pad blend cursor (x, y in 0..1), \
+                       leaving its targets. deck 0 = A, 1 = B."
+    )]
+    async fn set_style_cursor(
+        &self,
+        Parameters(StyleCursorArgs { deck, x, y }): Parameters<StyleCursorArgs>,
+    ) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        self.app
+            .state::<InterfaceStore>()
+            .set_deck_cursor(deck, PadPointSnap { x, y });
+        format!("deck {deck} style cursor set to ({x:.2}, {y:.2})")
     }
 
     /// Generate a clip via the loopback generation server and save it to the samples

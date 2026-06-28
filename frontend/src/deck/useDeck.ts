@@ -335,6 +335,10 @@ export function useDeck(deckId: DeckId): DeckControls {
   // Hot cues and the pending loop IN (M21): refs beside the state so
   // bus-driven callbacks read fresh values without re-subscribing.
   const trackCuesRef = useRef<(number | null)[]>([])
+  // Gate for adopting EXTERNAL store cue changes (an MCP set/clear): armed once the
+  // store reflects THIS track's own pushed cues, so a pre-push stale snapshot (the
+  // previous track's cues) is never adopted. Reset on every track load/unload.
+  const cuesSyncedRef = useRef(false)
   const pendingLoopInRef = useRef<number | null>(null)
   const statsRef = useRef<{
     playing: boolean
@@ -468,11 +472,34 @@ export function useDeck(deckId: DeckId): DeckControls {
 
   // Mirror the loaded track's hot-cue points UP into the store (ADR-0015 →
   // ADR-0020): the cue STATE LOCATION moves to the store, while the webview keeps
-  // the set/jump logic (jump is a plain seek). Empty with no track. A write-only
-  // push; the bidirectional projection lands with the Phase-2 MCP cue setter.
+  // the set/jump logic (jump is a plain seek). Empty with no track.
   useEffect(() => {
     setDeckCues(deckIndex, track?.cues ?? [])
   }, [deckIndex, track?.cues])
+
+  // Adopt EXTERNAL hot-cue changes from the store (an MCP set_hot_cue / clear_hot_cue)
+  // into the rendered pads — the read side the write-only mirror above pairs with
+  // (ADR-0020, Phase 2). Our own pushes echo back value-equal and just arm the gate; a
+  // genuine external change updates the ref and the track's cues so the pads relight.
+  // Track-scoped (skipped with no track) and gated until the store reflects THIS
+  // track's own cues, so a stale pre-push snapshot is never adopted.
+  useEffect(() => {
+    const storeCues = storeState?.decks[deckIndex]?.cues
+    if (!storeCues) return
+    const current = trackCuesRef.current
+    if (current.length === 0) return
+    const sameCues =
+      storeCues.length === current.length &&
+      storeCues.every((point, i) => point === current[i])
+    if (sameCues) {
+      cuesSyncedRef.current = true
+      return
+    }
+    if (!cuesSyncedRef.current) return
+    const next = current.map((_, i) => storeCues[i] ?? null)
+    trackCuesRef.current = next
+    setTrack((track) => track && { ...track, cues: next })
+  }, [storeState, deckIndex])
 
   // Mirror the loaded-track identity UP into the store (ADR-0020): title, BPM, and
   // duration on a playback deck, null with no track. A write-only read-back mirror,
@@ -863,6 +890,7 @@ export function useDeck(deckId: DeckId): DeckControls {
       trackMetaRef.current = { bpm: trackTempo, grid }
       trackRateRef.current = 1
       trackCuesRef.current = Array<number | null>(HOT_CUE_COUNT).fill(null)
+      cuesSyncedRef.current = false
       pendingLoopInRef.current = null
       channel.setBeatPeriod(trackTempo === null ? null : 60 / trackTempo)
       setMode('playback')
@@ -896,6 +924,7 @@ export function useDeck(deckId: DeckId): DeckControls {
     trackBandsRef.current = null
     trackRateRef.current = 1
     trackCuesRef.current = []
+    cuesSyncedRef.current = false
     pendingLoopInRef.current = null
     setMode('realtime')
     setTrack(null)
