@@ -1,12 +1,12 @@
 {
   "app": {
-    "title": "LSDJai",
+    "title": "LSDJ.ai",
     "brand": {
       "ls": "LS",
       "dj": "DJ",
-      "ai": "ai"
+      "ai": ".ai"
     },
-    "tagline": "Latent Space Disc Jockey",
+    "tagline": "Latent Space DJ",
     "ramWarning": "Selected models need roughly {{combined}} GB on a {{total}} GB machine — real-time playback may struggle."
   },
   "accent": {
@@ -34,6 +34,11 @@
   },
   "media": {
     "title": "Media explorer",
+    "collapse": "Collapse media explorer",
+    "expand": "Expand media explorer",
+    "collapseHint": "Collapse media explorer ({{shortcut}})",
+    "expandHint": "Expand media explorer ({{shortcut}})",
+    "resize": "Resize media explorer",
     "tabs": {
       "crates": "Presets",
       "generate": "Generate",
@@ -106,15 +111,13 @@
     "channel": "Channel {{id}}",
     "channelLevel": "Deck {{id}} level",
     "masterLevel": "Master level",
+    "master": "Master",
     "crossfade": "Crossfade",
     "deckA": "A",
     "deckB": "B",
     "cue": "Cue",
     "trim": "Trim",
     "trimAuto": "Auto",
-    "limiter": "Limiter",
-    "limiterDb": "{{db}} dB",
-    "phones": "Phones",
     "cueMix": "Cue mix",
     "outputMain": "Main output",
     "outputCueDevice": "Cue output",
@@ -123,6 +126,7 @@
     "cueSameAsMainNoCh": "Phones on main — needs a 4-ch main",
     "outputError": "Couldn't switch output: {{message}}",
     "record": "Record",
+    "recordLabel": "REC",
     "stopRecording": "Stop recording",
     "recordingFor": "REC {{time}}",
     "recordingError": "Recording failed: {{message}}",
@@ -254,7 +258,11 @@
     "open": "Settings",
     "title": "Settings",
     "close": "Close",
-    "appearance": "Appearance"
+    "appearance": "Appearance",
+    "audio": "Audio",
+    "models": "Deck realtime models",
+    "modelDeck": "Deck {{id}}",
+    "modelLibrary": "Model library"
   },
   "modelManager": {
     "loading": "Reading model status…",

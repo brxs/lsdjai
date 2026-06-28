@@ -1,9 +1,74 @@
 /* Media Explorer (M19, ADR-0013): the booth's loading surface — crates,
    generated tracks, and folder tracks share one pane below the decks. */
 
-.media {
-  max-height: 18rem;
+/* The tray is a drawer: a top grip to resize, the always-visible header, then
+   the collapsible content. The booth sibling flexes to reclaim whatever height
+   the tray gives back when collapsed (index.css `.app__booth { flex: 1 }`). */
+.media--collapsed {
+  /* No grip and zero-height content when closed — drop the inter-child gap, and
+     hand the panel's padding to the header so the whole slim bar is clickable. */
+  gap: 0;
+  padding: 0;
+}
+
+/* Collapsed, the header IS the toggle: a slim bar (tighter than the panel's
+   default block padding) that expands on click or Enter/Space. */
+.media--collapsed .media__header {
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+}
+
+.media--collapsed .media__header:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.media--collapsed .media__header:hover .media__chevron,
+.media--collapsed .media__header:focus-visible .media__chevron {
+  color: var(--color-accent);
+}
+
+/* The plain expand chevron — no button chrome, just a hint glyph at the bar's
+   right edge. */
+.media__chevron {
+  color: var(--color-text-silkscreen);
+  font-size: var(--text-m);
+  line-height: 1;
+}
+
+/* A thin grab strip flush to the panel's top edge (pulled out through the
+   panel padding), with a centred handle hint. */
+.media__resize {
+  margin: calc(-1 * var(--space-3)) calc(-1 * var(--space-3)) 0;
+  height: var(--space-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.media__resize::before {
+  content: '';
+  width: 2.4rem;
+  height: 2px;
+  background: var(--color-border-strong);
+}
+
+.media__resize:hover::before {
+  background: var(--color-accent);
+}
+
+/* Height is set inline (open ? px : 0); the transition animates both the
+   collapse and a resize snap. Dragging turns it off (see --dragging) so the
+   tray tracks the cursor. */
+.media__content {
   overflow: auto;
+  transition: height 0.18s ease;
+}
+
+.media__content--dragging {
+  transition: none;
 }
 
 .media__header {
@@ -11,6 +76,15 @@
   align-items: center;
   gap: var(--space-3);
   flex-wrap: wrap;
+}
+
+/* The right cluster — utility actions plus the collapse toggle — rides the
+   right edge as one group. */
+.media__header-end {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
 }
 
 .media__title {
@@ -26,13 +100,11 @@
   gap: var(--space-1);
 }
 
-/* Utility actions sit at the end of the header row (Open Folder for now), pushed
-   right so they clear the tabs and reclaim the line the live row used to take. */
+/* Utility actions (Open Folder for now) inside the right cluster. */
 .media__header-actions {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin-left: auto;
 }
 
 .media__generate,

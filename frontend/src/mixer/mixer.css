@@ -10,7 +10,8 @@
 
 .mixer__channels {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* Two channel strips flanking a narrow centre column (master meter + cue). */
+  grid-template-columns: 1fr auto 1fr;
   gap: var(--space-4);
 }
 
@@ -21,10 +22,45 @@
   gap: var(--space-3);
 }
 
+/* The centre column rides the bottom of the taller channel strips: the master
+   meter sits beside the faders, the cue-mix knob beside the cue buttons. */
+.mixer__centre {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
 .mixer__fader-row {
   display: flex;
-  align-items: flex-end;
+  /* Top-align so the meter tracks the fader WELL; the fader's caption hangs
+     below without dragging the meter down with it. */
+  align-items: flex-start;
   gap: var(--space-2);
+  /* Reserve a row for the caption, which is lifted out of flow below so it can
+     centre under the whole meter + fader pair rather than under the fader. */
+  position: relative;
+  padding-bottom: var(--space-5);
+}
+
+.mixer__fader-row .ui-vfader__label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  text-align: center;
+}
+
+/* The signal meter is short by default (fixed-height LEDs); in the fader row it
+   should match the fader well so the two columns align top and bottom. Scope it
+   here so the standalone master meter keeps its natural size. */
+.mixer__fader-row .ui-levelmeter {
+  height: 9rem;
+}
+
+.mixer__fader-row .ui-levelmeter__segment {
+  flex: 1;
 }
 
 .mixer__crossfade {
@@ -44,44 +80,76 @@
   color: var(--color-text-muted);
 }
 
-.mixer__phones {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--color-border);
-}
-
+/* The two output pickers (main + cue) now live in Settings; this stacks each
+   label over its select. */
 .mixer__phones-device {
-  flex: 1;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   align-items: flex-start;
 }
 
+/* The master output meter, labelled like a fader column. */
 .mixer__master {
   display: flex;
-  align-items: flex-end;
-  gap: var(--space-3);
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--color-border);
-}
-
-.mixer__record {
-  display: flex;
   flex-direction: column;
+  align-items: center;
   gap: var(--space-2);
 }
 
-.mixer__elapsed {
-  font: 600 var(--text-s) var(--font-mono);
-  color: var(--color-led-danger);
+.mixer__master-label {
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-silkscreen);
 }
 
 .mixer__error {
   font: 500 var(--text-s) var(--font-ui);
   color: var(--color-led-danger);
+}
+
+/* ---------- record control (top bar) ---------- */
+
+/* A ● dot + REC at rest; the button outline and dot go danger-red while
+   recording, the dot pulsing, with the elapsed time appended to the label. */
+.record .ui-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  /* Stable digits so the label gaining the elapsed time doesn't jitter. */
+  font-variant-numeric: tabular-nums;
+}
+
+.record__dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--color-led-off);
+  border: 1px solid var(--color-border-strong);
+}
+
+.record--on .ui-button {
+  color: var(--color-led-danger);
+  border-color: var(--color-led-danger);
+}
+
+.record--on .record__dot {
+  background: var(--color-led-danger);
+  border-color: var(--color-led-danger);
+  animation: record-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes record-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .record--on .record__dot {
+    animation: none;
+  }
 }
 
 /* ---------- beat view (M22) ---------- */

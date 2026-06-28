@@ -82,12 +82,12 @@ describe('MidiControls', () => {
     renderControls()
 
     fireEvent.click(screen.getByRole('button', { name: 'Connect MIDI' }))
+    // The chip itself surfaces the failure and stays clickable to retry.
     await waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent(
-        'No supported controller found',
-      ),
+      expect(
+        screen.getByRole('button', { name: 'No supported controller found' }),
+      ).toBeEnabled(),
     )
-    expect(screen.getByRole('button', { name: 'Connect MIDI' })).toBeEnabled()
   })
 
   it('shows no picker for a single controller, one to switch between two', async () => {

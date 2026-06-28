@@ -113,6 +113,17 @@ describe('applyAppIntent', () => {
     expect(a.setVolume).not.toHaveBeenCalled()
   })
 
+  it('maps a trim turn to a manual gain on the addressed deck', () => {
+    const a = fakeDeck()
+    const b = fakeDeck()
+    // Mid-travel is 0 dB; the ends hit ±TRIM_RANGE_DB (12).
+    applyAppIntent({ kind: 'trim', deck: 'b', value: 0.5 }, decks(a, b), noHandlers)
+    expect(b.setTrimDb).toHaveBeenCalledWith(0)
+    applyAppIntent({ kind: 'trim', deck: 'b', value: 1 }, decks(a, b), noHandlers)
+    expect(b.setTrimDb).toHaveBeenLastCalledWith(12)
+    expect(a.setTrimDb).not.toHaveBeenCalled()
+  })
+
   it('routes EQ band moves to the addressed deck', () => {
     const a = fakeDeck()
     applyAppIntent(

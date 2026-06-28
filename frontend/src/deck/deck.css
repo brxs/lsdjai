@@ -246,6 +246,9 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
+  /* The model picker joins the error + restart here, so wrap rather than
+     overflow when the column is narrow. */
+  flex-wrap: wrap;
   padding-top: var(--space-3);
   border-top: 1px solid var(--color-border);
 }

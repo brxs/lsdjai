@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { DeckId } from '../audio/types'
@@ -19,6 +23,10 @@ import { Select } from '../ui/Select'
 import { TextField } from '../ui/TextField'
 import { randomSongTitle } from './songTitle'
 import './media.css'
+
+// The tray toggle's shortcut, shown in its tooltip. ⌘ on macOS (the primary
+// target), Ctrl elsewhere — matches the Cmd/Ctrl+M handler in App.
+const TOGGLE_SHORTCUT = /Mac/i.test(navigator.userAgent) ? '⌘M' : 'Ctrl+M'
 
 type MediaTab = 'crates' | 'generate' | 'samples' | 'folder'
 type TrackEngine = 'sfx' | 'music' | 'track' | 'magenta'
@@ -251,6 +259,15 @@ type MediaExplorerProps = {
   onPreview: (wav: ArrayBuffer) => Promise<void>
   /** Stop the headphone preview (ADR-0027). */
   onStopPreview: () => void
+  /** Drawer state for the collapsible tray: whether it's expanded, and the
+   * content height in px when open. State is owned by App (single source of
+   * truth) so the keyboard shortcut and the in-panel toggle stay in sync. */
+  open: boolean
+  onToggle: () => void
+  height: number
+  /** Resize from dragging the top grip. `commit` is false during the drag (live
+   * update only) and true on release, so App persists once at the end. */
+  onResize: (height: number, commit: boolean) => void
 }
 
 /** The Media Explorer (M19, ADR-0013): one pane below the booth that
@@ -267,9 +284,16 @@ export function MediaExplorer({
   onLoadSample,
   onPreview,
   onStopPreview,
+  open,
+  onToggle,
+  height,
+  onResize,
 }: MediaExplorerProps) {
   const { t } = useTranslation()
   const [tab, setTab] = useState<MediaTab>('crates')
+  // True only while the top grip is being dragged, to drop the height
+  // transition so the tray tracks the cursor instead of easing behind it.
+  const [dragging, setDragging] = useState(false)
   const [tracks, setTracks] = useState<GeneratedTrack[]>([])
   // The take name (and on-disk filename), decoupled from the prompt. Blank → a random
   // song title at compose time, so a long/JSON prompt never becomes the name.
@@ -849,46 +873,129 @@ export function MediaExplorer({
     ))
   }
 
+  /** Drag the top grip to resize: dragging up grows the tray. Pointer capture
+   * keeps the gesture alive if the cursor leaves the thin handle. */
+  function startResize(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault()
+    const startY = event.clientY
+    const startHeight = height
+    let latest = startHeight
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setDragging(true)
+    function onMove(move: PointerEvent) {
+      latest = startHeight + (startY - move.clientY)
+      onResize(latest, false)
+    }
+    function onUp() {
+      setDragging(false)
+      onResize(latest, true)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+
+  const collapseHint = t('media.collapseHint', { shortcut: TOGGLE_SHORTCUT })
+  const expandHint = t('media.expandHint', { shortcut: TOGGLE_SHORTCUT })
+  // Collapsed, the whole header bar is the expand target (click or Enter/Space);
+  // open, the header is inert chrome and only the chevron button toggles.
+  const collapsedBarProps = open
+    ? {}
+    : {
+        role: 'button' as const,
+        tabIndex: 0,
+        'aria-expanded': false,
+        'aria-label': t('media.expand'),
+        title: expandHint,
+        onClick: onToggle,
+        onKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            onToggle()
+          }
+        },
+      }
+
   return (
-    <Panel className="media" aria-label={t('media.title')}>
-      <div className="media__header">
+    <Panel
+      className={`media${open ? '' : ' media--collapsed'}`}
+      aria-label={t('media.title')}
+    >
+      {open && (
+        <div
+          className="media__resize"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label={t('media.resize')}
+          onPointerDown={startResize}
+        />
+      )}
+      <div className="media__header" {...collapsedBarProps}>
         <h2 className="media__title">{t('media.title')}</h2>
-        <div className="media__tabs" role="tablist">
-          {(['crates', 'generate', 'samples', 'folder'] as const).map((name) => (
-            <Button
-              key={name}
-              lit={tab === name}
-              role="tab"
-              aria-selected={tab === name}
-              aria-label={t(`media.tabs.${name}`)}
-              onClick={() => {
-                setTab(name)
-                setHighlight(0)
-              }}
-            >
-              {t(`media.tabs.${name}`)}
-            </Button>
-          ))}
-        </div>
-        {/* Utility actions live in the header to save a row below the
-            tabs; the per-tab folder shortcut is the only one so far. */}
-        {(tab === 'generate' || tab === 'samples') && (
-          <div className="media__header-actions">
-            <Button
-              onClick={() =>
-                void (tab === 'generate' ? openSongsFolder() : openSamplesFolder())
-              }
-            >
-              {t(
-                tab === 'generate'
-                  ? 'media.generate.openFolder'
-                  : 'media.samples.openFolder',
-              )}
-            </Button>
+        {/* Collapsed, the tray is a slim labelled bar (the whole bar toggles):
+            the tabs and per-tab actions fold away, leaving just the title and a
+            plain expand chevron. */}
+        {open && (
+          <div className="media__tabs" role="tablist">
+            {(['crates', 'generate', 'samples', 'folder'] as const).map((name) => (
+              <Button
+                key={name}
+                lit={tab === name}
+                role="tab"
+                aria-selected={tab === name}
+                aria-label={t(`media.tabs.${name}`)}
+                onClick={() => {
+                  setTab(name)
+                  setHighlight(0)
+                }}
+              >
+                {t(`media.tabs.${name}`)}
+              </Button>
+            ))}
           </div>
         )}
+        {/* The right cluster: per-tab utility actions (Open Folder, so far)
+            sit next to the collapse toggle, which is always present. */}
+        <div className="media__header-end">
+          {open && (tab === 'generate' || tab === 'samples') && (
+            <div className="media__header-actions">
+              <Button
+                onClick={() =>
+                  void (tab === 'generate' ? openSongsFolder() : openSamplesFolder())
+                }
+              >
+                {t(
+                  tab === 'generate'
+                    ? 'media.generate.openFolder'
+                    : 'media.samples.openFolder',
+                )}
+              </Button>
+            </div>
+          )}
+          {open ? (
+            <Button
+              onClick={onToggle}
+              aria-expanded={true}
+              aria-label={t('media.collapse')}
+              title={collapseHint}
+            >
+              ▾
+            </Button>
+          ) : (
+            <span className="media__chevron" aria-hidden="true">
+              ▴
+            </span>
+          )}
+        </div>
       </div>
 
+      <div
+        className={`media__content${dragging ? ' media__content--dragging' : ''}`}
+        style={{ height: open ? height : 0 }}
+        aria-hidden={!open}
+        inert={!open}
+      >
       {tab === 'crates' && (
         <CrateBrowser
           presets={presets}
@@ -1245,6 +1352,7 @@ export function MediaExplorer({
           )}
         </div>
       )}
+      </div>
     </Panel>
   )
 }

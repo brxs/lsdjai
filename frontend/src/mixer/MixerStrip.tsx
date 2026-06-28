@@ -1,18 +1,14 @@
-import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { EQ_BANDS, type EqBand } from '../audio/eq'
 import type { DeckId } from '../audio/types'
 import { useAudioEngine } from '../audio/engineContext'
-import { TRIM_RANGE_DB } from '../audio/master'
-import { useControlBus } from '../control/busContext'
+import { knobFromTrimDb, trimDbFromKnob } from '../audio/master'
 import { Button } from '../ui/Button'
 import { Knob } from '../ui/Knob'
 import { LevelMeter } from '../ui/LevelMeter'
-import { OutputDevicePicker } from '../ui/OutputDevicePicker'
 import { PhaseMeter } from '../ui/PhaseMeter'
 import { Slider } from '../ui/Slider'
-import { Stat } from '../ui/Stat'
 import { VerticalFader } from '../ui/VerticalFader'
 import './mixer.css'
 
@@ -37,174 +33,111 @@ type MixerStripProps = {
   onCrossfadeChange: (position: number) => void
   cueMix: number
   onCueMixChange: (position: number) => void
-  /** The chosen MAIN output device by name (empty = system default; master →
-   * its ch 1/2). */
-  mainDevice: string
-  /** Fired when a main-device switch succeeds — the app persists the choice. */
-  onMainDeviceChange: (name: string) => void
-  /** The chosen CUE output device by name (empty = "same as main", the FLX4
-   * phones on ch 3/4; a different name routes cue to a second device). */
-  cueDevice: string
-  /** Fired when a cue-device switch succeeds — the app persists the choice. */
-  onCueDeviceChange: (name: string) => void
   /** Beat-phase offset between the decks (M20), null while either
    * clock is unconfident — the meter blanks. */
   getPhaseOffset: () => number | null
 }
 
-function downloadWav(blob: Blob) {
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = `lsdj-${stamp}.wav`
-  anchor.click()
-  setTimeout(() => URL.revokeObjectURL(url), 0)
-}
-
-function formatElapsed(totalSeconds: number) {
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return `${minutes}:${String(seconds).padStart(2, '0')}`
-}
-
 /** The centre mixer strip: per-channel EQ knob columns, level meters, and
- * vertical faders, with the crossfader and master/record section below.
- * Channel state lives in each deck's hook; the strip only renders it. */
+ * vertical faders, then the cue row (cue mix flanked by the deck cue buttons),
+ * the crossfader, and the master output meter. Channel state lives in each
+ * deck's hook; the strip only renders it. Output-device routing lives in
+ * Settings; recording lives in the top bar (RecordControl). */
 export function MixerStrip({
   channels,
   crossfade,
   onCrossfadeChange,
   cueMix,
   onCueMixChange,
-  mainDevice,
-  onMainDeviceChange,
-  cueDevice,
-  onCueDeviceChange,
   getPhaseOffset,
 }: MixerStripProps) {
   const { t } = useTranslation()
   const engine = useAudioEngine()
-  const [recording, setRecording] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [elapsedSeconds, setElapsedSeconds] = useState(0)
-  const [error, setError] = useState<string | null>(null)
-  // The limiter's gain reduction, polled gently — it is a health
-  // readout, not a meter.
-  const [gainReduction, setGainReduction] = useState(0)
-  useEffect(() => {
-    const ticker = setInterval(
-      () => setGainReduction(engine.getMasterGainReduction()),
-      250,
-    )
-    return () => clearInterval(ticker)
-  }, [engine])
 
-  useEffect(() => {
-    if (!recording) return
-    const ticker = setInterval(
-      () => setElapsedSeconds((seconds) => seconds + 1),
-      1_000,
-    )
-    return () => clearInterval(ticker)
-  }, [recording])
-
-  async function toggleRecording() {
-    setBusy(true)
-    try {
-      if (!recording) {
-        await engine.resume()
-        await engine.startRecording()
-        setElapsedSeconds(0)
-        setRecording(true)
-      } else {
-        setRecording(false)
-        downloadWav(await engine.stopRecording())
-      }
-      setError(null)
-    } catch (cause) {
-      setRecording(false)
-      setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  // Hardware record toggle (ADR-0005); the busy guard mirrors the button's
-  // disabled state. Resubscribes per render so the handler sees fresh state.
-  const bus = useControlBus()
-  useEffect(() =>
-    bus.subscribe((intent) => {
-      if (intent.kind === 'record_toggle' && !busy) void toggleRecording()
-    }),
-  )
-
-  const deckIds: DeckId[] = ['a', 'b']
   // Hardware mixers stack HI on top; EQ_BANDS stays low→high for the
   // audio chain, this is display order only.
   const eqDisplayOrder: EqBand[] = [...EQ_BANDS].reverse()
 
+  function renderChannel(deckId: DeckId) {
+    const channel = channels[deckId]
+    return (
+      <div
+        key={deckId}
+        className="mixer__channel"
+        role="group"
+        aria-label={t('mixer.channel', { id: deckId })}
+      >
+        {/* Trim sits above the EQ like a hardware channel strip;
+            the knob shows the live value even while auto rides it. */}
+        <Knob
+          label={t('mixer.trim')}
+          value={knobFromTrimDb(channel.trim.db)}
+          accent={deckId}
+          onChange={(value) => channel.onSetTrimDb(trimDbFromKnob(value))}
+        />
+        <Button
+          lit={channel.trim.mode === 'auto'}
+          aria-pressed={channel.trim.mode === 'auto'}
+          onClick={channel.onEnableAutoTrim}
+        >
+          {t('mixer.trimAuto')}
+        </Button>
+        {eqDisplayOrder.map((band) => (
+          <Knob
+            key={band}
+            label={t(`deck.eq.${band}`)}
+            value={channel.eq[band]}
+            accent={deckId}
+            onChange={(value) => channel.onSetEqBand(band, value)}
+          />
+        ))}
+        <div className="mixer__fader-row">
+          <LevelMeter
+            label={t('mixer.channelLevel', { id: deckId })}
+            getLevel={channel.getLevel}
+          />
+          <VerticalFader
+            label={t('deck.volume')}
+            accent={deckId}
+            value={channel.volume}
+            onChange={channel.onSetVolume}
+          />
+        </div>
+        <Button
+          lit={channel.cue}
+          aria-pressed={channel.cue}
+          onClick={() => channel.onSetCue(!channel.cue)}
+        >
+          {t('mixer.cue')}
+        </Button>
+      </div>
+    )
+  }
+
   return (
     <section className="mixer" aria-label={t('mixer.title')}>
+      {/* Two channel strips flank a centre column: the master output meter
+          sits between the decks (where it belongs on a hardware mixer), and the
+          cue-mix knob drops to the bottom so it lands between the two cue
+          buttons. */}
       <div className="mixer__channels">
-        {deckIds.map((deckId) => (
-          <div
-            key={deckId}
-            className="mixer__channel"
-            role="group"
-            aria-label={t('mixer.channel', { id: deckId })}
-          >
-            {/* Trim sits above the EQ like a hardware channel strip;
-                the knob shows the live value even while auto rides it. */}
-            <Knob
-              label={t('mixer.trim')}
-              value={
-                (channels[deckId].trim.db + TRIM_RANGE_DB) / (2 * TRIM_RANGE_DB)
-              }
-              accent={deckId}
-              onChange={(value) =>
-                channels[deckId].onSetTrimDb(
-                  value * 2 * TRIM_RANGE_DB - TRIM_RANGE_DB,
-                )
-              }
+        {renderChannel('a')}
+        <div className="mixer__centre">
+          <div className="mixer__master" role="group" aria-label={t('mixer.masterLevel')}>
+            <LevelMeter
+              label={t('mixer.masterLevel')}
+              getLevel={engine.getMasterLevel}
             />
-            <Button
-              lit={channels[deckId].trim.mode === 'auto'}
-              aria-pressed={channels[deckId].trim.mode === 'auto'}
-              onClick={channels[deckId].onEnableAutoTrim}
-            >
-              {t('mixer.trimAuto')}
-            </Button>
-            {eqDisplayOrder.map((band) => (
-              <Knob
-                key={band}
-                label={t(`deck.eq.${band}`)}
-                value={channels[deckId].eq[band]}
-                accent={deckId}
-                onChange={(value) => channels[deckId].onSetEqBand(band, value)}
-              />
-            ))}
-            <div className="mixer__fader-row">
-              <LevelMeter
-                label={t('mixer.channelLevel', { id: deckId })}
-                getLevel={channels[deckId].getLevel}
-              />
-              <VerticalFader
-                label={t('deck.volume')}
-                accent={deckId}
-                value={channels[deckId].volume}
-                onChange={channels[deckId].onSetVolume}
-              />
-            </div>
-            <Button
-              lit={channels[deckId].cue}
-              aria-pressed={channels[deckId].cue}
-              onClick={() => channels[deckId].onSetCue(!channels[deckId].cue)}
-            >
-              {t('mixer.cue')}
-            </Button>
+            <span className="mixer__master-label">{t('mixer.master')}</span>
           </div>
-        ))}
+          <Knob
+            label={t('mixer.cueMix')}
+            accent="master"
+            value={cueMix}
+            onChange={onCueMixChange}
+          />
+        </div>
+        {renderChannel('b')}
       </div>
 
       <PhaseMeter label={t('mixer.phase')} getOffset={getPhaseOffset} />
@@ -223,54 +156,6 @@ export function MixerStrip({
           />
         </div>
         <span className="mixer__edge">{t('mixer.deckB')}</span>
-      </div>
-
-      <div className="mixer__phones" role="group" aria-label={t('mixer.phones')}>
-        <Knob
-          label={t('mixer.cueMix')}
-          accent="master"
-          value={cueMix}
-          onChange={onCueMixChange}
-        />
-        <OutputDevicePicker
-          mode="main"
-          value={mainDevice}
-          onSelect={onMainDeviceChange}
-        />
-        <OutputDevicePicker
-          mode="cue"
-          value={cueDevice}
-          onSelect={onCueDeviceChange}
-          mainDeviceName={mainDevice}
-        />
-      </div>
-
-      <div className="mixer__master">
-        <LevelMeter label={t('mixer.masterLevel')} getLevel={engine.getMasterLevel} />
-        <Stat
-          label={t('mixer.limiter')}
-          value={
-            gainReduction < -0.5
-              ? t('mixer.limiterDb', { db: gainReduction.toFixed(1) })
-              : t('deck.health.noData')
-          }
-          tone={gainReduction < -6 ? 'danger' : 'default'}
-        />
-        <div className="mixer__record">
-          <Button onClick={() => void toggleRecording()} disabled={busy}>
-            {recording ? t('mixer.stopRecording') : t('mixer.record')}
-          </Button>
-          {recording && (
-            <span className="mixer__elapsed" role="status">
-              {t('mixer.recordingFor', { time: formatElapsed(elapsedSeconds) })}
-            </span>
-          )}
-          {error && (
-            <span className="mixer__error" role="alert">
-              {t('mixer.recordingError', { message: error })}
-            </span>
-          )}
-        </div>
       </div>
     </section>
   )

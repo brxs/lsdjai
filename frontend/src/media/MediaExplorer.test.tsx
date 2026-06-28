@@ -6,6 +6,7 @@ import { createControlBus, type ControlBus } from '../control/bus'
 import { ControlBusProvider } from '../control/ControlBusProvider'
 import type { StylePreset } from '../presets'
 import { MediaExplorer } from './MediaExplorer'
+import { MEDIA_DEFAULT_HEIGHT } from './mediaTray'
 
 type Handlers = {
   onLoadPreset?: (deck: DeckId, preset: StylePreset) => void
@@ -18,12 +19,15 @@ type Handlers = {
   ) => Promise<boolean>
   onPreview?: (wav: ArrayBuffer) => Promise<void>
   onStopPreview?: () => void
+  onToggle?: () => void
+  onResize?: (height: number, commit: boolean) => void
 }
 
 function renderExplorer(
   handlers: Handlers = {},
   presets: StylePreset[] = [],
   bus: ControlBus = createControlBus(),
+  open = true,
 ) {
   render(
     <ControlBusProvider bus={bus}>
@@ -36,6 +40,10 @@ function renderExplorer(
         onLoadSample={handlers.onLoadSample ?? vi.fn(async () => true)}
         onPreview={handlers.onPreview ?? vi.fn(async () => {})}
         onStopPreview={handlers.onStopPreview ?? vi.fn()}
+        open={open}
+        onToggle={handlers.onToggle ?? vi.fn()}
+        height={MEDIA_DEFAULT_HEIGHT}
+        onResize={handlers.onResize ?? vi.fn()}
       />
     </ControlBusProvider>,
   )
@@ -87,6 +95,40 @@ describe('MediaExplorer', () => {
     expect(
       screen.getByText("No presets yet — save a deck's style below its pad"),
     ).toBeInTheDocument()
+  })
+
+  it('toggles the tray via the header chevron', () => {
+    const onToggle = vi.fn()
+    renderExplorer({ onToggle })
+    // Open: the chevron offers to collapse (with a shortcut hint), and the
+    // resize grip is present.
+    const toggle = screen.getByRole('button', { name: 'Collapse media explorer' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(toggle.getAttribute('title')).toContain('Collapse media explorer')
+    expect(screen.getByRole('separator', { name: 'Resize media explorer' })).toBeInTheDocument()
+    fireEvent.click(toggle)
+    expect(onToggle).toHaveBeenCalledTimes(1)
+  })
+
+  it('collapses to a slim bar that toggles when clicked anywhere', () => {
+    const onToggle = vi.fn()
+    renderExplorer({ onToggle }, [], createControlBus(), false)
+    // Closed: the whole bar is the expand button (no separate chevron control),
+    // it carries a shortcut-hint tooltip, the tabs are gone, the content is
+    // hidden from a11y, and there is no resize grip to drag.
+    const bar = screen.getByRole('button', { name: 'Expand media explorer' })
+    expect(bar).toHaveAttribute('aria-expanded', 'false')
+    expect(bar.getAttribute('title')).toContain('Expand media explorer')
+    expect(screen.queryByRole('tab')).toBeNull()
+    expect(screen.queryByRole('separator')).toBeNull()
+    expect(
+      screen.getByText("No presets yet — save a deck's style below its pad").closest(
+        '.media__content',
+      ),
+    ).toHaveAttribute('aria-hidden', 'true')
+    // Clicking the bar (here, its title label) expands it — not just a chevron.
+    fireEvent.click(screen.getByText('Media explorer'))
+    expect(onToggle).toHaveBeenCalledTimes(1)
   })
 
   it('composes an SA3 track and loads it onto a deck', async () => {

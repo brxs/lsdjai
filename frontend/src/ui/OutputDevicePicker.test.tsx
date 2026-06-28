@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { Profiler } from 'react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { AudioEngineProvider } from '../audio/AudioEngineProvider'
@@ -124,6 +125,42 @@ describe('OutputDevicePicker — main', () => {
 
     fireEvent.mouseDown(screen.getByLabelText('Main output'))
     expect(engine.listOutputDevices).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not re-commit the picker when a reopen returns an unchanged list', async () => {
+    // Regression: the reopen refresh used to setDevices() unconditionally,
+    // landing a fresh array while the native <select> was open. That re-commits
+    // the controlled select's value, and WKWebView dismisses an open popup whose
+    // value is re-synced — so the menu closed before a choice could be made. An
+    // unchanged list (same hardware) must now bail the update with no re-commit.
+    const engine = makeEngine({
+      // A new array instance each call with identical contents — the realistic
+      // reopen, which previously churned state purely on reference inequality.
+      listOutputDevices: vi.fn(async () => DEVICES.map((device) => ({ ...device }))),
+    })
+    let commits = 0
+    render(
+      <AudioEngineProvider engine={engine}>
+        <Profiler
+          id="picker"
+          onRender={() => {
+            commits += 1
+          }}
+        >
+          <OutputDevicePicker mode="main" value="" onSelect={() => {}} />
+        </Profiler>
+      </AudioEngineProvider>,
+    )
+    // Let mount + the mount-time refresh settle, then ignore those commits.
+    await screen.findByRole('option', { name: 'DDJ-FLX4' })
+    commits = 0
+
+    fireEvent.mouseDown(screen.getByLabelText('Main output'))
+    await waitFor(() => expect(engine.listOutputDevices).toHaveBeenCalledTimes(2))
+    // Flush the refresh's resolution so its setDevices runs (and bails).
+    await act(async () => {})
+
+    expect(commits).toBe(0)
   })
 
   it('keeps a persisted-but-absent device visible as the current value', async () => {

@@ -118,6 +118,22 @@ describe('persistence', () => {
     expect(loadAppSettings().beatView).toBeUndefined()
   })
 
+  it('round-trips the media tray drawer state', () => {
+    updateAppSettings({ mediaOpen: false, mediaHeight: 320 })
+    expect(loadAppSettings().mediaOpen).toBe(false)
+    expect(loadAppSettings().mediaHeight).toBe(320)
+  })
+
+  it('clamps the media height and drops a non-boolean open flag', () => {
+    localStorage.setItem(
+      'lsdj:v1',
+      JSON.stringify({ app: { mediaOpen: 'yes', mediaHeight: 5000 } }),
+    )
+    const loaded = loadAppSettings()
+    expect(loaded.mediaOpen).toBeUndefined() // not a boolean → dropped
+    expect(loaded.mediaHeight).toBe(720) // clamped to MEDIA_MAX_HEIGHT
+  })
+
   it('clamps an out-of-range cue mix', () => {
     localStorage.setItem(
       'lsdj:v1',

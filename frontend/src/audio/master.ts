@@ -57,6 +57,16 @@ export const TRIM_RANGE_DB = 12
  * than winding up +12 dB on nothing. */
 export const TRIM_SILENCE_RMS = 0.005
 
+/** The trim knob's mapping, shared by the on-screen Knob and the hardware TRIM
+ * intent: a normalised 0..1 position spans ±TRIM_RANGE_DB, centre = 0 dB. */
+export function trimDbFromKnob(knob: number): number {
+  return knob * 2 * TRIM_RANGE_DB - TRIM_RANGE_DB
+}
+
+export function knobFromTrimDb(db: number): number {
+  return (db + TRIM_RANGE_DB) / (2 * TRIM_RANGE_DB)
+}
+
 export function dbToGain(db: number): number {
   return 10 ** (db / 20)
 }

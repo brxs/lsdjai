@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { Button } from '../ui/Button'
 import { Select } from '../ui/Select'
 import type { MidiStatus } from './midi'
 import type { MidiMonitorEntry } from './useMidi'
@@ -68,6 +67,25 @@ export function MidiControls({
 }: MidiControlsProps) {
   const { t } = useTranslation()
   const connected = status === 'connected'
+  // The status chip doubles as the connect/retry control: when MIDI is off, no
+  // controller turned up, or access was denied, clicking it (re)requests access.
+  // Mid-request and "unavailable" are passive readouts.
+  const connectable =
+    status === 'idle' || status === 'no-device' || status === 'denied'
+
+  // Idle reads as the call to action ("Connect MIDI"); the error states keep
+  // their own message so a failed attempt still explains itself.
+  const label = connected
+    ? deviceName
+    : status === 'idle'
+      ? t('midi.connect')
+      : t(`midi.status.${status}`)
+  const led = (
+    <span
+      className={`midi__led${connected ? ' midi__led--on' : ''}`}
+      aria-hidden="true"
+    />
+  )
 
   return (
     <div className="midi">
@@ -80,21 +98,24 @@ export function MidiControls({
           onChange={onSelectDevice}
         />
       )}
-      {!connected && status !== 'unsupported' && (
-        <Button onClick={onConnect} disabled={status === 'requesting'}>
-          {t('midi.connect')}
-        </Button>
-      )}
-      <span
-        className={`midi__status${connected ? ' midi__status--connected' : ''}`}
-        role="status"
-      >
+      {connectable ? (
+        <button
+          type="button"
+          className="midi__status midi__status--action"
+          onClick={onConnect}
+        >
+          {led}
+          {label}
+        </button>
+      ) : (
         <span
-          className={`midi__led${connected ? ' midi__led--on' : ''}`}
-          aria-hidden="true"
-        />
-        {connected ? deviceName : t(`midi.status.${status}`)}
-      </span>
+          className={`midi__status${connected ? ' midi__status--connected' : ''}`}
+          role="status"
+        >
+          {led}
+          {label}
+        </span>
+      )}
     </div>
   )
 }

@@ -10,12 +10,19 @@ import { useControlBus } from './control/busContext'
 import { MidiControls } from './control/MidiControls'
 import { useMidi } from './control/useMidi'
 import { MediaExplorer } from './media/MediaExplorer'
+import {
+  MEDIA_DEFAULT_HEIGHT,
+  clampMediaHeight,
+} from './media/mediaTray'
 import { DeckColumn } from './deck/DeckColumn'
 import { useDeck } from './deck/useDeck'
 import { BeatView } from './mixer/BeatView'
 import { MixerStrip, type ChannelControls } from './mixer/MixerStrip'
+import { RecordControl } from './mixer/RecordControl'
 import { AccentPicker } from './ui/AccentPicker'
+import { OutputDevicePicker } from './ui/OutputDevicePicker'
 import { BeatViewPicker } from './ui/BeatViewPicker'
+import { Select } from './ui/Select'
 import {
   deletePreset,
   loadAppSettings,
@@ -63,6 +70,29 @@ function App() {
   const handleBeatView = useCallback((layout: BeatViewLayout) => {
     setBeatView(layout)
     updateAppSettings({ beatView: layout })
+  }, [])
+
+  // The media tray's drawer state (open + height): App owns it so the in-panel
+  // toggle and the Cmd/Ctrl+M shortcut share one source of truth, and both
+  // persist across reloads.
+  const [mediaOpen, setMediaOpen] = useState(
+    () => loadAppSettings().mediaOpen ?? true,
+  )
+  const [mediaHeight, setMediaHeight] = useState(
+    () => loadAppSettings().mediaHeight ?? MEDIA_DEFAULT_HEIGHT,
+  )
+  const handleMediaToggle = useCallback(() => {
+    setMediaOpen((open) => {
+      const next = !open
+      updateAppSettings({ mediaOpen: next })
+      return next
+    })
+  }, [])
+  // Live during a resize drag (state only); `commit` persists once on release.
+  const handleMediaResize = useCallback((height: number, commit: boolean) => {
+    const clamped = clampMediaHeight(height)
+    setMediaHeight(clamped)
+    if (commit) updateAppSettings({ mediaHeight: clamped })
   }, [])
 
   // Master accent (LSDJai): the chosen hue rides on <html data-accent>,
@@ -115,6 +145,25 @@ function App() {
     window.addEventListener('keydown', handleShortcutKey)
     return () => window.removeEventListener('keydown', handleShortcutKey)
   }, [])
+
+  // Cmd/Ctrl+M toggles the media tray. Separate from handleShortcutKey, which
+  // is a bare-letter focus router that bails on modifiers. preventDefault also
+  // suppresses the macOS Cmd+M window-minimize default.
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === 'm'
+      ) {
+        event.preventDefault()
+        handleMediaToggle()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [handleMediaToggle])
 
   // The one place a crossfade move is defined: audio bus + state + persist.
   // Every source — slider, keyboard, hardware — lands here.
@@ -460,6 +509,7 @@ function App() {
             onSelectDevice={midi.selectDevice}
             readMonitor={midi.readMonitor}
           />
+          <RecordControl />
           <Button onClick={() => setSettingsOpen(true)}>{t('settings.open')}</Button>
         </div>
       </header>
@@ -492,7 +542,56 @@ function App() {
             />
           </div>
         </section>
-        <ModelManager />
+        <section className="modelmgr__section">
+          <h3 className="modelmgr__heading">{t('settings.audio')}</h3>
+          <div className="settings-audio">
+            <OutputDevicePicker
+              mode="main"
+              value={mainDevice}
+              onSelect={handleMainDevice}
+            />
+            <OutputDevicePicker
+              mode="cue"
+              value={cueDevice}
+              onSelect={handleCueDevice}
+              mainDeviceName={mainDevice}
+            />
+          </div>
+        </section>
+        {/* Which model each deck runs live — a once-per-session setup choice,
+            moved out of the deck column so it stops competing with the style pad
+            for height. A crashed worker still offers its own picker in the
+            recovery block (the "switch to a model that fits" path). */}
+        <section className="modelmgr__section">
+          <h3 className="modelmgr__heading">{t('settings.models')}</h3>
+          <div className="settings-models">
+            {([
+              { id: 'a' as const, deck: deckA },
+              { id: 'b' as const, deck: deckB },
+            ]).map(({ id, deck }) => (
+              <Select
+                key={id}
+                label={t('settings.modelDeck', { id: id.toUpperCase() })}
+                value={deck.state.model ?? ''}
+                options={
+                  deck.state.availableModels.length
+                    ? deck.state.availableModels
+                    : [deck.state.model ?? '']
+                }
+                disabled={deck.state.connection !== 'open' || deck.state.switchingModel}
+                onChange={deck.setModel}
+              />
+            ))}
+          </div>
+        </section>
+        {/* The model library: install / manage the realtime (Magenta) and
+            generation (Stable Audio 3) weights on disk. The umbrella section
+            keeps the install families grouped under one heading and restores the
+            inter-section rhythm across the ModelManager boundary. */}
+        <section className="modelmgr__section settings-model-library">
+          <h3 className="modelmgr__heading">{t('settings.modelLibrary')}</h3>
+          <ModelManager />
+        </section>
       </Drawer>
       {beatView === 'top' && (
         <BeatView
@@ -556,10 +655,6 @@ function App() {
             onCrossfadeChange={handleCrossfade}
             cueMix={cueMix}
             onCueMixChange={handleCueMix}
-            mainDevice={mainDevice}
-            onMainDeviceChange={handleMainDevice}
-            cueDevice={cueDevice}
-            onCueDeviceChange={handleCueDevice}
             getPhaseOffset={getPhaseOffset}
           />
         </div>
@@ -614,6 +709,10 @@ function App() {
         onLoadSample={handleLoadSample}
         onPreview={handlePreview}
         onStopPreview={handleStopPreview}
+        open={mediaOpen}
+        onToggle={handleMediaToggle}
+        height={mediaHeight}
+        onResize={handleMediaResize}
       />
     </main>
   )

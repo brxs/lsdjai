@@ -1,6 +1,6 @@
-# LSDJai
+# LSDJ.ai
 
-LSDJai (Latent Space Disc Jockey) is a generative DJ instrument: two locally-running model decks
+LSDJ.ai (Latent Space DJ) is a generative DJ instrument: two locally-running model decks
 (Magenta RealTime 2), generated pads and tracks (Stable Audio 3), mixed by a
 native Rust audio engine and playable from a Pioneer DDJ-FLX4. It ships as a
 native Tauri app. See [`README.md`](README.md) for the full overview,

@@ -1,5 +1,6 @@
 import type { DeckId } from '../audio/types'
 import { FX_KINDS } from '../audio/fx'
+import { trimDbFromKnob } from '../audio/master'
 import { tempoSliderToRate } from '../audio/track'
 import { isDeckOperable } from '../deck/deckState'
 import type { DeckControls } from '../deck/useDeck'
@@ -66,6 +67,10 @@ export function applyAppIntent(
     }
     case 'volume':
       decks[intent.deck].setVolume(intent.value)
+      return
+    case 'trim':
+      // Mirror the on-screen TRIM knob; setting a manual gain drops auto-trim.
+      decks[intent.deck].setTrimDb(trimDbFromKnob(intent.value))
       return
     case 'eq':
       decks[intent.deck].setEqBand(intent.band, intent.value)

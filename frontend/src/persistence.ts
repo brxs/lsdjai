@@ -6,6 +6,7 @@ import { EQ_BANDS, type EqBand } from './audio/eq'
 import { FX_KINDS, type FxKind } from './audio/fx'
 import { LOOP_LENGTH_OPTIONS } from './audio/loops'
 import { TRIM_RANGE_DB } from './audio/master'
+import { clampMediaHeight } from './media/mediaTray'
 import type { PadPoint } from './deck/padWeights'
 import { clamp01, isPoint, parsePreset, type StylePreset } from './presets'
 
@@ -43,6 +44,10 @@ export type AppSettings = {
    * (the FLX4 phones jack on ch 3/4); a different name routes the cue to a
    * second device. Best-effort on reload, like outputDevice. */
   cueDevice: string
+  /** Media-tray drawer state: whether it's expanded, and its height in px
+   * (clamped to the tray's bounds on load). */
+  mediaOpen: boolean
+  mediaHeight: number
 }
 
 const STORAGE_KEY = 'lsdj:v1'
@@ -176,6 +181,12 @@ export function loadAppSettings(): Partial<AppSettings> {
   }
   if (typeof stored.cueDevice === 'string' && stored.cueDevice) {
     settings.cueDevice = stored.cueDevice
+  }
+  if (typeof stored.mediaOpen === 'boolean') {
+    settings.mediaOpen = stored.mediaOpen
+  }
+  if (Number.isFinite(stored.mediaHeight)) {
+    settings.mediaHeight = clampMediaHeight(stored.mediaHeight as number)
   }
   return settings
 }

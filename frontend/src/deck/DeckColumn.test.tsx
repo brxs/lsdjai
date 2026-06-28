@@ -537,11 +537,14 @@ describe('DeckColumn', () => {
     expect(screen.getByText('Playing: 70% funk · 30% techno')).toBeInTheDocument()
   })
 
-  it('offers the model picker and reports a selection', () => {
+  it('offers the model picker in recovery and reports a selection', () => {
+    // The model picker moved to settings; its in-deck twin survives only in the
+    // worker-died recovery block (the "switch to a model that fits" path).
     const onSetModel = vi.fn()
     renderPanel(
       {
         connection: 'open',
+        workerDied: true,
         model: 'mrt2_small',
         availableModels: ['mrt2_small', 'mrt2_base'],
       },
@@ -553,6 +556,16 @@ describe('DeckColumn', () => {
     expect(onSetModel).toHaveBeenCalledWith('mrt2_base')
   })
 
+  it('keeps the model picker out of the deck column outside recovery', () => {
+    // A healthy deck shows no picker — model selection lives in settings now.
+    renderPanel({
+      connection: 'open',
+      model: 'mrt2_small',
+      availableModels: ['mrt2_small', 'mrt2_base'],
+    })
+    expect(screen.queryByLabelText('Model')).toBeNull()
+  })
+
   it('locks the deck while a model is loading', () => {
     renderPanel({
       connection: 'open',
@@ -562,7 +575,6 @@ describe('DeckColumn', () => {
     })
     expect(screen.getByText('Loading model…')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Play' })).toBeDisabled()
-    expect(screen.getByLabelText('Model')).toBeDisabled()
   })
 
   it('offers recovery when the worker died', () => {

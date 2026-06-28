@@ -125,7 +125,7 @@ export function ModelManager() {
 
       <section className="modelmgr__section">
         <div className="modelmgr__section-head">
-          <h3 className="modelmgr__heading">{t('modelManager.magenta')}</h3>
+          <h4 className="modelmgr__subheading">{t('modelManager.magenta')}</h4>
           <Button onClick={() => openModelFolder('magenta')}>{t('modelManager.openFolder')}</Button>
         </div>
         {status.magenta.installed.length === 0 && missing.length === 0 && (
@@ -182,7 +182,7 @@ export function ModelManager() {
 
       <section className="modelmgr__section">
         <div className="modelmgr__section-head">
-          <h3 className="modelmgr__heading">{t('modelManager.sa3')}</h3>
+          <h4 className="modelmgr__subheading">{t('modelManager.sa3')}</h4>
           {sa3Present && (
             <Button onClick={() => openModelFolder('sa3')}>{t('modelManager.openFolder')}</Button>
           )}

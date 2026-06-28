@@ -272,6 +272,7 @@
 }
 
 .ui-vfader__well {
+  position: relative;
   height: 9rem;
   width: 2.4rem;
   display: grid;
@@ -281,23 +282,68 @@
   box-shadow: var(--inset-border);
 }
 
+/* The fader slot: a recessed centre groove the cap rides in. */
+.ui-vfader__well::before {
+  content: '';
+  position: absolute;
+  top: var(--space-2);
+  bottom: var(--space-2);
+  width: 4px;
+  border-radius: 2px;
+  background: var(--color-bg);
+  box-shadow: inset 0 0 0 1px var(--color-border-strong);
+}
+
 .ui-vfader__input {
   writing-mode: vertical-rl;
   direction: rtl;
   width: 1.6rem;
   height: 8.2rem;
+  /* The native track gives way to the well's groove; we draw our own cap. */
+  position: relative;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  --vfader-accent: var(--color-accent);
+}
+
+/* WebKit — the macOS WKWebView the app ships in. */
+.ui-vfader__input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 1.7rem;
+  height: 0.8rem;
+  border-radius: var(--radius-s);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--vfader-accent);
+  /* a centre score line across the cap, like a real fader */
+  box-shadow: inset 0 0 0 1px var(--color-bg);
+}
+
+/* Firefox — dev only, but keep the cap consistent. */
+.ui-vfader__input::-moz-range-thumb {
+  width: 1.7rem;
+  height: 0.8rem;
+  border-radius: var(--radius-s);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--vfader-accent);
+}
+
+.ui-vfader__input::-moz-range-track {
+  background: transparent;
 }
 
 .ui-vfader--a .ui-vfader__input {
-  accent-color: var(--color-deck-a);
+  --vfader-accent: var(--color-deck-a);
 }
 
 .ui-vfader--b .ui-vfader__input {
-  accent-color: var(--color-deck-b);
+  --vfader-accent: var(--color-deck-b);
 }
 
 .ui-vfader--master .ui-vfader__input {
-  accent-color: var(--color-accent);
+  --vfader-accent: var(--color-accent);
 }
 
 .ui-vfader__label {
@@ -859,6 +905,24 @@
   gap: var(--space-2);
 }
 
+/* Audio routing (main + cue output pickers, moved out of the mixer): the same
+   stacked layout as the appearance group. */
+.settings-audio {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-top: var(--space-3);
+}
+
+/* Per-deck model pickers (moved out of the deck column): the same stacked
+   layout as the audio group. */
+.settings-models {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-top: var(--space-3);
+}
+
 /* --- Model manager (issue #43) ------------------------------------------- */
 .modelmgr__section + .modelmgr__section {
   margin-top: var(--space-5);
@@ -870,7 +934,7 @@
   gap: var(--space-3);
   margin-bottom: var(--space-2);
 }
-.modelmgr__section-head .modelmgr__heading {
+.modelmgr__section-head .modelmgr__subheading {
   margin-bottom: 0;
 }
 .modelmgr__heading {
@@ -878,6 +942,19 @@
   letter-spacing: var(--silkscreen-spacing);
   text-transform: uppercase;
   color: var(--color-text-silkscreen);
+  margin-bottom: var(--space-2);
+}
+/* The two install families nest under the "Model library" heading. The
+   silkscreen is already tiny, so a subheading signals depth by indentation
+   (on the family block) and a brighter, more legible colour than the umbrella. */
+.settings-model-library .modelmgr__section {
+  padding-left: var(--space-3);
+}
+.modelmgr__subheading {
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
   margin-bottom: var(--space-2);
 }
 .modelmgr__row {

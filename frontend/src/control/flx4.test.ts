@@ -269,6 +269,23 @@ describe('createFlx4Translator', () => {
       }
     })
 
+    it.each([
+      [0xb0, 'a'],
+      [0xb1, 'b'],
+    ] as const)('TRIM knob on %s drives deck %s trim (M17)', (status, deck) => {
+      const translate = createFlx4Translator()
+      expect(translate([status, 0x04, 0x40])).toEqual({
+        kind: 'trim',
+        deck,
+        value: (0x40 << 7) / 16383,
+      })
+      expect(translate([status, 0x24, 0x00])).toEqual({
+        kind: 'trim',
+        deck,
+        value: 0x2000 / 16383,
+      })
+    })
+
     it('maps the crossfader to a master crossfade intent', () => {
       const translate = createFlx4Translator()
       expect(translate([0xb6, 0x1f, 0x00])).toEqual({
