@@ -52,14 +52,21 @@ resource reflects it.
 - [ ] `set_volume(deck, gain)` — the channel fader moves; the deck gets louder/quieter.
 - [ ] `set_eq(deck, band, value)` — low/mid/high knob turns; the band shifts.
 - [ ] `set_cue_mix(position)` — the headphone cue/master blend shifts.
-- [ ] `set_fx(deck, kind)` / `clear_fx(deck)` — the Color FX selection changes on
-      screen; the effect is heard / removed.
+- [ ] `set_fx(deck, kind)` / `set_fx_amount(deck, amount)` / `clear_fx(deck)` — the
+      Color FX selection AND its intensity change on screen; the effect is heard.
+- [ ] `set_trim(deck, db)` — the trim moves. `set_cue(deck, on)` — the channel's
+      headphone-cue (PFL) tap toggles on screen.
 
 ## Act — realtime decks
 
 - [ ] `deck_play(deck)` on a realtime deck — it starts generating; the deck shows
-      playing and audio comes up.
+      **playing** (the transport button follows) and audio comes up.
 - [ ] `deck_stop(deck)` — it stops; the screen and audio follow.
+- [ ] **Agent-started health.** After an agent `deck_play` (with no prior on-screen
+      play), the deck's buffer / BPM / underrun meters populate, not just the button.
+- [ ] `set_model(deck, model)` — the deck switches model (loading → ready on screen).
+- [ ] `set_prompt(deck, prompt)` — the prompt appears on the style pad as one target
+      and the generated audio moves toward it.
 
 ## Act — hot cues (a playback deck with a loaded track)
 
@@ -81,11 +88,31 @@ resource reflects it.
       reflects the hand-set arrangement (no echo fight, no boot-time clobber of the
       persisted layout).
 
+## Act — load tracks & clips
+
+- [ ] `list_songs()` / `list_samples()` return the library entries (each with a
+      `file`), matching what the Media Explorer shows.
+- [ ] `load_track(deck, file)` — the deck flips to **playback** and shows the track
+      (overview + title), the same as a Media-Explorer "load to deck".
+- [ ] `load_sample(deck, file)` — the clip lands in the deck's pad/loop slot.
+- [ ] A bad `file` is reported ("call list_songs…"), not a silent no-op.
+
+## Act — track transport (a loaded track)
+
+- [ ] `seek_track(deck, seconds)` — the playhead jumps; audio follows.
+- [ ] `set_tempo(deck, bpm)` — the deck's tempo readout and pitch change (clamped to
+      the varispeed range). With no loaded track, it reports there's no BPM to set.
+- [ ] `sync_deck(deck)` — the deck beat-matches the other deck's tempo.
+- [ ] `beat_loop(deck, beats)` — an N-beat loop engages and shows on screen.
+
 ## Generation
 
 - [ ] `generate_sample(prompt, seconds, kind)` with `kind` = `sfx` or `music` —
       after a short wait the clip **appears in the Samples tab** (the folder watcher
       surfaces it) and is loadable onto a deck.
+- [ ] `generate_track(deck, prompt, seconds)` — after the (longer) render, a full
+      track is saved to the songs library AND **loaded onto the deck** (it flips to
+      playback and shows the track).
 - [ ] A bad request (empty prompt, out-of-range `seconds`) returns the generation
       server's validation message, not a crash. With the generation server down, the
       tool reports it's unavailable.
