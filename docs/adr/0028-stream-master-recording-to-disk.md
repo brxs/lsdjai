@@ -36,8 +36,9 @@ Two facts about the engine make a better design cheap:
 ## Decision
 
 **Stream the take to disk through a dedicated writer thread, so a
-recording is bounded by free disk space, not RAM.** There is no
-length cap.
+recording is bounded by free disk space, not RAM.** The only remaining
+length limit is the WAV format's own (below), ~6 h — far past the old
+30-minute RAM wall.
 
 - The render thread still appends int16 PCM into a shared
   `Mutex<Vec<i16>>` in `capture` (unchanged hot path). A dedicated
@@ -57,18 +58,33 @@ length cap.
   count, then flushes. The byte format is identical to the old
   `encode_wav_i16` — 48 kHz / stereo / 16-bit PCM, the speaker feed
   post-limiter/clip-guard.
+- **The WAV format caps the take at ~6 h, and capture stops there.** A
+  canonical WAV stores its RIFF + data sizes as `u32`, so 48 kHz stereo
+  16-bit PCM can address at most ~6 h 12 m (`RECORDING_MAX_SAMPLES`). Rather
+  than let `capture` wrap those fields into a malformed file past that
+  point, it stops appending at the ceiling (tracked by a per-take sample
+  counter), finalising a valid WAV. Lifting this would mean RF64/WAVE64;
+  not worth it for an instrument whose sets don't run six hours.
 - **The file path is now minted at start, not stop**, because the file is
   opened when recording begins. The settings-chosen recordings folder
   (empty = OS Downloads) and the timestamped, sanitised filename
-  (`library::safe_stem` + `unique_wav_path`) are resolved in
-  `start_recording`, which returns the path. The webview holds onto it and
+  (`library::safe_stem`) are resolved in `start_recording`. The take is
+  opened with `library::create_unique_wav`, which picks the next free
+  `<stem> (n).wav` and opens it with `create_new` (`O_CREAT | O_EXCL`) in a
+  single step — no gap between "this name is free" and "open it" for another
+  process to exploit, and `O_EXCL` won't follow a symlink, so the take can
+  only ever be a fresh regular file inside the chosen folder.
+  `start_recording` returns that path; the webview holds onto it and
   surfaces the basename once the take stops. `stop_recording` carries no
   payload — just success or a write error.
 
 ## Consequences
 
-- **No 30-minute wall, flat memory.** A multi-hour set records fine; RAM
-  no longer scales with take length.
+- **No 30-minute wall, flat memory.** A multi-hour set records fine (up to
+  the ~6 h WAV ceiling); RAM no longer scales with take length.
+- **No path race on the take.** Minting and opening the file are one atomic
+  `create_new`, so a take never truncates an existing file or follows a
+  symlink out of the chosen folder — the picked-then-opened gap is closed.
 - **No new dependency.** `rtrb` and the hand-rolled WAV writer were
   already here; this adds one `std::thread` and a seek-to-patch.
 - **Crash recovery is partial, and no worse than before.** The header is

@@ -9,6 +9,7 @@
 //! Each library layers its own registry entry type, `reconcile`, and `record` on
 //! top of these — the per-entry shape stays boringly explicit in its own module.
 
+use std::fs::{File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
 
 use serde::de::DeserializeOwned;
@@ -78,6 +79,32 @@ pub fn unique_wav_path(dir: &Path, stem: &str, exists: impl Fn(&Path) -> bool) -
         }
     }
     None
+}
+
+/// Atomically create a fresh, empty `<stem>.wav` (else `<stem> (2).wav`, …) inside
+/// `dir` and hand back the open file with its path. Unlike picking a free path with
+/// [`unique_wav_path`] and opening it afterwards, this opens each candidate with
+/// `create_new` (`O_CREAT | O_EXCL`), so there is no window between the check and the
+/// open: a candidate that already exists — including a symlink, which `O_EXCL` refuses
+/// to follow — is never truncated; we just move to the next number. The caller
+/// streams into the returned file. Errors if every candidate up to the bound is taken
+/// or the open fails for another reason (e.g. permissions).
+pub fn create_unique_wav(dir: &Path, stem: &str) -> Result<(File, PathBuf), String> {
+    for n in 1..10_000 {
+        let candidate = if n == 1 {
+            dir.join(format!("{stem}.wav"))
+        } else {
+            dir.join(format!("{stem} ({n}).wav"))
+        };
+        match OpenOptions::new().write(true).create_new(true).open(&candidate) {
+            Ok(file) => return Ok((file, candidate)),
+            // The name is taken (a real file or a symlink O_EXCL won't follow) — try
+            // the next number rather than clobber it.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("cannot create recording file: {e}")),
+        }
+    }
+    Err("too many recordings with this name".into())
 }
 
 /// The audio filenames directly inside `dir` (non-recursive), sorted
@@ -228,5 +255,25 @@ mod tests {
         // Every candidate "exists" → no free name → None, so `record` errors instead
         // of truncating an earlier take.
         assert!(unique_wav_path(Path::new("/lib"), "Take", |_| true).is_none());
+    }
+
+    #[test]
+    fn create_unique_wav_opens_a_fresh_take_without_clobbering() {
+        let dir = std::env::temp_dir().join(format!("lsdj-rec-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // First take gets the bare name; the file exists and is empty.
+        let (file, first) = create_unique_wav(&dir, "Take").unwrap();
+        drop(file);
+        assert_eq!(first, dir.join("Take.wav"));
+        assert!(first.exists());
+
+        // Second take must not truncate the first — it suffixes the next number.
+        std::fs::write(&first, b"already here").unwrap();
+        let (_file, second) = create_unique_wav(&dir, "Take").unwrap();
+        assert_eq!(second, dir.join("Take (2).wav"));
+        assert_eq!(std::fs::read(&first).unwrap(), b"already here", "earlier take is untouched");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

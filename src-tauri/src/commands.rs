@@ -321,12 +321,15 @@ fn recordings_dir(app: &tauri::AppHandle, folder: &str) -> Result<std::path::Pat
 /// Start recording the master bus (exactly the speaker feed), streaming it straight
 /// to a 16-bit PCM WAV in `folder` (empty = the OS Downloads folder, today's
 /// default) and returning the file path. Streaming to disk means the take is bounded
-/// by free space, not RAM — there is no recording-length limit.
+/// by free space, not RAM — only the WAV format's own 32-bit ceiling (~6 h at 48 kHz
+/// stereo) caps the length, far past the old 30-min in-memory limit.
 ///
 /// The path is minted here, at start, because the file is opened now: `name` is an
 /// untrusted display stem, sanitised to a single filename component via
-/// [`library::safe_stem`] (so it can't escape the folder); [`library::unique_wav_path`]
-/// then avoids clobbering an earlier take.
+/// [`library::safe_stem`] (so it can't escape the folder). [`library::create_unique_wav`]
+/// then opens a fresh take atomically (`create_new`), so the pick-and-open is one step
+/// — no window for another process to slip a file or symlink into the path, and an
+/// existing take is never truncated.
 #[tauri::command]
 pub fn start_recording(
     state: tauri::State<'_, Host>,
@@ -337,9 +340,13 @@ pub fn start_recording(
     let dir = recordings_dir(&app, &folder)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create recordings folder: {e}"))?;
     let stem = library::safe_stem(&name, "lsdj-recording");
-    let path = library::unique_wav_path(&dir, &stem, |p| p.exists())
-        .ok_or("too many recordings with this name")?;
-    state.start_recording(&path)?;
+    let (file, path) = library::create_unique_wav(&dir, &stem)?;
+    if let Err(e) = state.start_recording(file) {
+        // The take never started (e.g. one already in progress); don't leave the
+        // empty file we just created lying around.
+        let _ = std::fs::remove_file(&path);
+        return Err(e);
+    }
     Ok(path.to_string_lossy().into_owned())
 }
 

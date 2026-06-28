@@ -43,8 +43,7 @@
 
 use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -95,6 +94,15 @@ const CAPTURE_REPLY_DEPTH: usize = 8;
 /// [`WRITER_PARK`] tick, keeping the buffer far below this.
 const RECORDING_BACKPRESSURE_SAMPLES: usize = 60 * SAMPLE_RATE as usize * CHANNELS as usize;
 
+/// Hard ceiling on a take's length, in interleaved samples: the largest count whose
+/// byte size still fits a canonical WAV's 32-bit RIFF/data size fields
+/// (`36 + samples * 2 <= u32::MAX`, floored to a whole stereo frame). At 48 kHz
+/// stereo that's ~6 h 12 m — past any real set, but a plain WAV simply cannot address
+/// more without RF64/WAVE64. Capture stops here so the header stays valid rather than
+/// wrapping the size fields into a malformed file; a longer take would need a format
+/// change, tracked in ADR-0028.
+const RECORDING_MAX_SAMPLES: usize = ((u32::MAX as usize - 36) / 4) * 2;
+
 /// How long the recorder's writer thread parks when the capture buffer is empty
 /// before checking again. Short enough that buffered (un-written) audio — and thus
 /// RAM — stays tiny; long enough to avoid a busy-spin.
@@ -114,6 +122,11 @@ struct Recorder {
     buffer: Arc<Mutex<Vec<i16>>>,
     /// The disk-writer thread + its stop flag — present only while recording.
     writer: Mutex<Option<WriterHandle>>,
+    /// Interleaved samples captured so far this take. Capture stops appending once
+    /// this reaches [`RECORDING_MAX_SAMPLES`], so the streamed WAV's 32-bit size
+    /// fields never overflow. Written only on the render thread (reset at `start`,
+    /// under the writer lock).
+    captured: AtomicUsize,
 }
 
 /// Handle to the running writer thread: its stop flag and join handle. Joining
@@ -129,33 +142,46 @@ impl Recorder {
             active: AtomicBool::new(false),
             buffer: Arc::new(Mutex::new(Vec::new())),
             writer: Mutex::new(None),
+            captured: AtomicUsize::new(0),
         }
     }
 
     /// Append a rendered master block (interleaved-stereo f32) as int16 PCM. A
-    /// no-op when not recording; stops growing at [`RECORDING_BACKPRESSURE_SAMPLES`]
-    /// so a stalled writer can't exhaust RAM.
+    /// no-op when not recording. Bounded by two independent caps: the buffer stops
+    /// growing at [`RECORDING_BACKPRESSURE_SAMPLES`] so a stalled writer can't exhaust
+    /// RAM, and the take stops capturing at [`RECORDING_MAX_SAMPLES`] so the WAV's
+    /// 32-bit size fields never overflow.
     fn capture(&self, block: &[f32]) {
         if !self.active.load(Ordering::Relaxed) {
             return;
         }
+        let captured = self.captured.load(Ordering::Relaxed);
         let mut buf = self.buffer.lock().unwrap_or_else(|p| p.into_inner());
-        let room = RECORDING_BACKPRESSURE_SAMPLES.saturating_sub(buf.len());
-        for &s in block.iter().take(room) {
+        let buffer_room = RECORDING_BACKPRESSURE_SAMPLES.saturating_sub(buf.len());
+        let format_room = RECORDING_MAX_SAMPLES.saturating_sub(captured);
+        let before = buf.len();
+        for &s in block.iter().take(buffer_room.min(format_room)) {
             buf.push((s.clamp(-1.0, 1.0) * 32767.0) as i16);
+        }
+        let pushed = buf.len() - before;
+        drop(buf);
+        if pushed > 0 {
+            self.captured.fetch_add(pushed, Ordering::Relaxed);
         }
     }
 
-    /// Open `path`, write a placeholder WAV header, and spawn the writer thread that
-    /// streams captured audio to it. Errors if a take is already in progress or the
-    /// file can't be created; on success, capture begins.
-    fn start(&self, path: &Path) -> Result<(), String> {
+    /// Take ownership of an already-opened `file`, write a placeholder WAV header, and
+    /// spawn the writer thread that streams captured audio to it. The caller opens the
+    /// file atomically (so path safety stays at the trust boundary, not here); this
+    /// only errors if a take is already in progress or the writer thread can't spawn.
+    /// On success, capture begins.
+    fn start(&self, file: File) -> Result<(), String> {
         let mut slot = self.writer.lock().unwrap_or_else(|p| p.into_inner());
         if slot.is_some() {
             return Err("a recording is already in progress".into());
         }
-        let file = File::create(path).map_err(|e| format!("cannot create recording file: {e}"))?;
         self.buffer.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        self.captured.store(0, Ordering::Relaxed);
 
         let stop = Arc::new(AtomicBool::new(false));
         let buffer = self.buffer.clone();
@@ -561,10 +587,11 @@ impl Host {
     }
 
     /// Start recording the master bus (exactly the speaker feed — post-limiter and
-    /// clip-guard), streaming it to `path` as a 16-bit PCM WAV. Errors if a take is
-    /// already in progress or the file can't be created.
-    pub fn start_recording(&self, path: &Path) -> Result<(), String> {
-        self.recorder.start(path)
+    /// clip-guard), streaming it to the already-opened `file` as a 16-bit PCM WAV. The
+    /// caller opens the file (atomically, at the trust boundary) so this layer never
+    /// touches paths. Errors if a take is already in progress.
+    pub fn start_recording(&self, file: File) -> Result<(), String> {
+        self.recorder.start(file)
     }
 
     /// Stop recording: flush the remaining audio, patch the WAV header, and close
@@ -1532,6 +1559,23 @@ mod tests {
         assert!((buf[1] + 16383).abs() <= 1);
         assert_eq!(buf[2], 32767);
         assert_eq!(buf[3], -32767);
+    }
+
+    #[test]
+    fn capture_stops_at_the_wav_size_ceiling() {
+        // Past ~6 h a plain WAV's 32-bit size fields would overflow; capture must stop
+        // appending at the ceiling rather than wrap the header into a malformed file.
+        let rec = Recorder::new();
+        rec.active.store(true, Ordering::Relaxed);
+        // Pretend all but two samples of the budget are already on disk.
+        rec.captured.store(RECORDING_MAX_SAMPLES - 2, Ordering::Relaxed);
+
+        rec.capture(&[0.1, 0.2, 0.3, 0.4]); // a 4-sample block, only 2 of which fit
+        assert_eq!(rec.buffer.lock().unwrap().len(), 2, "only the remaining budget is kept");
+        assert_eq!(rec.captured.load(Ordering::Relaxed), RECORDING_MAX_SAMPLES);
+
+        rec.capture(&[0.5, 0.6]); // budget exhausted → nothing more is captured
+        assert_eq!(rec.buffer.lock().unwrap().len(), 2, "capture is a no-op at the ceiling");
     }
 
     #[test]
