@@ -39,7 +39,7 @@ sends it on every device bind so a fresh connection starts in sync.
 
 | Control | Message | Why |
 | ------- | ------- | --- |
-| TRIM, BEAT SYNC, loop section | various | no app counterpart yet (CUE went in M10, browse/load in M16) |
+| BEAT SYNC | various | no app counterpart yet (TRIM went in M17, loop section in M21/M23) |
 
 ## Mapped in M10 (headphone cue)
 
@@ -58,6 +58,12 @@ remains the verification tool.
 | ------- | ------- | ------------ |
 | Pads 1–4, SAMPLER mode, deck 1 / 2 | `0x97`/`0x99` notes `0x30`–`0x33` | freeze-loop slot: empty captures + freezes, filled swaps in, active returns to live; LED lit while filled. Bank base `0x30` confirmed by the 0x10-per-bank scheme |
 | SHIFT + SAMPLER pad, deck 1 / 2 | `0x98`/`0x9A` notes `0x30`–`0x33` | clear the slot. Held SHIFT moves pads onto the shift pad layer — pads are **not** soft-shifted like the CFX knob (found on hardware: the `0x97`/`0x99` soft-shift path never fired). The translator keeps the soft-shift rows as well, in case other firmware keeps the pads put |
+
+## Mapped in M17 (channel trim)
+
+| Control | Message | → App intent |
+| ------- | ------- | ------------ |
+| TRIM (gain) knob deck 1 / 2 | `0xB0`/`0xB1` CC `0x04` (LSB `0x24`) | the deck's manual trim (`trim`): a turn drops auto-trim and sets a gain across ±`TRIM_RANGE_DB`, mirroring the on-screen knob. CC interpolated from the Pioneer/Mixxx channel-gain layout — confirm with the monitor |
 
 ## Mapped in M16 (crates), widened in M19 (Media Explorer)
 

@@ -9,6 +9,10 @@ import type { StylePreset } from '../presets'
 export type ControlIntent =
   | { kind: 'play_toggle'; deck: DeckId }
   | { kind: 'volume'; deck: DeckId; value: number }
+  // Channel TRIM knob (M17): a normalised 0..1 turn, mapped to a manual gain
+  // across ±TRIM_RANGE_DB in dispatch — turning it drops auto-trim, exactly as
+  // the on-screen knob does.
+  | { kind: 'trim'; deck: DeckId; value: number }
   | { kind: 'eq'; deck: DeckId; band: EqBand; value: number }
   | { kind: 'crossfade'; value: number }
   // The HOT CUE bank, named for the physical gesture (M21): the pure

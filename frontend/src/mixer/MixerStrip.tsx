@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { EQ_BANDS, type EqBand } from '../audio/eq'
 import type { DeckId } from '../audio/types'
 import { useAudioEngine } from '../audio/engineContext'
-import { TRIM_RANGE_DB } from '../audio/master'
+import { knobFromTrimDb, trimDbFromKnob } from '../audio/master'
 import { Button } from '../ui/Button'
 import { Knob } from '../ui/Knob'
 import { LevelMeter } from '../ui/LevelMeter'
@@ -71,11 +71,9 @@ export function MixerStrip({
             the knob shows the live value even while auto rides it. */}
         <Knob
           label={t('mixer.trim')}
-          value={(channel.trim.db + TRIM_RANGE_DB) / (2 * TRIM_RANGE_DB)}
+          value={knobFromTrimDb(channel.trim.db)}
           accent={deckId}
-          onChange={(value) =>
-            channel.onSetTrimDb(value * 2 * TRIM_RANGE_DB - TRIM_RANGE_DB)
-          }
+          onChange={(value) => channel.onSetTrimDb(trimDbFromKnob(value))}
         />
         <Button
           lit={channel.trim.mode === 'auto'}

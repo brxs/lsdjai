@@ -129,6 +129,10 @@ function ccBuilder(
       // parameter, not generation tempo (ADR-0014 vs ADR-0004).
       case 0x00:
         return (value) => ({ kind: 'track_rate', deck, value })
+      // Channel TRIM (gain) knob — the Pioneer/Mixxx channel-gain CC (LSB
+      // 0x24); drives the deck's manual trim (M17). Confirm with the monitor.
+      case 0x04:
+        return (value) => ({ kind: 'trim', deck, value })
       case 0x13:
         return (value) => ({ kind: 'volume', deck, value })
       case 0x07:
