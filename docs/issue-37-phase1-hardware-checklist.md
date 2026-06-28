@@ -43,23 +43,22 @@ changes (the future MCP writer) via a synced-gate reconcile.
       behave exactly as before from the screen and the FLX4; high-rate sweeps stay
       smooth (the optimistic local render).
 
-## Realtime model/playing + hot cues + track identity — **landed (write-only mirrors)**
+## Read-back mirrors (model/playing, cues, track identity, loop labels, style) — **landed (write-only)**
 
 These are *read-back* state the webview derives and writes UP into the store for a
 future MCP read; there is **no operator-facing change** in Phase 1 (nothing reads
 them back into the UI). So the only check is that nothing regressed:
 
-- [ ] Play/stop, model switching, hot-cue set/jump/clear, and loading/unloading a
-      track all behave exactly as before. (Cue state location moved to the store
-      per ADR-0015 → ADR-0020, but the set/jump logic and the operator experience
-      are unchanged.)
+- [ ] Play/stop, model switching, hot-cue set/jump/clear, loading/unloading a
+      track, freeze/sample pads, and the 2D style pad all behave exactly as before.
+      (Cue state location moved to the store per ADR-0015 → ADR-0020, but the
+      set/jump logic and the operator experience are unchanged.)
 
-## Style targets+cursor projection, loop labels, full bidirectional projection — *pending (later slices / Phase 2)*
+## Bidirectional projection of the mirrored read-backs — *pending (Phase 2)*
 
-- [ ] The 2D style pad and prompt edits behave as before once style targets+cursor
-      project from the store.
-- [ ] (Phase 2) An MCP agent can *set* a cue / move the style cursor and the UI
-      follows — the bidirectional projection of the mirrored state.
+- [ ] (Phase 2) An MCP agent can *set* a cue, switch a model, or move the style
+      cursor and the UI follows — the projection back of the mirrored state, which
+      lands when MCP gives those read-backs an external writer.
 
 ## Whole-instrument regression — *run once all slices land*
 
