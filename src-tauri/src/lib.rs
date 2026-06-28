@@ -145,26 +145,16 @@ fn start_audio() -> (Host, AudioState, [DeckHandle; lsdj_engine::DECK_COUNT]) {
 }
 
 /// Spawn one inference sidecar per deck, each fed by its [`DeckHandle`] and
-/// reporting status as a `sidecar://status` Tauri event. Gated behind the
-/// `LSDJ_SIDECARS` env var during the migration (so a plain `tauri dev` does
-/// not launch Python until the native inference path is enabled / on the
-/// checklist); part 7 (cutover) makes it the default. Handles for decks without a
-/// sidecar are returned to keep their rings open.
+/// reporting status as a `sidecar://status` Tauri event. Started with the app (the
+/// native cutover default — no flag): a deck whose sidecar fails to spawn closes its
+/// ring and stays silent, like the no-audio-device path, without failing the app. The
+/// returned idle-handle vec is now always empty (kept for the call signature).
 fn start_sidecars(
     app: &tauri::AppHandle,
     handles: [DeckHandle; lsdj_engine::DECK_COUNT],
     taps: &sidecar::PcmTaps,
 ) -> (sidecar::Sidecars, Vec<DeckHandle>) {
     const DECK_IDS: [&str; lsdj_engine::DECK_COUNT] = ["a", "b"];
-    let enabled = std::env::var("LSDJ_SIDECARS").is_ok();
-    if !enabled {
-        eprintln!("lsdj-app: sidecars disabled (set LSDJ_SIDECARS=1 to enable)");
-        return (
-            sidecar::Sidecars::new(handles.iter().map(|_| None).collect()),
-            handles.into_iter().collect(),
-        );
-    }
-
     let mut decks = Vec::new();
     for (idx, handle) in handles.into_iter().enumerate() {
         let app = app.clone();
@@ -190,7 +180,7 @@ fn start_sidecars(
         }
     }
     // Every handle was moved into a sidecar (or dropped on a failed spawn), so no
-    // idle handles remain in the enabled path.
+    // idle handles remain.
     (sidecar::Sidecars::new(decks), Vec::new())
 }
 
@@ -205,10 +195,10 @@ struct AppInfo {
     /// The loopback port the generation server bound (`None` if disabled / not
     /// running). The webview builds the `/api/*` base URL from it (gap 2).
     generation_port: Option<u16>,
-    /// The loopback port the MCP server bound (`None` if `LSDJ_MCP` is unset / it
-    /// failed), and the per-session bearer token a client must present (ADR-0020
-    /// Phase 2). Surfaced so the client config can point at `http://127.0.0.1:
-    /// <mcpPort>/mcp` with `Authorization: Bearer <mcpToken>`.
+    /// The loopback port the MCP server bound (`None` only if the loopback bind
+    /// failed — the server is otherwise always on), and the bearer token a client must
+    /// present (ADR-0020 Phase 2). Surfaced so the client config can point at
+    /// `http://127.0.0.1:<mcpPort>/mcp` with `Authorization: Bearer <mcpToken>`.
     mcp_port: Option<u16>,
     mcp_token: Option<String>,
 }
@@ -428,7 +418,7 @@ pub fn run() {
             let (sidecars, idle_handles) =
                 start_sidecars(&app.handle().clone(), deck_handles, &taps);
             // The sa3/Magenta generation server (gap 2): the gen-only FastAPI on a
-            // loopback port the webview fetches; gated behind LSDJ_SIDECARS.
+            // loopback port the webview fetches; started with the app.
             let generation_server = generation::GenerationServer::start();
             // The generated-songs library: a fixed folder under the user's Documents
             // (override never reaches it from the webview) plus a JSON registry the
@@ -471,9 +461,9 @@ pub fn run() {
             app.manage(taps);
             app.manage(generation_server);
             // The native MCP server (ADR-0020 Phase 2): an external agent as a
-            // co-DJ. Flag-gated (`LSDJ_MCP`), loopback-only, token-guarded; its
-            // tools mutate the same managed state the IPC commands do. Reaches that
-            // state through the cloned AppHandle.
+            // co-DJ. Always on, loopback-only, token-guarded; its tools mutate the
+            // same managed state the IPC commands do. Reaches that state through the
+            // cloned AppHandle.
             app.manage(mcp::McpServer::start(app.handle().clone()));
             app.manage(IdleHandles(Mutex::new(idle_handles)));
             Ok(())

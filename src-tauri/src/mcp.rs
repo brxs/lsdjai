@@ -1,6 +1,6 @@
 //! In-process MCP server (ADR-0020 Phase 2): an external AI agent (Claude Desktop /
-//! Claude Code) as a co-DJ. Hosted inside the Tauri process, **loopback-only**,
-//! **flag-gated** (`LSDJ_MCP`), guarded by a **per-session bearer token**. Tools
+//! Claude Code) as a co-DJ. Hosted inside the Tauri process, **always on**,
+//! **loopback-only**, guarded by a **per-session bearer token**. Tools
 //! mutate the one interface store (the same validated path UI and MIDI take), so an
 //! agent's move is reflected on screen (the bidirectional projection); resources
 //! read the store.
@@ -273,10 +273,10 @@ pub struct McpServer {
 }
 
 impl McpServer {
-    /// Start the MCP server, gated behind `LSDJ_MCP`. Never fails the app: a disabled
-    /// or failed start yields `port() == None` and the endpoint is simply
-    /// unadvertised. Binds `127.0.0.1` on an ephemeral port; every request must carry
-    /// the bearer token. Reuses the persisted token across launches.
+    /// Start the MCP server — **always on**. Never fails the app: a failed start (the
+    /// loopback bind couldn't be acquired) yields `port() == None` and the endpoint is
+    /// simply unadvertised. Binds `127.0.0.1` on an ephemeral port; every request must
+    /// carry the bearer token. Reuses the persisted token across launches.
     pub fn start(app: AppHandle) -> McpServer {
         let cancel = CancellationToken::new();
         let disabled = |cancel| McpServer {
@@ -285,10 +285,6 @@ impl McpServer {
             token_path: None,
             cancel,
         };
-        if std::env::var("LSDJ_MCP").is_err() {
-            eprintln!("lsdj-app: MCP server disabled (set LSDJ_MCP=1 to enable)");
-            return disabled(cancel);
-        }
 
         // Bind synchronously so the port is known before we advertise it; hand the
         // std listener to tokio inside the task.

@@ -47,7 +47,8 @@ import { sameMask } from './selectionMask'
 
 /** The "AI co-DJ (MCP)" Settings body (ADR-0020 Phase 2): the live endpoint +
  * bearer token, with copy-paste connection snippets for the common agent
- * harnesses. A hint to enable the server when it's off (`LSDJ_MCP` unset). */
+ * harnesses. The server is always on; the fallback hint shows only if the
+ * loopback bind failed. */
 function McpSettings({
   info,
   onRotate,
@@ -226,7 +227,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   // The native MCP server's endpoint + token (ADR-0020 Phase 2), shown in Settings
   // so a Claude Desktop / Code client can connect. Fetched once; null until app_info
-  // resolves (and `port` stays null when LSDJ_MCP is unset).
+  // resolves (and `port` stays null only if the loopback bind failed).
   const [mcpInfo, setMcpInfo] = useState<McpInfo | null>(null)
   useEffect(() => {
     void getMcpInfo().then(setMcpInfo)

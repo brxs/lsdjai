@@ -74,8 +74,8 @@ export function getApiBaseUrl(): Promise<string> {
 }
 
 /** The native MCP server endpoint + bearer token (ADR-0020 Phase 2), reported by
- * `app_info`. `port` is null when `LSDJ_MCP` is unset / the server failed; the
- * Settings drawer surfaces these so a client can be pointed at the loopback URL. */
+ * `app_info`. The server is always on; `port` is null only if the loopback bind
+ * failed. The Settings drawer surfaces these so a client can be pointed at the URL. */
 export type McpInfo = { port: number | null; token: string | null }
 
 export function getMcpInfo(): Promise<McpInfo> {

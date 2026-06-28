@@ -49,8 +49,8 @@ drawer).
 
 ## Part 4 — Inference sidecars
 
-- [ ] `LSDJ_SIDECARS=1`: each deck spawns `python -m lsdj.sidecar`; the
-      Rust log shows the loopback port and the sidecar connecting.
+- [ ] On launch, each deck spawns `python -m lsdj.sidecar` (started with the app,
+      no flag); the Rust log shows the loopback port and the sidecar connecting.
 - [ ] Audio generates: PCM streams sidecar → engine → speakers, no underruns
       (watch `engine_snapshot` deck-ring fill / underruns).
 - [ ] Deck control reaches the worker: play/stop, set-prompt, set-style change
