@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { useAudioEngine } from '../audio/engineContext'
@@ -10,6 +10,19 @@ import { Select, type SelectOption } from './Select'
  * main device's channels 3/4 (the FLX4 phones jack). An empty string can't
  * collide with a real device name, and is what an absent persisted choice is. */
 const DEFAULT_VALUE = ''
+
+/** Two device lists are equal when their names and cue capability match in
+ * order — the only fields the picker renders. Lets a reopen-time refresh keep
+ * the same array reference when nothing changed, so React skips the re-render. */
+function sameDevices(a: OutputDevice[], b: OutputDevice[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every(
+      (device, i) =>
+        device.name === b[i].name && device.cueCapable === b[i].cueCapable,
+    )
+  )
+}
 
 type OutputDevicePickerProps = {
   /** 'main' routes the master (its channels 1/2); 'cue' routes the headphone
@@ -43,12 +56,31 @@ export function OutputDevicePicker({
   const engine = useAudioEngine()
   const [devices, setDevices] = useState<OutputDevice[]>([])
   const [error, setError] = useState<string | null>(null)
+  // Mirror of `devices` for the refresh closure to compare against without
+  // re-subscribing each render. See the no-op-skip rationale in `refresh`.
+  const devicesRef = useRef<OutputDevice[]>([])
 
   const refresh = useCallback(() => {
     engine
       .listOutputDevices()
-      .then(setDevices)
-      .catch(() => setDevices([]))
+      // Only touch state when the list actually changed. `onReopen` fires this
+      // fetch as the native menu pops open; a setState a tick later re-renders
+      // and re-commits the controlled <select>, and WKWebView dismisses an open
+      // <select> whose value is re-synced — so the menu closed before a choice.
+      // Skipping the no-op update (the common case: same hardware) leaves the
+      // open menu untouched.
+      .then((next) => {
+        if (!sameDevices(devicesRef.current, next)) {
+          devicesRef.current = next
+          setDevices(next)
+        }
+      })
+      .catch(() => {
+        if (devicesRef.current.length) {
+          devicesRef.current = []
+          setDevices([])
+        }
+      })
   }, [engine])
 
   useEffect(refresh, [refresh])
