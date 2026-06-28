@@ -3,7 +3,8 @@
 //! **loopback-only**, guarded by a **per-session bearer token**. Tools
 //! mutate the one interface store (the same validated path UI and MIDI take), so an
 //! agent's move is reflected on screen (the bidirectional projection); resources
-//! read the store.
+//! read the store. A generation tool proxies the loopback generation server to
+//! compose audio into the samples library, where the folder watcher surfaces it.
 //!
 //! Mirrors the generation server's spawn/supervise/shutdown discipline
 //! ([`crate::generation`]): a disabled or failed start just leaves the endpoint
@@ -34,6 +35,8 @@ use tauri::{AppHandle, Manager};
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::{valid_deck, EqBandArg, FxKindArg};
+use crate::generation::GenerationServer;
+use crate::samples::{NewSample, SampleLibrary};
 use crate::sidecar::Sidecars;
 use crate::store::InterfaceStore;
 use lsdj_engine::host::Host;
@@ -89,6 +92,45 @@ struct DeckFxArgs {
 struct DeckArgs {
     /// Deck index: 0 = A, 1 = B.
     deck: usize,
+}
+
+/// The Stable Audio 3 pad engines the generation server exposes (`/api/generate`).
+/// `track` (the long-form medium model) is deliberately left out: this tool writes
+/// to the *samples* library (short loops/one-shots), not the songs library.
+#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum Sa3Kind {
+    Sfx,
+    Music,
+}
+
+impl Sa3Kind {
+    /// The wire value the generation server validates against (`sa3.KINDS`).
+    fn as_str(self) -> &'static str {
+        match self {
+            Sa3Kind::Sfx => "sfx",
+            Sa3Kind::Music => "music",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct GenerateSampleArgs {
+    /// Text prompt describing the sound to generate.
+    prompt: String,
+    /// Clip length in seconds (the server validates the range; sfx/music cap at 32 s).
+    seconds: f32,
+    /// Engine: "sfx" or "music" (Stable Audio 3 small models).
+    kind: Sa3Kind,
+    /// Whether the clip plays once (a one-shot) instead of looping. Defaults to loop.
+    #[serde(default)]
+    one_shot: bool,
+}
+
+/// The `/api/generate` request body, matching the generation server's contract
+/// (`prompt`/`seconds`/`kind`). Pulled out so the wire shape is unit-testable.
+fn generate_request_body(prompt: &str, seconds: f32, kind: Sa3Kind) -> serde_json::Value {
+    json!({ "prompt": prompt, "seconds": seconds, "kind": kind.as_str() })
 }
 
 #[tool_router]
@@ -197,6 +239,80 @@ impl McpHandler {
             .send(deck, &json!({ "type": "stop" }).to_string());
         format!("deck {deck} stopped")
     }
+
+    /// Generate a clip via the loopback generation server and save it to the samples
+    /// library — the agent composes audio that lands in the Samples tab (the folder
+    /// watcher surfaces it), ready to load onto a deck. Failure modes (server off,
+    /// prompt too long, bad length) come back as the tool's message, like the deck
+    /// guards above, rather than failing the call.
+    #[tool(
+        description = "Generate a short audio clip (Stable Audio 3) from a text prompt and \
+                       save it to the samples library, where it appears in the Samples tab \
+                       ready to load onto a deck. kind: \"sfx\" or \"music\"."
+    )]
+    async fn generate_sample(
+        &self,
+        Parameters(args): Parameters<GenerateSampleArgs>,
+    ) -> String {
+        match self.generate_sample_inner(args).await {
+            Ok(message) | Err(message) => message,
+        }
+    }
+
+    /// The fallible body of [`generate_sample`], so the proxy + save can use `?` and the
+    /// tool flattens the result to one message.
+    async fn generate_sample_inner(&self, args: GenerateSampleArgs) -> Result<String, String> {
+        let GenerateSampleArgs {
+            prompt,
+            seconds,
+            kind,
+            one_shot,
+        } = args;
+        let port = self
+            .app
+            .state::<GenerationServer>()
+            .port()
+            .ok_or("the generation server is not running")?;
+
+        // sa3 generation is serialised and can take many seconds; allow generous
+        // headroom but never wait forever for a wedged worker.
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .map_err(|e| format!("could not build the http client: {e}"))?;
+        let response = client
+            .post(format!("http://127.0.0.1:{port}/api/generate"))
+            .json(&generate_request_body(&prompt, seconds, kind))
+            .send()
+            .await
+            .map_err(|e| format!("generation request failed: {e}"))?;
+        if !response.status().is_success() {
+            // The server returns a JSON `{detail}` (FastAPI HTTPException); surface it.
+            let status = response.status();
+            let detail = response.text().await.unwrap_or_default();
+            return Err(format!("generation failed ({status}): {detail}"));
+        }
+        let wav = response
+            .bytes()
+            .await
+            .map_err(|e| format!("could not read the generated audio: {e}"))?;
+
+        let entry = self.app.state::<SampleLibrary>().record(
+            NewSample {
+                title: prompt.clone(),
+                prompt: Some(prompt),
+                model: Some(kind.as_str().to_string()),
+                one_shot,
+            },
+            &wav,
+        )?;
+        Ok(format!(
+            "generated a {} sample, saved to the samples library as {} (\"{}\")",
+            kind.as_str(),
+            entry.file,
+            entry.title
+        ))
+    }
 }
 
 /// The URI the interface-state snapshot is served at — the agent reads this to
@@ -215,8 +331,8 @@ impl ServerHandler for McpHandler {
             .build();
         info.instructions = Some(
             "LSDJ.ai — a generative DJ instrument. Read the `lsdj://interface-state` \
-             resource to observe the decks, mixer, and FX; call the tools to act as a \
-             co-DJ."
+             resource to observe the decks, mixer, and FX; call the tools to mix, drive \
+             the decks, and generate audio into the samples library as a co-DJ."
                 .to_string(),
         );
         info
@@ -461,7 +577,17 @@ fn generate_token() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{generate_token, load_or_generate_token, save_token};
+    use super::{generate_request_body, generate_token, load_or_generate_token, save_token, Sa3Kind};
+
+    #[test]
+    fn generate_body_matches_the_server_contract() {
+        // The keys + the wire `kind` value must match what `/api/generate` validates.
+        let body = generate_request_body("warm pad", 4.0, Sa3Kind::Music);
+        assert_eq!(body["prompt"], "warm pad");
+        assert_eq!(body["seconds"], 4.0);
+        assert_eq!(body["kind"], "music");
+        assert_eq!(generate_request_body("", 1.0, Sa3Kind::Sfx)["kind"], "sfx");
+    }
 
     #[test]
     fn token_is_64_hex_chars_and_unique() {
