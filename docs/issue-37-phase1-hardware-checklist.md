@@ -34,23 +34,32 @@ store).
       persisted positions immediately — no visible jump from a centre default.
 - [ ] **Persistence.** Move both, quit, relaunch: they restore where you left them.
 
-## Per-deck mixer projection — *pending its slice*
+## Per-deck mixer projection — **landed**
+
+useDeck projects volume/EQ/CUE/FX/trim from the store and adopts external store
+changes (the future MCP writer) via a synced-gate reconcile.
 
 - [ ] Volume faders, the three EQ knobs, TRIM, CUE, and the Color FX knob/bank all
       behave exactly as before from the screen and the FLX4; high-rate sweeps stay
-      smooth.
+      smooth (the optimistic local render).
 
-## Realtime-deck semantic state (prompt/style/model/playing) — *pending its slice*
+## Realtime model/playing + hot cues + track identity — **landed (write-only mirrors)**
 
-- [ ] The 2D style pad, prompt edits, model selection, and play/stop behave as
-      before; the deck's current style/model/playing survives as the store reports
-      it.
+These are *read-back* state the webview derives and writes UP into the store for a
+future MCP read; there is **no operator-facing change** in Phase 1 (nothing reads
+them back into the UI). So the only check is that nothing regressed:
 
-## Playback-deck identity + hot cues + loop labels — *pending its slice*
+- [ ] Play/stop, model switching, hot-cue set/jump/clear, and loading/unloading a
+      track all behave exactly as before. (Cue state location moved to the store
+      per ADR-0015 → ADR-0020, but the set/jump logic and the operator experience
+      are unchanged.)
 
-- [ ] Loading a track, the hot-cue pads (set/jump/clear), and the loop slots behave
-      as before; cue points now live in the store (ADR-0015 → ADR-0020) but the
-      operator sees no difference.
+## Style targets+cursor projection, loop labels, full bidirectional projection — *pending (later slices / Phase 2)*
+
+- [ ] The 2D style pad and prompt edits behave as before once style targets+cursor
+      project from the store.
+- [ ] (Phase 2) An MCP agent can *set* a cue / move the style cursor and the UI
+      follows — the bidirectional projection of the mirrored state.
 
 ## Whole-instrument regression — *run once all slices land*
 
