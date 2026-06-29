@@ -154,10 +154,11 @@ export type SyncResult = 'synced' | 'no_tempo' | 'out_of_range'
 
 const EMPTY_SLOT: LoopSlot = { state: 'empty' }
 
-/** How often, at most, the playback playhead is mirrored UP into the store for the
- * MCP interface-state resource (ADR-0020). The playhead advances every audio poll
- * (~60 Hz); an agent reads the resource on demand, so a ~4 Hz mirror is fresh enough
- * and avoids churning `store://changed` (and every projection re-render) per frame.
+/** Lower bound on how often the playback playhead is mirrored UP into the store for the
+ * MCP interface-state resource (ADR-0020). The deck's track-status poll already updates
+ * `track` at ~4 Hz (a 250 ms interval), so this matches that and mainly guards
+ * defensively against a future faster poll: an agent reads the resource on demand, and a
+ * per-frame mirror would churn `store://changed` (and every projection re-render).
  * Rate/loop changes bypass the throttle — they are rare and worth reflecting at once. */
 const TRANSPORT_MIRROR_MS = 250
 
@@ -479,7 +480,9 @@ export function useDeck(deckId: DeckId): DeckControls {
     if (!s.trim) {
       if (near(mix.trimDb, trimRef.current.db)) s.trim = true
     } else if (mix.trimDb !== trimRef.current.db) {
-      const next = { ...trimRef.current, db: mix.trimDb }
+      // Flip to manual, like the on-screen trim setter: an explicit external (MCP/MIDI)
+      // trim is a deliberate value, so auto-gain must not overwrite it on the next tick.
+      const next = { mode: 'manual' as const, db: mix.trimDb }
       trimRef.current = next
       setTrimState(next)
     }
@@ -539,10 +542,10 @@ export function useDeck(deckId: DeckId): DeckControls {
   }, [deckIndex, track?.title, track?.bpm, track?.duration])
 
   // Mirror the playback transport (playhead / rate / loop) UP into the store for the
-  // MCP interface-state resource (ADR-0020). `track` is a fresh object every audio
-  // poll, so this effect runs ~60 Hz; the throttle ref pushes the playhead only every
-  // TRANSPORT_MIRROR_MS, while a rate or loop change goes up at once. Null on a
-  // realtime deck / with no track.
+  // MCP interface-state resource (ADR-0020). `track` is a fresh object on each ~4 Hz
+  // (250 ms) status poll, so this effect runs at that rate; the throttle ref bounds the
+  // playhead push to TRANSPORT_MIRROR_MS (defensive against a faster poll), while a rate
+  // or loop change goes up at once. Null on a realtime deck / with no track.
   const transportMirrorRef = useRef<{
     at: number
     rate: number | null

@@ -41,6 +41,7 @@ use crate::sidecar::Sidecars;
 use crate::songs::{NewSong, SongLibrary};
 use crate::store::{InterfaceStore, PadPointSnap, StyleTargetSnap};
 use lsdj_engine::host::Host;
+use lsdj_engine::FxKind;
 
 /// The MCP request handler. Holds the [`AppHandle`] so a tool reaches the same
 /// Tauri-managed state (`Host`, `InterfaceStore`, sidecars) the IPC commands drive —
@@ -353,8 +354,16 @@ impl McpHandler {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
         }
-        self.app.state::<Host>().set_fx(deck, kind.into());
-        self.app.state::<InterfaceStore>().set_fx(deck, kind.into());
+        // A kind-swap lands the engine at the new effect's REST amount (so it starts
+        // bypassed); the UI mirrors that by following set_fx with set_fx_amount(rest).
+        // Do the same here, else the store/resource (and the adopted on-screen knob)
+        // keep the previous amount while the deck actually plays at rest.
+        let kind: FxKind = kind.into();
+        let rest = kind.rest_position();
+        self.app.state::<Host>().set_fx(deck, kind);
+        let store = self.app.state::<InterfaceStore>();
+        store.set_fx(deck, kind);
+        store.set_fx_amount(deck, rest);
         format!("deck {deck} fx selected")
     }
 
@@ -1188,11 +1197,27 @@ async fn require_token(
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
     let expected = format!("Bearer {}", *read_lock(&token));
-    if presented == Some(expected.as_str()) {
+    let ok = presented.is_some_and(|p| constant_time_eq(p.as_bytes(), expected.as_bytes()));
+    if ok {
         next.run(request).await
     } else {
         (StatusCode::UNAUTHORIZED, "missing or invalid bearer token").into_response()
     }
+}
+
+/// Constant-time byte comparison for the bearer-token check, so a wrong token can't be
+/// recovered byte-by-byte through early-exit timing. Loopback + a 256-bit token already
+/// make a timing attack impractical; this is the cheap, conventional hardening (no new
+/// dependency — `subtle`/`ring` would do the same).
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// Recover a poisoned lock — a panic in another holder must not wedge auth/rotation.
@@ -1272,7 +1297,10 @@ fn generate_token() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{generate_request_body, generate_token, load_or_generate_token, save_token};
+    use super::{
+        constant_time_eq, generate_request_body, generate_token, load_or_generate_token,
+        save_token,
+    };
 
     #[test]
     fn generate_body_matches_the_server_contract() {
@@ -1307,5 +1335,17 @@ mod tests {
         assert_ne!(rotated, first);
         assert_eq!(load_or_generate_token(&path), rotated);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn constant_time_eq_accepts_only_an_exact_match() {
+        // Locks correctness, not the timing property (which can't be asserted without
+        // flakiness): the bearer-token check must accept only an exact byte match.
+        assert!(constant_time_eq(b"", b""));
+        assert!(constant_time_eq(b"Bearer abc", b"Bearer abc"));
+        // Same length, one byte off — rejected.
+        assert!(!constant_time_eq(b"Bearer abc", b"Bearer abd"));
+        // A differing length (a prefix) — rejected.
+        assert!(!constant_time_eq(b"Bearer abc", b"Bearer abcd"));
     }
 }

@@ -132,3 +132,23 @@ resource reflects it.
 - [ ] Drive a fader on screen while the agent drives another control: both land on the
       one store (last-write-wins), with no divergence between the screen, the hardware,
       and the agent's view.
+
+## Hardware peer-control (FLX4 connected)
+
+Guards the two regressions found by FLX4 testing that unit tests can't fully verify —
+both about the controller's position-sync racing an agent/UI move.
+
+- [ ] **MCP move adopts past a parked knob.** With the FLX4 connected and a channel
+      EQ/COLOR/trim knob parked off its default, call `set_eq` / `set_fx_amount` /
+      `set_trim` for that deck: the on-screen control jumps to the agent's value and
+      stays (the per-field reconcile no longer wedges on a hardware-quantised sibling
+      field; a `set_trim` is not clawed back by auto-gain).
+- [ ] **No snap-back on a steady-state rescan.** Set a mixer value by MCP (e.g.
+      `set_crossfade`), then leave it ~5 s with the FLX4 still connected: it holds — the
+      position-sync fires only on an actual (re)bind, not on the ~1 Hz hot-plug rescan,
+      so it no longer clobbers software/MCP moves.
+- [ ] **Replug re-adopts hardware.** Unplug and replug the FLX4: its physical knob/fader
+      positions are re-applied once (the intended precedence on a fresh connect).
+- [ ] **`set_fx` lands bypassed honestly.** Call `set_fx(deck, kind)`: the on-screen FX
+      amount AND the `lsdj://interface-state` resource show the new effect's REST amount
+      (what the deck actually plays), not the previous effect's amount.
