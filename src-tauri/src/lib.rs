@@ -537,6 +537,7 @@ pub fn run() {
             commands::set_deck_realtime,
             commands::set_deck_cues,
             commands::set_deck_track,
+            commands::set_deck_transport,
             commands::set_deck_loop_labels,
             commands::set_deck_style,
             commands::deck_play,

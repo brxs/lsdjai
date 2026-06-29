@@ -100,6 +100,30 @@ pub struct TrackIdentitySnap {
     pub duration_seconds: f64,
 }
 
+/// An active loop region on a playback deck, in track seconds (mirrors the frontend
+/// `TrackLoop`). `Deserialize` too — it crosses as a `set_deck_transport` argument.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopRegionSnap {
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+}
+
+/// A playback deck's live transport read-back (a throttled mirror the webview writes
+/// up): the playhead, varispeed rate, and the active loop region. `None` on a realtime
+/// deck or with no track. The playhead is mirrored at a throttled cadence (the webview
+/// caps it ~4 Hz) so this read-back doesn't churn `store://changed` at the audio poll
+/// rate; an agent reads the resource on demand, so coarse freshness is enough.
+/// `Deserialize` too — it crosses as a `set_deck_transport` argument.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransportSnap {
+    pub playhead_seconds: f64,
+    /// Varispeed rate (1.0 = as recorded); effective BPM is `track.bpm * rate`.
+    pub rate: f64,
+    pub loop_region: Option<LoopRegionSnap>,
+}
+
 /// A point on the 2D style pad (0..1 each axis). `Deserialize`/`JsonSchema` too — the
 /// cursor crosses as a `set_deck_style` / `set_style_cursor` argument (UI/MIDI and MCP).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -148,6 +172,9 @@ pub struct DeckSnap {
     /// The loaded track's identity on a playback deck (a read-back the store
     /// mirrors), or `None` on a realtime deck / with no track.
     pub track: Option<TrackIdentitySnap>,
+    /// The playback deck's live transport (playhead / rate / loop) — a throttled
+    /// read-back the webview mirrors up, `None` on a realtime deck / with no track.
+    pub transport: Option<TransportSnap>,
     /// The freeze/sample loop-slot labels, one per pad (`None` for an empty slot or
     /// an unlabelled freeze) — a read-back the store mirrors. Empty until the deck
     /// reports its slots.
@@ -180,6 +207,7 @@ impl Default for DeckSnap {
             playing: false,
             cues: Vec::new(),
             track: None,
+            transport: None,
             loop_labels: Vec::new(),
             style_targets: Vec::new(),
             cursor: PadPointSnap { x: 0.5, y: 0.5 },
@@ -308,6 +336,12 @@ impl InterfaceState {
     pub fn set_track(&mut self, deck: usize, track: Option<TrackIdentitySnap>) {
         if let Some(d) = self.deck_mut(deck) {
             d.track = track;
+        }
+    }
+
+    pub fn set_transport(&mut self, deck: usize, transport: Option<TransportSnap>) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.transport = transport;
         }
     }
 
@@ -459,6 +493,13 @@ impl InterfaceStore {
         self.mutate(move |s| s.set_track(deck, track));
     }
 
+    /// Mirror a playback deck's live transport (playhead / rate / loop). The webview
+    /// owns the read-back and writes the current value up at a throttled cadence;
+    /// `None` clears it on unload / a realtime deck.
+    pub fn set_deck_transport(&self, deck: usize, transport: Option<TransportSnap>) {
+        self.mutate(move |s| s.set_transport(deck, transport));
+    }
+
     /// Mirror the freeze/sample loop-slot labels (a read-back the webview writes up
     /// when its slots change).
     pub fn set_deck_loop_labels(&self, deck: usize, labels: Vec<Option<String>>) {
@@ -504,6 +545,7 @@ mod tests {
             assert!(!deck.playing);
             assert!(deck.cues.is_empty());
             assert_eq!(deck.track, None);
+            assert_eq!(deck.transport, None);
             assert!(deck.loop_labels.is_empty());
             assert!(deck.style_targets.is_empty());
             assert_eq!(deck.cursor, PadPointSnap { x: 0.5, y: 0.5 });
@@ -556,6 +598,31 @@ mod tests {
         // Unload clears it.
         state.set_track(0, None);
         assert_eq!(state.decks[0].track, None);
+    }
+
+    #[test]
+    fn transport_is_mirrored_and_cleared_per_deck() {
+        let mut state = InterfaceState::default();
+        state.set_transport(
+            0,
+            Some(TransportSnap {
+                playhead_seconds: 12.5,
+                rate: 1.08,
+                loop_region: Some(LoopRegionSnap {
+                    start_seconds: 8.0,
+                    end_seconds: 16.0,
+                }),
+            }),
+        );
+        let transport = state.decks[0].transport.as_ref().unwrap();
+        assert_eq!(transport.playhead_seconds, 12.5);
+        assert_eq!(transport.rate, 1.08);
+        assert_eq!(transport.loop_region.unwrap().end_seconds, 16.0);
+        // The other deck is untouched.
+        assert_eq!(state.decks[1].transport, None);
+        // Unload / realtime clears it.
+        state.set_transport(0, None);
+        assert_eq!(state.decks[0].transport, None);
     }
 
     #[test]

@@ -26,6 +26,7 @@ import {
   setDeckLoopLabels,
   setDeckRealtime,
   setDeckTrack,
+  setDeckTransport,
   subscribeModelsChanged,
 } from '../audio/nativeEngine'
 import { fxKindFromSnap, useInterfaceStore } from '../audio/interfaceStore'
@@ -152,6 +153,13 @@ export type ZoomSource = {
 export type SyncResult = 'synced' | 'no_tempo' | 'out_of_range'
 
 const EMPTY_SLOT: LoopSlot = { state: 'empty' }
+
+/** How often, at most, the playback playhead is mirrored UP into the store for the
+ * MCP interface-state resource (ADR-0020). The playhead advances every audio poll
+ * (~60 Hz); an agent reads the resource on demand, so a ~4 Hz mirror is fresh enough
+ * and avoids churning `store://changed` (and every projection re-render) per frame.
+ * Rate/loop changes bypass the throttle — they are rare and worth reflecting at once. */
+const TRANSPORT_MIRROR_MS = 250
 
 function withSlot(current: LoopState, slot: number, value: LoopSlot): LoopSlot[] {
   return current.slots.map((existing, index) => (index === slot ? value : existing))
@@ -400,43 +408,48 @@ export function useDeck(deckId: DeckId): DeckControls {
   )
 
   // Project the per-deck mixer from the store (ADR-0020): adopt EXTERNAL changes
-  // (a future MCP writer) into the rendered state. UI/MIDI moves already ran through
-  // the setters below — which update these refs and the store together — so they
-  // read here as "no change" and never echo-loop. A synced gate ignores the
+  // (MIDI / an MCP writer) into the rendered state. UI/MIDI moves already ran through
+  // the setters below — which update these refs and the store together — so they read
+  // here as "no change" and never echo-loop. A PER-FIELD synced gate ignores the
   // pre-hydration Rust defaults until boot hydration (createDeckChannel replays our
-  // persisted volume/EQ/trim) lands, so there is no flash.
+  // persisted volume/EQ/trim) echoes each field, so there is no flash.
   const deckIndex = deckId === 'a' ? 0 : 1
   const storeState = useInterfaceStore()
-  const mixerSyncedRef = useRef(false)
+  // One gate per field, not one for the whole tuple: a field still settling — or a
+  // hardware control parked away from our value — must not wedge adoption of the rest
+  // (the all-or-nothing tuple did, so an MCP FX move never reached a deck whose EQ the
+  // FLX4 position-sync had nudged off by a 14-bit quantum).
+  const mixerSyncedRef = useRef({
+    volume: false,
+    eq: false,
+    cue: false,
+    fx: false,
+    trim: false,
+  })
   useEffect(() => {
     const mix = storeState?.decks[deckIndex]
     if (!mix) return
-    if (!mixerSyncedRef.current) {
-      // Sync only once the store reflects the WHOLE mixer tuple this deck holds, so
-      // a coincidental partial match (e.g. a persisted volume of exactly 1.0 — the
-      // store default — before the lazy boot replay runs) can't flip the gate and
-      // adopt store defaults over the persisted FX/cue/EQ. When the full tuple
-      // matches, adopting is a no-op anyway.
-      const synced =
-        mix.volume === volumeRef.current &&
-        mix.eq.low === eqRef.current.low &&
-        mix.eq.mid === eqRef.current.mid &&
-        mix.eq.high === eqRef.current.high &&
-        mix.cue === cueRef.current &&
-        fxKindFromSnap(mix.fx.kind) === fxRef.current.kind &&
-        mix.fx.amount === fxRef.current.amount &&
-        mix.trimDb === trimRef.current.db
-      if (synced) {
-        mixerSyncedRef.current = true
-      } else {
-        return
-      }
-    }
-    if (mix.volume !== volumeRef.current) {
+    // A 14-bit MIDI position-sync quantises a centre detent to 0.5000305, not 0.5;
+    // treat a value within an epsilon of ours as "the store echoed us", so a hardware
+    // echo flips the gate instead of an exact compare wedging it shut forever.
+    const near = (a: number, b: number) => Math.abs(a - b) < 1e-3
+    const s = mixerSyncedRef.current
+
+    if (!s.volume) {
+      if (near(mix.volume, volumeRef.current)) s.volume = true
+    } else if (mix.volume !== volumeRef.current) {
       volumeRef.current = mix.volume
       setVolumeState(mix.volume)
     }
-    if (
+
+    if (!s.eq) {
+      if (
+        near(mix.eq.low, eqRef.current.low) &&
+        near(mix.eq.mid, eqRef.current.mid) &&
+        near(mix.eq.high, eqRef.current.high)
+      )
+        s.eq = true
+    } else if (
       mix.eq.low !== eqRef.current.low ||
       mix.eq.mid !== eqRef.current.mid ||
       mix.eq.high !== eqRef.current.high
@@ -445,17 +458,27 @@ export function useDeck(deckId: DeckId): DeckControls {
       eqRef.current = next
       setEqState(next)
     }
-    if (mix.cue !== cueRef.current) {
+
+    if (!s.cue) {
+      if (mix.cue === cueRef.current) s.cue = true
+    } else if (mix.cue !== cueRef.current) {
       cueRef.current = mix.cue
       setCueState(mix.cue)
     }
+
     const fxKind = fxKindFromSnap(mix.fx.kind)
-    if (fxKind !== fxRef.current.kind || mix.fx.amount !== fxRef.current.amount) {
+    if (!s.fx) {
+      if (fxKind === fxRef.current.kind && near(mix.fx.amount, fxRef.current.amount))
+        s.fx = true
+    } else if (fxKind !== fxRef.current.kind || mix.fx.amount !== fxRef.current.amount) {
       const next = { kind: fxKind, amount: mix.fx.amount }
       fxRef.current = next
       setFxState(next)
     }
-    if (mix.trimDb !== trimRef.current.db) {
+
+    if (!s.trim) {
+      if (near(mix.trimDb, trimRef.current.db)) s.trim = true
+    } else if (mix.trimDb !== trimRef.current.db) {
       const next = { ...trimRef.current, db: mix.trimDb }
       trimRef.current = next
       setTrimState(next)
@@ -514,6 +537,40 @@ export function useDeck(deckId: DeckId): DeckControls {
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deckIndex, track?.title, track?.bpm, track?.duration])
+
+  // Mirror the playback transport (playhead / rate / loop) UP into the store for the
+  // MCP interface-state resource (ADR-0020). `track` is a fresh object every audio
+  // poll, so this effect runs ~60 Hz; the throttle ref pushes the playhead only every
+  // TRANSPORT_MIRROR_MS, while a rate or loop change goes up at once. Null on a
+  // realtime deck / with no track.
+  const transportMirrorRef = useRef<{
+    at: number
+    rate: number | null
+    loopKey: string
+  }>({ at: 0, rate: null, loopKey: '' })
+  useEffect(() => {
+    if (!track) {
+      // Clear once on the transition to no-track; nothing to push while it stays null.
+      if (transportMirrorRef.current.rate !== null) {
+        transportMirrorRef.current = { at: 0, rate: null, loopKey: '' }
+        setDeckTransport(deckIndex, null)
+      }
+      return
+    }
+    const loopKey = track.loop ? `${track.loop.start}:${track.loop.end}` : ''
+    const last = transportMirrorRef.current
+    const changed = track.rate !== last.rate || loopKey !== last.loopKey
+    const now = performance.now()
+    if (!changed && now - last.at < TRANSPORT_MIRROR_MS) return
+    transportMirrorRef.current = { at: now, rate: track.rate, loopKey }
+    setDeckTransport(deckIndex, {
+      playheadSeconds: track.position,
+      rate: track.rate,
+      loopRegion: track.loop
+        ? { startSeconds: track.loop.start, endSeconds: track.loop.end }
+        : null,
+    })
+  }, [deckIndex, track])
 
   // Mirror the freeze/sample loop-slot labels UP into the store (ADR-0020): a
   // read-back the webview writes when its slots change (null for an empty slot).

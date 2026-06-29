@@ -1166,6 +1166,20 @@ pub fn set_deck_track(
     }
 }
 
+/// Mirror a playback deck's live transport (playhead / rate / loop) into the store.
+/// A read-back the webview writes up at a throttled cadence (the playhead moves every
+/// audio frame); `None` clears it on unload / a realtime deck. No engine effect.
+#[tauri::command]
+pub fn set_deck_transport(
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    transport: Option<crate::store::TransportSnap>,
+) {
+    if valid_deck(deck) {
+        store.set_deck_transport(deck, transport);
+    }
+}
+
 /// Mirror a deck's freeze/sample loop-slot labels into the store. A read-back the
 /// webview writes up when its slots change; no engine effect.
 #[tauri::command]

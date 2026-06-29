@@ -557,23 +557,34 @@ function App() {
   // An MCP agent's load_track / load_sample (Rust emits the event): read the library
   // WAV and run the deck's load flow — the same path the Media Explorer takes, so the
   // deck reflects the load (playback mode + overview + cues, or the pad slot).
+  // The MCP load subscriptions must register ONCE. The handlers churn (a fresh
+  // useDeck object every render), and listenTo's async listen/unlisten would race
+  // into duplicate live listeners on every re-subscribe — one load_sample then runs
+  // the handler several times and fills every pad instead of one. Read the latest
+  // handlers from a ref so the listeners stay stable for the app's lifetime.
+  const loadLatestRef = useRef({ handleLoadTrack, handleLoadSample })
+  useEffect(() => {
+    loadLatestRef.current = { handleLoadTrack, handleLoadSample }
+  })
   useEffect(() => {
     const toDeck = (n: number): DeckId => (n === 0 ? 'a' : 'b')
     const unTrack = subscribeLoadTrack(({ deck, file, title }) => {
       void invoke<ArrayBuffer>('read_generated_song', { name: file })
-        .then((wav) => handleLoadTrack(toDeck(deck), wav, title))
+        .then((wav) => loadLatestRef.current.handleLoadTrack(toDeck(deck), wav, title))
         .catch(() => {})
     })
     const unSample = subscribeLoadSample(({ deck, file, oneShot, label }) => {
       void invoke<ArrayBuffer>('read_generated_sample', { name: file })
-        .then((wav) => handleLoadSample(toDeck(deck), wav, oneShot, label))
+        .then((wav) =>
+          loadLatestRef.current.handleLoadSample(toDeck(deck), wav, oneShot, label),
+        )
         .catch(() => {})
     })
     return () => {
       unTrack()
       unSample()
     }
-  }, [handleLoadTrack, handleLoadSample])
+  }, [])
 
   // Beat-matching (M20, ADR-0014): SYNC matches a track deck to the
   // other deck's effective tempo — gated stream BPM, or grid BPM ×
@@ -601,8 +612,16 @@ function App() {
   // deck's own method so its reducer state and the UI follow (seek reflects via the
   // position poll; rate/loop/sync and on-air/prime are webview-owned). The load-flow
   // pattern — on-air routes to play()/prime() so the primed status + cue LED follow.
+  // Register the MCP transport subscription ONCE too — same churn / duplicate-listener
+  // hazard as the load subscriptions above; read the latest decks + sync handlers from
+  // a ref so a single mcp://deck-command runs the gesture exactly once.
+  const commandLatestRef = useRef({ deckA, deckB, handleSyncA, handleSyncB })
+  useEffect(() => {
+    commandLatestRef.current = { deckA, deckB, handleSyncA, handleSyncB }
+  })
   useEffect(() => {
     return subscribeDeckCommand(({ deck, command, value }) => {
+      const { deckA, deckB, handleSyncA, handleSyncB } = commandLatestRef.current
       const controls = deck === 0 ? deckA : deckB
       switch (command) {
         case 'seek':
@@ -625,7 +644,7 @@ function App() {
           break
       }
     })
-  }, [deckA, deckB, handleSyncA, handleSyncB])
+  }, [])
   const getPhaseOffset = useCallback(() => {
     const aPlayback = deckA.mode === 'playback'
     const bPlayback = deckB.mode === 'playback'

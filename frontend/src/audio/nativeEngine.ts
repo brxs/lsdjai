@@ -276,6 +276,13 @@ export type DeckSnap = {
   /** The loaded track's identity on a playback deck (a read-back the store
    * mirrors), or null on a realtime deck / with no track. */
   track: { title: string; bpm: number | null; durationSeconds: number } | null
+  /** The playback deck's live transport (playhead / rate / loop) — a throttled
+   * read-back the webview mirrors up, null on a realtime deck / with no track. */
+  transport: {
+    playheadSeconds: number
+    rate: number
+    loopRegion: { startSeconds: number; endSeconds: number } | null
+  } | null
   /** Freeze/sample loop-slot labels, one per pad (null for an empty/unlabelled
    * slot) — a read-back the store mirrors. */
   loopLabels: (string | null)[]
@@ -350,6 +357,21 @@ export function setDeckRealtime(deck: number, model: string | null, playing: boo
  * Fire-and-forget. */
 export function setDeckCues(deck: number, cues: (number | null)[]): void {
   void invoke('set_deck_cues', { deck, cues }).catch(() => {})
+}
+
+/** Mirror a playback deck's live transport (playhead / rate / loop) into the store
+ * (null clears it on unload / a realtime deck). A read-back the webview writes up at
+ * a throttled cadence — the playhead moves every audio frame; no engine effect.
+ * Fire-and-forget. */
+export function setDeckTransport(
+  deck: number,
+  transport: {
+    playheadSeconds: number
+    rate: number
+    loopRegion: { startSeconds: number; endSeconds: number } | null
+  } | null,
+): void {
+  void invoke('set_deck_transport', { deck, transport }).catch(() => {})
 }
 
 /** Mirror a playback deck's loaded-track identity into the store (null clears it).

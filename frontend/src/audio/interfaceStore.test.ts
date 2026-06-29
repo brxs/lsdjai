@@ -27,6 +27,7 @@ const deck = (): DeckSnap => ({
   playing: false,
   cues: [],
   track: null,
+  transport: null,
   loopLabels: [],
   styleTargets: [],
   cursor: { x: 0.5, y: 0.5 },
