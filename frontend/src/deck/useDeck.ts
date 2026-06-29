@@ -470,7 +470,6 @@ export function useDeck(deckId: DeckId): DeckControls {
     setDeckRealtime(deckIndex, state.model, state.playing)
   }, [deckIndex, state.model, state.playing])
 
-
   // Mirror the loaded track's hot-cue points UP into the store (ADR-0015 →
   // ADR-0020): the cue STATE LOCATION moves to the store, while the webview keeps
   // the set/jump logic (jump is a plain seek). Empty with no track.

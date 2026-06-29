@@ -297,6 +297,10 @@ impl McpHandler {
         &self,
         Parameters(CrossfadeArgs { position }): Parameters<CrossfadeArgs>,
     ) -> String {
+        // Clamp to the engine's range BEFORE recording, so a `lsdj://interface-state`
+        // read reports what the audio actually does (the engine clamps too) — an agent
+        // must not observe an out-of-range value it never hears (ADR-0020).
+        let position = position.clamp(0.0, 1.0);
         self.app.state::<Host>().set_crossfade(position);
         self.app.state::<InterfaceStore>().set_crossfade(position);
         format!("crossfade set to {position}")
@@ -310,6 +314,7 @@ impl McpHandler {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
         }
+        let gain = gain.clamp(0.0, 1.0); // keep the store honest (see set_crossfade)
         self.app.state::<Host>().set_volume(deck, gain);
         self.app.state::<InterfaceStore>().set_volume(deck, gain);
         format!("deck {deck} volume = {gain}")
@@ -323,6 +328,7 @@ impl McpHandler {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
         }
+        let value = value.clamp(0.0, 1.0); // keep the store honest (see set_crossfade)
         self.app.state::<Host>().set_eq(deck, band.into(), value);
         self.app.state::<InterfaceStore>().set_eq(deck, band.into(), value);
         format!("deck {deck} eq updated")
@@ -333,6 +339,7 @@ impl McpHandler {
         &self,
         Parameters(CueMixArgs { position }): Parameters<CueMixArgs>,
     ) -> String {
+        let position = position.clamp(0.0, 1.0); // keep the store honest (see set_crossfade)
         self.app.state::<Host>().set_cue_mix(position);
         self.app.state::<InterfaceStore>().set_cue_mix(position);
         format!("cue mix = {position}")
@@ -370,6 +377,7 @@ impl McpHandler {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
         }
+        let amount = amount.clamp(0.0, 1.0); // keep the store honest (see set_crossfade)
         self.app.state::<Host>().set_fx_amount(deck, amount);
         self.app.state::<InterfaceStore>().set_fx_amount(deck, amount);
         format!("deck {deck} fx amount = {amount}")
@@ -546,8 +554,9 @@ impl McpHandler {
     /// switch through the worker's model-loading/ready events (which the reducer
     /// mirrors back up), so no separate store write is needed.
     #[tool(
-        description = "Switch a realtime deck's model (restarts the deck's worker). \
-                       deck 0 = A, 1 = B."
+        description = "Switch a realtime deck's model (restarts the deck's worker). The \
+                       new model takes a few seconds to load; the interface-state \
+                       resource reflects it once the worker reports ready. deck 0 = A, 1 = B."
     )]
     async fn set_model(
         &self,

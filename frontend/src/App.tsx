@@ -3,10 +3,8 @@ import { useTranslation } from 'react-i18next'
 
 import { INITIAL_CROSSFADE, INITIAL_CUE_MIX, type DeckId } from './audio/types'
 import { uploadStyleSample } from './audio/styleSample'
-import { invoke } from './audio/nativeEngine'
-import { useAudioEngine } from './audio/engineContext'
-import { useInterfaceStore, useProjected } from './audio/interfaceStore'
 import {
+  invoke,
   getMcpInfo,
   rotateMcpToken,
   setMcpPort,
@@ -15,6 +13,8 @@ import {
   subscribeDeckCommand,
   type McpInfo,
 } from './audio/nativeEngine'
+import { useAudioEngine } from './audio/engineContext'
+import { useInterfaceStore, useProjected } from './audio/interfaceStore'
 import { FX_KINDS } from './audio/fx'
 import { applyAppIntent } from './control/appIntents'
 import { useControlBus } from './control/busContext'
