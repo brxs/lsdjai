@@ -259,6 +259,15 @@ struct BeatLoopArgs {
     beats: u32,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct OnAirArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// On air (audio reaches the master) when true; off air (prep — generating but
+    /// audible only in the cue) when false.
+    on: bool,
+}
+
 /// How many hot-cue pads a deck currently has — the loaded track's cue-bank size, 0
 /// with no track. Read from the store snapshot so the cue tools validate before
 /// writing (and report "no track" / "out of range" rather than silently no-op).
@@ -731,6 +740,25 @@ impl McpHandler {
         }
         self.emit_deck_command(deck, "beatloop", Some(f64::from(beats)));
         format!("deck {deck} {beats}-beat loop")
+    }
+
+    /// Bring a realtime deck on air (its audio reaches the master) or off air — the
+    /// prep/primed gesture: it keeps generating but is audible only in the cue. Routed
+    /// through the deck's own play/prime so the on-screen status + cue LED follow.
+    #[tool(
+        description = "Bring a realtime deck on air (to the master) or off air (prep: it \
+                       keeps generating, audible only in the headphone cue). \
+                       deck 0 = A, 1 = B."
+    )]
+    async fn set_on_air(&self, Parameters(OnAirArgs { deck, on }): Parameters<OnAirArgs>) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        self.emit_deck_command(deck, if on { "onair" } else { "offair" }, None);
+        format!(
+            "deck {deck} going {}",
+            if on { "on air" } else { "off air (prep)" }
+        )
     }
 
     /// Generate a clip via the loopback generation server and save it to the samples

@@ -597,9 +597,10 @@ function App() {
     [deckA, deckB, effectiveBpm],
   )
 
-  // An MCP agent's track-transport gesture (Rust emits mcp://deck-command): run the
+  // An MCP agent's transport / on-air gesture (Rust emits mcp://deck-command): run the
   // deck's own method so its reducer state and the UI follow (seek reflects via the
-  // position poll; rate/loop/sync are webview-owned). The load-flow pattern.
+  // position poll; rate/loop/sync and on-air/prime are webview-owned). The load-flow
+  // pattern — on-air routes to play()/prime() so the primed status + cue LED follow.
   useEffect(() => {
     return subscribeDeckCommand(({ deck, command, value }) => {
       const controls = deck === 0 ? deckA : deckB
@@ -615,6 +616,12 @@ function App() {
           break
         case 'sync':
           ;(deck === 0 ? handleSyncA : handleSyncB)()
+          break
+        case 'onair':
+          void controls.play()
+          break
+        case 'offair':
+          void controls.prime()
           break
       }
     })

@@ -62,6 +62,9 @@ resource reflects it.
 - [ ] `deck_play(deck)` on a realtime deck — it starts generating; the deck shows
       **playing** (the transport button follows) and audio comes up.
 - [ ] `deck_stop(deck)` — it stops; the screen and audio follow.
+- [ ] `set_on_air(deck, false)` — the deck goes **off air** (status shows "off air",
+      the controller's CUE LED lights); it keeps generating, audible only in the cue.
+      `set_on_air(deck, true)` — it drops **on air** to the master.
 - [ ] **Agent-started health.** After an agent `deck_play` (with no prior on-screen
       play), the deck's buffer / BPM / underrun meters populate, not just the button.
 - [ ] `set_model(deck, model)` — the deck switches model (loading → ready on screen).
