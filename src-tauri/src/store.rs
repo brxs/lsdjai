@@ -100,18 +100,42 @@ pub struct TrackIdentitySnap {
     pub duration_seconds: f64,
 }
 
-/// A point on the 2D style pad (0..1 each axis). `Deserialize` too — the cursor
-/// crosses as a `set_deck_style` command argument.
+/// An active loop region on a playback deck, in track seconds (mirrors the frontend
+/// `TrackLoop`). `Deserialize` too — it crosses as a `set_deck_transport` argument.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopRegionSnap {
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+}
+
+/// A playback deck's live transport read-back (a throttled mirror the webview writes
+/// up): the playhead, varispeed rate, and the active loop region. `None` on a realtime
+/// deck or with no track. The playhead is mirrored at a throttled cadence (the webview
+/// caps it ~4 Hz) so this read-back doesn't churn `store://changed` at the audio poll
+/// rate; an agent reads the resource on demand, so coarse freshness is enough.
+/// `Deserialize` too — it crosses as a `set_deck_transport` argument.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransportSnap {
+    pub playhead_seconds: f64,
+    /// Varispeed rate (1.0 = as recorded); effective BPM is `track.bpm * rate`.
+    pub rate: f64,
+    pub loop_region: Option<LoopRegionSnap>,
+}
+
+/// A point on the 2D style pad (0..1 each axis). `Deserialize`/`JsonSchema` too — the
+/// cursor crosses as a `set_deck_style` / `set_style_cursor` argument (UI/MIDI and MCP).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PadPointSnap {
     pub x: f32,
     pub y: f32,
 }
 
 /// One style-pad target: a prompt at a pad position (the sampled-target embedding
-/// id is session-only and stays out, like the persisted layout). `Deserialize` too
-/// — targets cross as a `set_deck_style` argument.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// id is session-only and stays out, like the persisted layout). `Deserialize`/
+/// `JsonSchema` too — targets cross as a `set_deck_style` argument (UI/MIDI and MCP).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct StyleTargetSnap {
     pub x: f32,
@@ -148,6 +172,9 @@ pub struct DeckSnap {
     /// The loaded track's identity on a playback deck (a read-back the store
     /// mirrors), or `None` on a realtime deck / with no track.
     pub track: Option<TrackIdentitySnap>,
+    /// The playback deck's live transport (playhead / rate / loop) — a throttled
+    /// read-back the webview mirrors up, `None` on a realtime deck / with no track.
+    pub transport: Option<TransportSnap>,
     /// The freeze/sample loop-slot labels, one per pad (`None` for an empty slot or
     /// an unlabelled freeze) — a read-back the store mirrors. Empty until the deck
     /// reports its slots.
@@ -180,6 +207,7 @@ impl Default for DeckSnap {
             playing: false,
             cues: Vec::new(),
             track: None,
+            transport: None,
             loop_labels: Vec::new(),
             style_targets: Vec::new(),
             cursor: PadPointSnap { x: 0.5, y: 0.5 },
@@ -311,6 +339,12 @@ impl InterfaceState {
         }
     }
 
+    pub fn set_transport(&mut self, deck: usize, transport: Option<TransportSnap>) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.transport = transport;
+        }
+    }
+
     pub fn set_loop_labels(&mut self, deck: usize, labels: Vec<Option<String>>) {
         if let Some(d) = self.deck_mut(deck) {
             d.loop_labels = labels;
@@ -320,6 +354,24 @@ impl InterfaceState {
     pub fn set_style(&mut self, deck: usize, targets: Vec<StyleTargetSnap>, cursor: PadPointSnap) {
         if let Some(d) = self.deck_mut(deck) {
             d.style_targets = targets;
+            d.cursor = cursor;
+        }
+    }
+
+    /// Set one hot-cue pad's point in track seconds, or clear it (`None`). A no-track
+    /// deck (empty cue vec) or an out-of-range pad is a no-op — the MCP tool validates
+    /// and reports first.
+    pub fn set_cue_point(&mut self, deck: usize, index: usize, seconds: Option<f64>) {
+        if let Some(d) = self.deck_mut(deck) {
+            if let Some(slot) = d.cues.get_mut(index) {
+                *slot = seconds;
+            }
+        }
+    }
+
+    /// Set just the style-pad cursor (the blend point), leaving the targets.
+    pub fn set_cursor(&mut self, deck: usize, cursor: PadPointSnap) {
+        if let Some(d) = self.deck_mut(deck) {
             d.cursor = cursor;
         }
     }
@@ -422,6 +474,13 @@ impl InterfaceStore {
         });
     }
 
+    /// Set just the realtime deck's play/stop intent (MCP `deck_play` / `deck_stop`).
+    /// The webview adopts it and reflects the transport on screen, leaving the model
+    /// read-back alone.
+    pub fn set_playing(&self, deck: usize, playing: bool) {
+        self.mutate(move |s| s.set_playing(deck, playing));
+    }
+
     /// Mirror the loaded track's hot-cue points (ADR-0015 → ADR-0020). The webview
     /// owns the set/jump logic and writes the current points up.
     pub fn set_deck_cues(&self, deck: usize, cues: Vec<Option<f64>>) {
@@ -434,6 +493,13 @@ impl InterfaceStore {
         self.mutate(move |s| s.set_track(deck, track));
     }
 
+    /// Mirror a playback deck's live transport (playhead / rate / loop). The webview
+    /// owns the read-back and writes the current value up at a throttled cadence;
+    /// `None` clears it on unload / a realtime deck.
+    pub fn set_deck_transport(&self, deck: usize, transport: Option<TransportSnap>) {
+        self.mutate(move |s| s.set_transport(deck, transport));
+    }
+
     /// Mirror the freeze/sample loop-slot labels (a read-back the webview writes up
     /// when its slots change).
     pub fn set_deck_loop_labels(&self, deck: usize, labels: Vec<Option<String>>) {
@@ -444,6 +510,18 @@ impl InterfaceStore {
     /// deck blends into the worker prompt). `DeckColumn` writes them up on change.
     pub fn set_deck_style(&self, deck: usize, targets: Vec<StyleTargetSnap>, cursor: PadPointSnap) {
         self.mutate(move |s| s.set_style(deck, targets, cursor));
+    }
+
+    /// Set one hot-cue pad's point (MCP `set_hot_cue` / `clear_hot_cue`). The webview
+    /// adopts the change and re-renders the pad; jump stays a transport seek.
+    pub fn set_deck_cue(&self, deck: usize, index: usize, seconds: Option<f64>) {
+        self.mutate(move |s| s.set_cue_point(deck, index, seconds));
+    }
+
+    /// Set just the style-pad cursor (MCP `set_style_cursor`). `DeckColumn` adopts it
+    /// and re-pushes the blended prompt to the worker.
+    pub fn set_deck_cursor(&self, deck: usize, cursor: PadPointSnap) {
+        self.mutate(move |s| s.set_cursor(deck, cursor));
     }
 }
 
@@ -467,6 +545,7 @@ mod tests {
             assert!(!deck.playing);
             assert!(deck.cues.is_empty());
             assert_eq!(deck.track, None);
+            assert_eq!(deck.transport, None);
             assert!(deck.loop_labels.is_empty());
             assert!(deck.style_targets.is_empty());
             assert_eq!(deck.cursor, PadPointSnap { x: 0.5, y: 0.5 });
@@ -522,6 +601,31 @@ mod tests {
     }
 
     #[test]
+    fn transport_is_mirrored_and_cleared_per_deck() {
+        let mut state = InterfaceState::default();
+        state.set_transport(
+            0,
+            Some(TransportSnap {
+                playhead_seconds: 12.5,
+                rate: 1.08,
+                loop_region: Some(LoopRegionSnap {
+                    start_seconds: 8.0,
+                    end_seconds: 16.0,
+                }),
+            }),
+        );
+        let transport = state.decks[0].transport.as_ref().unwrap();
+        assert_eq!(transport.playhead_seconds, 12.5);
+        assert_eq!(transport.rate, 1.08);
+        assert_eq!(transport.loop_region.unwrap().end_seconds, 16.0);
+        // The other deck is untouched.
+        assert_eq!(state.decks[1].transport, None);
+        // Unload / realtime clears it.
+        state.set_transport(0, None);
+        assert_eq!(state.decks[0].transport, None);
+    }
+
+    #[test]
     fn realtime_read_backs_are_mirrored_per_deck() {
         let mut state = InterfaceState::default();
         state.set_model(0, Some("mrt2_base".to_string()));
@@ -539,6 +643,42 @@ mod tests {
         state.set_cues(0, vec![Some(1.5), None, Some(3.0)]);
         assert_eq!(state.decks[0].cues, vec![Some(1.5), None, Some(3.0)]);
         assert!(state.decks[1].cues.is_empty());
+    }
+
+    #[test]
+    fn set_cue_point_sets_or_clears_one_pad_in_range() {
+        let mut state = InterfaceState::default();
+        // A no-track deck (empty cue vec) is a silent no-op — the MCP tool reports it.
+        state.set_cue_point(0, 0, Some(4.0));
+        assert!(state.decks[0].cues.is_empty());
+        // With a cue bank, set one pad and clear it; the neighbours are untouched.
+        state.set_cues(0, vec![None, None, None]);
+        state.set_cue_point(0, 1, Some(12.5));
+        assert_eq!(state.decks[0].cues, vec![None, Some(12.5), None]);
+        state.set_cue_point(0, 1, None);
+        assert_eq!(state.decks[0].cues, vec![None, None, None]);
+        // An out-of-range pad on a loaded deck is a no-op too.
+        state.set_cue_point(0, 9, Some(1.0));
+        assert_eq!(state.decks[0].cues, vec![None, None, None]);
+    }
+
+    #[test]
+    fn set_cursor_moves_the_blend_point_leaving_targets() {
+        let mut state = InterfaceState::default();
+        state.set_style(
+            0,
+            vec![StyleTargetSnap {
+                x: 0.1,
+                y: 0.2,
+                text: "a".to_string(),
+            }],
+            PadPointSnap { x: 0.5, y: 0.5 },
+        );
+        state.set_cursor(0, PadPointSnap { x: 0.7, y: 0.3 });
+        assert_eq!(state.decks[0].cursor, PadPointSnap { x: 0.7, y: 0.3 });
+        // The targets are left exactly as they were.
+        assert_eq!(state.decks[0].style_targets.len(), 1);
+        assert_eq!(state.decks[0].style_targets[0].text, "a");
     }
 
     #[test]

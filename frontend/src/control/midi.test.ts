@@ -136,7 +136,7 @@ describe('createMidiLink', () => {
     expect(flx4.onmidimessage).toBeNull()
   })
 
-  it('queries current control positions whenever the device binds', async () => {
+  it('queries current control positions when the device first binds', async () => {
     const flx4Out = fakePort('DDJ-FLX4')
     const access = fakeAccess([fakePort('DDJ-FLX4')], [flx4Out])
     const { link } = createLink(access)
@@ -144,9 +144,36 @@ describe('createMidiLink', () => {
     // Knobs only report when moved; the query makes the controller dump
     // its current positions so the app syncs on connect.
     expect(flx4Out.send).toHaveBeenCalledWith(FLX4_STATUS_QUERY)
+  })
 
-    // A replug re-syncs too.
+  it('does not re-query on a rescan that keeps the same device bound', async () => {
+    // tauri-plugin-midi re-enumerates ports ~1 Hz for hot-plug, each firing
+    // onstatechange → bind. A rescan that does NOT change the bound input must not
+    // re-send the position query: it would re-assert the controller's physical
+    // knob/fader positions and clobber a software / MCP mixer move.
+    const flx4Out = fakePort('DDJ-FLX4')
+    const access = fakeAccess([fakePort('DDJ-FLX4')], [flx4Out])
+    const { link } = createLink(access)
+    await link.connect()
     flx4Out.send.mockClear()
+    access.onstatechange?.() // same device still present — a no-op rebind
+    expect(flx4Out.send).not.toHaveBeenCalled()
+  })
+
+  it('re-queries when the device is replugged', async () => {
+    const flx4Out = fakePort('DDJ-FLX4')
+    const access = fakeAccess([fakePort('DDJ-FLX4')], [flx4Out])
+    const { link } = createLink(access)
+    await link.connect()
+    expect(flx4Out.send).toHaveBeenCalledWith(FLX4_STATUS_QUERY)
+
+    // Unplug (no device → nothing to query), then replug: the input changes, so the
+    // app re-syncs to the freshly bound hardware.
+    flx4Out.send.mockClear()
+    access.inputs.clear()
+    access.onstatechange?.()
+    expect(flx4Out.send).not.toHaveBeenCalled()
+    access.inputs.set('in-replug', fakePort('DDJ-FLX4'))
     access.onstatechange?.()
     expect(flx4Out.send).toHaveBeenCalledWith(FLX4_STATUS_QUERY)
   })

@@ -3,7 +3,16 @@ import { useTranslation } from 'react-i18next'
 
 import { INITIAL_CROSSFADE, INITIAL_CUE_MIX, type DeckId } from './audio/types'
 import { uploadStyleSample } from './audio/styleSample'
-import { invoke } from './audio/nativeEngine'
+import {
+  invoke,
+  getMcpInfo,
+  rotateMcpToken,
+  setMcpPort,
+  subscribeLoadTrack,
+  subscribeLoadSample,
+  subscribeDeckCommand,
+  type McpInfo,
+} from './audio/nativeEngine'
 import { useAudioEngine } from './audio/engineContext'
 import { useInterfaceStore, useProjected } from './audio/interfaceStore'
 import { FX_KINDS } from './audio/fx'
@@ -43,6 +52,166 @@ import { combinedRamWarning } from './ramWarning'
 import { phaseOffsetBeats } from './audio/track'
 import { handleShortcutKey } from './shortcuts'
 import { sameMask } from './selectionMask'
+
+/** The agent harnesses we tailor a connection snippet for. A `command` harness gets
+ * a one-line CLI; a `config` harness gets a JSON block for its settings file (the
+ * per-tool file path lives in the step copy). */
+const MCP_HARNESSES: { id: string; kind: 'command' | 'config' }[] = [
+  { id: 'claudeCode', kind: 'command' },
+  { id: 'claudeDesktop', kind: 'config' },
+  { id: 'cursor', kind: 'config' },
+  { id: 'vscode', kind: 'config' },
+]
+
+/** Build the copy-paste connection snippet for one harness with the live endpoint +
+ * token baked in. VS Code keys servers under `servers`; the others use `mcpServers`
+ * (and Claude Code adds it via its CLI). */
+function mcpSnippet(harness: string, endpoint: string, token: string): string {
+  const headers = { Authorization: `Bearer ${token}` }
+  switch (harness) {
+    case 'claudeCode':
+      return `claude mcp add --transport http lsdj ${endpoint} --header "Authorization: Bearer ${token}"`
+    case 'vscode':
+      return JSON.stringify(
+        { servers: { lsdj: { type: 'http', url: endpoint, headers } } },
+        null,
+        2,
+      )
+    case 'cursor':
+      return JSON.stringify({ mcpServers: { lsdj: { url: endpoint, headers } } }, null, 2)
+    default:
+      return JSON.stringify(
+        { mcpServers: { lsdj: { type: 'http', url: endpoint, headers } } },
+        null,
+        2,
+      )
+  }
+}
+
+/** The "AI co-DJ (MCP)" Settings body (ADR-0020 Phase 2): pick your AI tool, copy a
+ * tailored connection snippet (the live endpoint + bearer token baked in), with the
+ * raw endpoint/token and a rotate control below. The server is always on; the
+ * fallback hint shows only if the loopback bind failed. */
+function McpSettings({
+  info,
+  onRotate,
+  onSetPort,
+}: {
+  info: McpInfo | null
+  onRotate: () => void
+  onSetPort: (port: number) => Promise<void>
+}) {
+  const { t } = useTranslation()
+  const [harness, setHarness] = useState('claudeCode')
+  const [copied, setCopied] = useState(false)
+  const [portDraft, setPortDraft] = useState('')
+  const [portError, setPortError] = useState<string | null>(null)
+  const [seededPort, setSeededPort] = useState<number | null>(null)
+  // Seed / re-seed the port field from the live port (after a successful change) — the
+  // "adjust state during render" pattern, so the input shows the current port without
+  // a sync effect.
+  if (info?.port != null && info.port !== seededPort) {
+    setSeededPort(info.port)
+    setPortDraft(String(info.port))
+  }
+  // Stable references for the memoised Select (its memo is load-bearing). Reset the
+  // Copied flash whenever the tool changes.
+  const harnessOptions = useMemo(
+    () => MCP_HARNESSES.map(({ id }) => ({ value: id, label: t(`settings.mcpHarnesses.${id}`) })),
+    [t],
+  )
+  const pickHarness = useCallback((value: string) => {
+    setHarness(value)
+    setCopied(false)
+  }, [])
+
+  if (!info?.port || !info.token) {
+    return <p className="settings-mcp__hint">{t('settings.mcpDisabled')}</p>
+  }
+
+  const endpoint = `http://127.0.0.1:${info.port}/mcp`
+  const applyPort = () => {
+    const port = Number(portDraft)
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+      setPortError(t('settings.mcpPortRange'))
+      return
+    }
+    setPortError(null)
+    void onSetPort(port).catch((error) =>
+      setPortError(t('settings.mcpPortError', { message: String(error) })),
+    )
+  }
+  const kind = MCP_HARNESSES.find((entry) => entry.id === harness)?.kind ?? 'command'
+  const snippet = mcpSnippet(harness, endpoint, info.token)
+  const copySnippet = () => {
+    void navigator.clipboard
+      ?.writeText(snippet)
+      .then(() => {
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 1500)
+      })
+      .catch(() => {})
+  }
+
+  return (
+    <>
+      <p className="settings-mcp__hint">{t('settings.mcpHint')}</p>
+      <Select
+        label={t('settings.mcpHarness')}
+        value={harness}
+        options={harnessOptions}
+        onChange={pickHarness}
+      />
+      <div className="settings-mcp__snippet">
+        <div className="settings-mcp__snippet-head">
+          <span className="settings-mcp__action">
+            {kind === 'command' ? t('settings.mcpRunLabel') : t('settings.mcpConfigLabel')}
+          </span>
+          <Button variant="primary" onClick={copySnippet}>
+            {copied ? t('settings.mcpCopied') : t('settings.mcpCopy')}
+          </Button>
+        </div>
+        <pre className="settings-mcp__snippet-body">{snippet}</pre>
+      </div>
+      <p className="settings-mcp__hint">{t(`settings.mcpStep.${harness}`)}</p>
+
+      <div className="settings-mcp__divider" />
+
+      <div className="settings-mcp__field">
+        <span className="ui-field__label">{t('settings.mcpEndpoint')}</span>
+        <code className="settings-mcp__value">{endpoint}</code>
+      </div>
+      <div className="settings-mcp__field">
+        <span className="ui-field__label">{t('settings.mcpPort')}</span>
+        <div className="settings-mcp__port-row">
+          <input
+            className="ui-field__input settings-mcp__port-input"
+            type="number"
+            min={1024}
+            max={65535}
+            value={portDraft}
+            onChange={(event) => {
+              setPortDraft(event.target.value)
+              setPortError(null)
+            }}
+          />
+          <Button onClick={applyPort} disabled={portDraft === String(info.port)}>
+            {t('settings.mcpApplyPort')}
+          </Button>
+        </div>
+        <span className="settings-mcp__note">
+          {portError ?? t('settings.mcpPortHint')}
+        </span>
+      </div>
+      <div className="settings-mcp__field">
+        <span className="ui-field__label">{t('settings.mcpToken')}</span>
+        <code className="settings-mcp__value">{info.token}</code>
+        <Button onClick={onRotate}>{t('settings.mcpRotate')}</Button>
+        <span className="settings-mcp__note">{t('settings.mcpTokenHint')}</span>
+      </div>
+    </>
+  )
+}
 
 function App() {
   const { t } = useTranslation()
@@ -173,6 +342,30 @@ function App() {
 
   // The settings drawer (issue #43): the appearance pickers + the model manager.
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // The native MCP server's endpoint + token (ADR-0020 Phase 2), shown in Settings
+  // so a Claude Desktop / Code client can connect. Fetched once; null until app_info
+  // resolves (and `port` stays null only if the loopback bind failed).
+  const [mcpInfo, setMcpInfo] = useState<McpInfo | null>(null)
+  useEffect(() => {
+    void getMcpInfo().then(setMcpInfo)
+  }, [])
+  // Rotate the MCP bearer token: mint + persist a new one and show it (the old one
+  // stops working at once). A no-op surfaced as nothing if the server is off.
+  const handleRotateMcp = useCallback(async () => {
+    try {
+      const token = await rotateMcpToken()
+      setMcpInfo((info) => (info ? { ...info, token } : info))
+    } catch {
+      // The server isn't running — leave the displayed token as-is.
+    }
+  }, [])
+  // Set + persist the MCP port and restart the server on it; reflect the new port (so
+  // the endpoint + snippets update). Rejects to the caller (McpSettings shows the
+  // error) if the port can't be bound, leaving the running server untouched.
+  const handleSetMcpPort = useCallback(async (port: number) => {
+    const bound = await setMcpPort(port)
+    setMcpInfo((info) => (info ? { ...info, port: bound } : info))
+  }, [])
 
   // Hand the restored mix positions to the engine once — it holds them
   // until the bus is built on first play. Later moves go through the
@@ -361,6 +554,38 @@ function App() {
   )
   const handleStopPreview = useCallback(() => engine.auditionStop(), [engine])
 
+  // An MCP agent's load_track / load_sample (Rust emits the event): read the library
+  // WAV and run the deck's load flow — the same path the Media Explorer takes, so the
+  // deck reflects the load (playback mode + overview + cues, or the pad slot).
+  // The MCP load subscriptions must register ONCE. The handlers churn (a fresh
+  // useDeck object every render), and listenTo's async listen/unlisten would race
+  // into duplicate live listeners on every re-subscribe — one load_sample then runs
+  // the handler several times and fills every pad instead of one. Read the latest
+  // handlers from a ref so the listeners stay stable for the app's lifetime.
+  const loadLatestRef = useRef({ handleLoadTrack, handleLoadSample })
+  useEffect(() => {
+    loadLatestRef.current = { handleLoadTrack, handleLoadSample }
+  })
+  useEffect(() => {
+    const toDeck = (n: number): DeckId => (n === 0 ? 'a' : 'b')
+    const unTrack = subscribeLoadTrack(({ deck, file, title }) => {
+      void invoke<ArrayBuffer>('read_generated_song', { name: file })
+        .then((wav) => loadLatestRef.current.handleLoadTrack(toDeck(deck), wav, title))
+        .catch(() => {})
+    })
+    const unSample = subscribeLoadSample(({ deck, file, oneShot, label }) => {
+      void invoke<ArrayBuffer>('read_generated_sample', { name: file })
+        .then((wav) =>
+          loadLatestRef.current.handleLoadSample(toDeck(deck), wav, oneShot, label),
+        )
+        .catch(() => {})
+    })
+    return () => {
+      unTrack()
+      unSample()
+    }
+  }, [])
+
   // Beat-matching (M20, ADR-0014): SYNC matches a track deck to the
   // other deck's effective tempo — gated stream BPM, or grid BPM ×
   // rate when the other side is a track too. Phase is read for the
@@ -382,6 +607,44 @@ function App() {
     () => deckB.syncTrack(effectiveBpm(deckA)),
     [deckA, deckB, effectiveBpm],
   )
+
+  // An MCP agent's transport / on-air gesture (Rust emits mcp://deck-command): run the
+  // deck's own method so its reducer state and the UI follow (seek reflects via the
+  // position poll; rate/loop/sync and on-air/prime are webview-owned). The load-flow
+  // pattern — on-air routes to play()/prime() so the primed status + cue LED follow.
+  // Register the MCP transport subscription ONCE too — same churn / duplicate-listener
+  // hazard as the load subscriptions above; read the latest decks + sync handlers from
+  // a ref so a single mcp://deck-command runs the gesture exactly once.
+  const commandLatestRef = useRef({ deckA, deckB, handleSyncA, handleSyncB })
+  useEffect(() => {
+    commandLatestRef.current = { deckA, deckB, handleSyncA, handleSyncB }
+  })
+  useEffect(() => {
+    return subscribeDeckCommand(({ deck, command, value }) => {
+      const { deckA, deckB, handleSyncA, handleSyncB } = commandLatestRef.current
+      const controls = deck === 0 ? deckA : deckB
+      switch (command) {
+        case 'seek':
+          if (value != null) controls.seekTrack(value)
+          break
+        case 'rate':
+          if (value != null) controls.setTrackRate(value)
+          break
+        case 'beatloop':
+          if (value != null) controls.beatLoop(value)
+          break
+        case 'sync':
+          ;(deck === 0 ? handleSyncA : handleSyncB)()
+          break
+        case 'onair':
+          void controls.play()
+          break
+        case 'offair':
+          void controls.prime()
+          break
+      }
+    })
+  }, [])
   const getPhaseOffset = useCallback(() => {
     const aPlayback = deckA.mode === 'playback'
     const bPlayback = deckB.mode === 'playback'
@@ -685,6 +948,18 @@ function App() {
         <section className="modelmgr__section settings-model-library">
           <h3 className="modelmgr__heading">{t('settings.modelLibrary')}</h3>
           <ModelManager />
+        </section>
+        {/* The native MCP server (ADR-0020 Phase 2): last in the list so the
+            copy-paste connection snippets don't push the everyday controls down. */}
+        <section className="modelmgr__section">
+          <h3 className="modelmgr__heading">{t('settings.mcp')}</h3>
+          <div className="settings-mcp">
+            <McpSettings
+              info={mcpInfo}
+              onRotate={handleRotateMcp}
+              onSetPort={handleSetMcpPort}
+            />
+          </div>
         </section>
       </Drawer>
       {beatView === 'top' && (

@@ -130,7 +130,8 @@ export function createMidiLink({
 
     // Keep the message handler attached to the active input only.
     const nextInput = active ? active.port : null
-    if (nextInput !== boundInput) {
+    const rebound = nextInput !== boundInput
+    if (rebound) {
       if (boundInput) boundInput.onmidimessage = null
       boundInput = nextInput
       if (boundInput) {
@@ -141,11 +142,15 @@ export function createMidiLink({
     }
 
     output = active ? findOutput(granted.outputs, active.driver) : null
-    // Every (re)bind syncs the app to the hardware: the controller answers
-    // the query by reporting all current knob/fader positions, which flow
-    // through the translator like any other move. Without the SysEx grant —
-    // or a driver that has no query — the sync is skipped, not the connection.
-    if (active && granted.sysexEnabled && active.driver.initSysex) {
+    // Sync the app to the hardware only on an ACTUAL (re)bind — a freshly bound device.
+    // The controller answers the query by reporting all current knob/fader positions,
+    // which flow through the translator like any other move; re-sending it on a rescan
+    // that did NOT change the bound input would re-assert those physical positions and
+    // clobber a software / MCP mixer move. In the native shell tauri-plugin-midi
+    // re-enumerates ports ~1 Hz for hot-plug (each firing onstatechange → bind), so the
+    // steady-state rescan is frequent. Without the SysEx grant — or a driver with no
+    // query — the sync is skipped, not the connection.
+    if (rebound && active && granted.sysexEnabled && active.driver.initSysex) {
       output?.send(active.driver.initSysex)
     }
 

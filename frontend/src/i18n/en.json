@@ -268,7 +268,36 @@
     "recordingFolder": "Recordings folder",
     "recordingFolderDefault": "Downloads (default)",
     "useDownloads": "Use Downloads",
-    "recordingFolderError": "Couldn't open folder: {{message}}"
+    "recordingFolderError": "Couldn't open folder: {{message}}",
+    "mcp": "AI co-DJ (MCP)",
+    "mcpHint": "Connect your AI tool to drive the decks, mixer, FX, cues, and style — and read the live state. Pick your tool and copy the snippet; the endpoint and token are filled in for this session.",
+    "mcpHarness": "Your AI tool",
+    "mcpHarnesses": {
+      "claudeCode": "Claude Code",
+      "claudeDesktop": "Claude Desktop",
+      "cursor": "Cursor",
+      "vscode": "VS Code"
+    },
+    "mcpRunLabel": "Run in your terminal",
+    "mcpConfigLabel": "Config — JSON",
+    "mcpCopy": "Copy",
+    "mcpCopied": "Copied ✓",
+    "mcpStep": {
+      "claudeCode": "Run this once — LSDJ shows up as a tool. Needs the Claude Code CLI.",
+      "claudeDesktop": "Add to ~/Library/Application Support/Claude/claude_desktop_config.json, then fully quit and reopen Claude Desktop.",
+      "cursor": "Add to .cursor/mcp.json in your project, or ~/.cursor/mcp.json for every project.",
+      "vscode": "Add to .vscode/mcp.json in your workspace, then press Start on the server."
+    },
+    "mcpEndpoint": "Endpoint",
+    "mcpPort": "Port",
+    "mcpApplyPort": "Apply",
+    "mcpPortHint": "1024–65535. Persists across launches; the server restarts on the new port.",
+    "mcpPortRange": "Enter a port between 1024 and 65535.",
+    "mcpPortError": "Couldn't set the port: {{message}}",
+    "mcpToken": "Bearer token",
+    "mcpRotate": "Rotate token",
+    "mcpTokenHint": "Persists across launches. Rotate to revoke a copy you've shared.",
+    "mcpDisabled": "The MCP server couldn't start — its loopback port was unavailable. Relaunch the app to try again."
   },
   "modelManager": {
     "loading": "Reading model status…",

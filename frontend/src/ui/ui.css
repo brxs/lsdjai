@@ -914,6 +914,84 @@
   margin-top: var(--space-3);
 }
 
+/* AI co-DJ (MCP): a read-only endpoint + token to copy into a client config. */
+.settings-mcp {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.settings-mcp__hint {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.settings-mcp__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.settings-mcp__value {
+  font: 500 var(--text-s) var(--font-mono);
+  word-break: break-all;
+  user-select: all;
+  padding: var(--space-2);
+  border-radius: var(--radius-s);
+  background: var(--color-surface-inset);
+  color: var(--color-text-muted);
+}
+
+/* The connection snippet: its own bordered block (a module, like the rest of the
+   instrument), with a silkscreen action header + Copy button over the code body. */
+.settings-mcp__snippet {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-inset);
+}
+.settings-mcp__snippet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+.settings-mcp__action {
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-silkscreen);
+}
+/* The snippet keeps its formatting and scrolls rather than wrapping; brighter than
+   the muted raw values so the copy target reads clearly. */
+.settings-mcp__snippet-body {
+  margin: 0;
+  padding: var(--space-3);
+  font: 500 var(--text-s) var(--font-mono);
+  color: var(--color-text);
+  white-space: pre;
+  overflow-x: auto;
+  user-select: all;
+}
+.settings-mcp__divider {
+  height: 1px;
+  background: var(--color-border);
+  margin: var(--space-1) 0;
+}
+.settings-mcp__note {
+  font: 500 var(--text-xs) var(--font-mono);
+  color: var(--color-text-muted);
+}
+.settings-mcp__port-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.settings-mcp__port-input {
+  width: 7rem;
+}
+
 /* Per-deck model pickers (moved out of the deck column): the same stacked
    layout as the audio group. */
 .settings-models {

@@ -12,6 +12,16 @@
 > position, and the per-keystroke IPC churn the draft flagged buys nothing for the
 > MCP goal. The Decision and Consequences below reflect this narrowing.
 
+> **Amended (2026-06-28, issue #37 Phase 2 follow-up): the MCP server is now
+> always on — no flag, no opt-out.** It originally shipped gated behind a
+> `LSDJ_SIDECARS`-style `LSDJ_MCP` flag (see the Dependency decision) while the
+> `rmcp` dependency was unproven. With Phase 2 in place — the server is
+> loopback-bound only and every request needs the bearer token (now persisted and
+> rotatable) — the flag bought nothing but a way to forget to turn the feature on.
+> It starts with the app like the generation server already does; a failed
+> loopback bind is the only path that leaves the endpoint unadvertised
+> (`port() == None`).
+
 ## Context
 
 LSDJai is a generative DJ instrument. We want an external AI agent
@@ -102,8 +112,9 @@ webview re-renders from the snapshot.
   and surfaced for the client config; the server runs only while the app runs;
   the store's validation stays the authoritative guard regardless of caller.
 - **Dependency.** The official Rust MCP SDK (`rmcp`,
-  modelcontextprotocol/rust-sdk), pinned, gated behind a `LSDJ_SIDECARS`-
-  style flag.
+  modelcontextprotocol/rust-sdk), pinned. (Originally gated behind a
+  `LSDJ_SIDECARS`-style `LSDJ_MCP` flag; now **always on** — see the amendment
+  note above.)
 
 This supersedes **ADR-0015 on the location of hot-cue state** (cue points move
 into the store; 0015's loops-on-the-buffer-source decision stands). It does not

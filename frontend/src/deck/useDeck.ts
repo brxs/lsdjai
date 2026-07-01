@@ -26,6 +26,7 @@ import {
   setDeckLoopLabels,
   setDeckRealtime,
   setDeckTrack,
+  setDeckTransport,
   subscribeModelsChanged,
 } from '../audio/nativeEngine'
 import { fxKindFromSnap, useInterfaceStore } from '../audio/interfaceStore'
@@ -152,6 +153,14 @@ export type ZoomSource = {
 export type SyncResult = 'synced' | 'no_tempo' | 'out_of_range'
 
 const EMPTY_SLOT: LoopSlot = { state: 'empty' }
+
+/** Lower bound on how often the playback playhead is mirrored UP into the store for the
+ * MCP interface-state resource (ADR-0020). The deck's track-status poll already updates
+ * `track` at ~4 Hz (a 250 ms interval), so this matches that and mainly guards
+ * defensively against a future faster poll: an agent reads the resource on demand, and a
+ * per-frame mirror would churn `store://changed` (and every projection re-render).
+ * Rate/loop changes bypass the throttle — they are rare and worth reflecting at once. */
+const TRANSPORT_MIRROR_MS = 250
 
 function withSlot(current: LoopState, slot: number, value: LoopSlot): LoopSlot[] {
   return current.slots.map((existing, index) => (index === slot ? value : existing))
@@ -335,6 +344,10 @@ export function useDeck(deckId: DeckId): DeckControls {
   // Hot cues and the pending loop IN (M21): refs beside the state so
   // bus-driven callbacks read fresh values without re-subscribing.
   const trackCuesRef = useRef<(number | null)[]>([])
+  // Gate for adopting EXTERNAL store cue changes (an MCP set/clear): armed once the
+  // store reflects THIS track's own pushed cues, so a pre-push stale snapshot (the
+  // previous track's cues) is never adopted. Reset on every track load/unload.
+  const cuesSyncedRef = useRef(false)
   const pendingLoopInRef = useRef<number | null>(null)
   const statsRef = useRef<{
     playing: boolean
@@ -396,43 +409,48 @@ export function useDeck(deckId: DeckId): DeckControls {
   )
 
   // Project the per-deck mixer from the store (ADR-0020): adopt EXTERNAL changes
-  // (a future MCP writer) into the rendered state. UI/MIDI moves already ran through
-  // the setters below — which update these refs and the store together — so they
-  // read here as "no change" and never echo-loop. A synced gate ignores the
+  // (MIDI / an MCP writer) into the rendered state. UI/MIDI moves already ran through
+  // the setters below — which update these refs and the store together — so they read
+  // here as "no change" and never echo-loop. A PER-FIELD synced gate ignores the
   // pre-hydration Rust defaults until boot hydration (createDeckChannel replays our
-  // persisted volume/EQ/trim) lands, so there is no flash.
+  // persisted volume/EQ/trim) echoes each field, so there is no flash.
   const deckIndex = deckId === 'a' ? 0 : 1
   const storeState = useInterfaceStore()
-  const mixerSyncedRef = useRef(false)
+  // One gate per field, not one for the whole tuple: a field still settling — or a
+  // hardware control parked away from our value — must not wedge adoption of the rest
+  // (the all-or-nothing tuple did, so an MCP FX move never reached a deck whose EQ the
+  // FLX4 position-sync had nudged off by a 14-bit quantum).
+  const mixerSyncedRef = useRef({
+    volume: false,
+    eq: false,
+    cue: false,
+    fx: false,
+    trim: false,
+  })
   useEffect(() => {
     const mix = storeState?.decks[deckIndex]
     if (!mix) return
-    if (!mixerSyncedRef.current) {
-      // Sync only once the store reflects the WHOLE mixer tuple this deck holds, so
-      // a coincidental partial match (e.g. a persisted volume of exactly 1.0 — the
-      // store default — before the lazy boot replay runs) can't flip the gate and
-      // adopt store defaults over the persisted FX/cue/EQ. When the full tuple
-      // matches, adopting is a no-op anyway.
-      const synced =
-        mix.volume === volumeRef.current &&
-        mix.eq.low === eqRef.current.low &&
-        mix.eq.mid === eqRef.current.mid &&
-        mix.eq.high === eqRef.current.high &&
-        mix.cue === cueRef.current &&
-        fxKindFromSnap(mix.fx.kind) === fxRef.current.kind &&
-        mix.fx.amount === fxRef.current.amount &&
-        mix.trimDb === trimRef.current.db
-      if (synced) {
-        mixerSyncedRef.current = true
-      } else {
-        return
-      }
-    }
-    if (mix.volume !== volumeRef.current) {
+    // A 14-bit MIDI position-sync quantises a centre detent to 0.5000305, not 0.5;
+    // treat a value within an epsilon of ours as "the store echoed us", so a hardware
+    // echo flips the gate instead of an exact compare wedging it shut forever.
+    const near = (a: number, b: number) => Math.abs(a - b) < 1e-3
+    const s = mixerSyncedRef.current
+
+    if (!s.volume) {
+      if (near(mix.volume, volumeRef.current)) s.volume = true
+    } else if (mix.volume !== volumeRef.current) {
       volumeRef.current = mix.volume
       setVolumeState(mix.volume)
     }
-    if (
+
+    if (!s.eq) {
+      if (
+        near(mix.eq.low, eqRef.current.low) &&
+        near(mix.eq.mid, eqRef.current.mid) &&
+        near(mix.eq.high, eqRef.current.high)
+      )
+        s.eq = true
+    } else if (
       mix.eq.low !== eqRef.current.low ||
       mix.eq.mid !== eqRef.current.mid ||
       mix.eq.high !== eqRef.current.high
@@ -441,18 +459,30 @@ export function useDeck(deckId: DeckId): DeckControls {
       eqRef.current = next
       setEqState(next)
     }
-    if (mix.cue !== cueRef.current) {
+
+    if (!s.cue) {
+      if (mix.cue === cueRef.current) s.cue = true
+    } else if (mix.cue !== cueRef.current) {
       cueRef.current = mix.cue
       setCueState(mix.cue)
     }
+
     const fxKind = fxKindFromSnap(mix.fx.kind)
-    if (fxKind !== fxRef.current.kind || mix.fx.amount !== fxRef.current.amount) {
+    if (!s.fx) {
+      if (fxKind === fxRef.current.kind && near(mix.fx.amount, fxRef.current.amount))
+        s.fx = true
+    } else if (fxKind !== fxRef.current.kind || mix.fx.amount !== fxRef.current.amount) {
       const next = { kind: fxKind, amount: mix.fx.amount }
       fxRef.current = next
       setFxState(next)
     }
-    if (mix.trimDb !== trimRef.current.db) {
-      const next = { ...trimRef.current, db: mix.trimDb }
+
+    if (!s.trim) {
+      if (near(mix.trimDb, trimRef.current.db)) s.trim = true
+    } else if (mix.trimDb !== trimRef.current.db) {
+      // Flip to manual, like the on-screen trim setter: an explicit external (MCP/MIDI)
+      // trim is a deliberate value, so auto-gain must not overwrite it on the next tick.
+      const next = { mode: 'manual' as const, db: mix.trimDb }
       trimRef.current = next
       setTrimState(next)
     }
@@ -468,11 +498,34 @@ export function useDeck(deckId: DeckId): DeckControls {
 
   // Mirror the loaded track's hot-cue points UP into the store (ADR-0015 →
   // ADR-0020): the cue STATE LOCATION moves to the store, while the webview keeps
-  // the set/jump logic (jump is a plain seek). Empty with no track. A write-only
-  // push; the bidirectional projection lands with the Phase-2 MCP cue setter.
+  // the set/jump logic (jump is a plain seek). Empty with no track.
   useEffect(() => {
     setDeckCues(deckIndex, track?.cues ?? [])
   }, [deckIndex, track?.cues])
+
+  // Adopt EXTERNAL hot-cue changes from the store (an MCP set_hot_cue / clear_hot_cue)
+  // into the rendered pads — the read side the write-only mirror above pairs with
+  // (ADR-0020, Phase 2). Our own pushes echo back value-equal and just arm the gate; a
+  // genuine external change updates the ref and the track's cues so the pads relight.
+  // Track-scoped (skipped with no track) and gated until the store reflects THIS
+  // track's own cues, so a stale pre-push snapshot is never adopted.
+  useEffect(() => {
+    const storeCues = storeState?.decks[deckIndex]?.cues
+    if (!storeCues) return
+    const current = trackCuesRef.current
+    if (current.length === 0) return
+    const sameCues =
+      storeCues.length === current.length &&
+      storeCues.every((point, i) => point === current[i])
+    if (sameCues) {
+      cuesSyncedRef.current = true
+      return
+    }
+    if (!cuesSyncedRef.current) return
+    const next = current.map((_, i) => storeCues[i] ?? null)
+    trackCuesRef.current = next
+    setTrack((track) => track && { ...track, cues: next })
+  }, [storeState, deckIndex])
 
   // Mirror the loaded-track identity UP into the store (ADR-0020): title, BPM, and
   // duration on a playback deck, null with no track. A write-only read-back mirror,
@@ -487,6 +540,40 @@ export function useDeck(deckId: DeckId): DeckControls {
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deckIndex, track?.title, track?.bpm, track?.duration])
+
+  // Mirror the playback transport (playhead / rate / loop) UP into the store for the
+  // MCP interface-state resource (ADR-0020). `track` is a fresh object on each ~4 Hz
+  // (250 ms) status poll, so this effect runs at that rate; the throttle ref bounds the
+  // playhead push to TRANSPORT_MIRROR_MS (defensive against a faster poll), while a rate
+  // or loop change goes up at once. Null on a realtime deck / with no track.
+  const transportMirrorRef = useRef<{
+    at: number
+    rate: number | null
+    loopKey: string
+  }>({ at: 0, rate: null, loopKey: '' })
+  useEffect(() => {
+    if (!track) {
+      // Clear once on the transition to no-track; nothing to push while it stays null.
+      if (transportMirrorRef.current.rate !== null) {
+        transportMirrorRef.current = { at: 0, rate: null, loopKey: '' }
+        setDeckTransport(deckIndex, null)
+      }
+      return
+    }
+    const loopKey = track.loop ? `${track.loop.start}:${track.loop.end}` : ''
+    const last = transportMirrorRef.current
+    const changed = track.rate !== last.rate || loopKey !== last.loopKey
+    const now = performance.now()
+    if (!changed && now - last.at < TRANSPORT_MIRROR_MS) return
+    transportMirrorRef.current = { at: now, rate: track.rate, loopKey }
+    setDeckTransport(deckIndex, {
+      playheadSeconds: track.position,
+      rate: track.rate,
+      loopRegion: track.loop
+        ? { startSeconds: track.loop.start, endSeconds: track.loop.end }
+        : null,
+    })
+  }, [deckIndex, track])
 
   // Mirror the freeze/sample loop-slot labels UP into the store (ADR-0020): a
   // read-back the webview writes when its slots change (null for an empty slot).
@@ -538,6 +625,24 @@ export function useDeck(deckId: DeckId): DeckControls {
     }
     return channelPromiseRef.current
   }, [engine, deckId])
+
+  // Adopt an EXTERNAL play/stop from the store (an MCP deck_play / deck_stop) so the
+  // on-screen transport reflects it — the read side the realtime mirror push pairs
+  // with. The agent's tool already drove the engine + worker, so this flips the
+  // reducer's play intent; our own play/stop keeps store and state equal, so it
+  // no-ops. On an external play we also ensure the deck channel exists (idempotent,
+  // applies the current params and starts the stats poll — no ring reset), so the
+  // buffer/BPM/underrun meters populate for an agent-started deck too.
+  useEffect(() => {
+    const storePlaying = storeState?.decks[deckIndex]?.playing
+    if (storePlaying === undefined || storePlaying === state.playing) return
+    if (storePlaying) {
+      void ensureChannel().catch(() => {})
+      dispatch({ type: 'play_requested' })
+    } else {
+      dispatch({ type: 'stop_requested' })
+    }
+  }, [storeState, deckIndex, state.playing, ensureChannel])
 
   useEffect(() => {
     // The sidecar feeds the engine directly and reports status as `sidecar://status`
@@ -863,6 +968,7 @@ export function useDeck(deckId: DeckId): DeckControls {
       trackMetaRef.current = { bpm: trackTempo, grid }
       trackRateRef.current = 1
       trackCuesRef.current = Array<number | null>(HOT_CUE_COUNT).fill(null)
+      cuesSyncedRef.current = false
       pendingLoopInRef.current = null
       channel.setBeatPeriod(trackTempo === null ? null : 60 / trackTempo)
       setMode('playback')
@@ -896,6 +1002,7 @@ export function useDeck(deckId: DeckId): DeckControls {
     trackBandsRef.current = null
     trackRateRef.current = 1
     trackCuesRef.current = []
+    cuesSyncedRef.current = false
     pendingLoopInRef.current = null
     setMode('realtime')
     setTrack(null)

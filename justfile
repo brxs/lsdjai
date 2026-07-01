@@ -63,7 +63,7 @@ build:
 # default `uv run` sidecar/generation commands use the backend project dir;
 # override with LSDJ_SIDECAR_CMD / LSDJ_GENERATION_CMD (e.g. the packaged binaries).
 tauri-dev: build
-    cd src-tauri && LSDJ_SIDECARS=1 cargo tauri dev
+    cd src-tauri && cargo tauri dev
 
 # Freeze the Python inference sidecar into a ONEDIR binary for bundling
 # (src-tauri/sidecar-dist/). The production form of Spike B; see

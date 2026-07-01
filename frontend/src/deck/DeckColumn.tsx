@@ -5,6 +5,7 @@ import type { DeckId } from '../audio/types'
 import { FX_KINDS, fxRestPosition, type FxKind } from '../audio/fx'
 import { LOOP_LENGTH_OPTIONS, LOOP_SLOT_COUNT } from '../audio/loops'
 import { setDeckStyle } from '../audio/nativeEngine'
+import { useInterfaceStore } from '../audio/interfaceStore'
 import { useControlBus } from '../control/busContext'
 import { Button } from '../ui/Button'
 import { Knob } from '../ui/Knob'
@@ -253,6 +254,14 @@ export function DeckColumn({
   const [cursor, setCursor] = useState<PadPoint>(
     () => loadDeckSettings(deckId).cursor ?? { x: 0.5, y: 0.5 },
   )
+  // Mirrors the committed cursor for the store-adopt comparison below (a ref, read
+  // without re-running the adopt effect on every local cursor move — like targetsRef).
+  const cursorRef = useRef(cursor)
+  useEffect(() => {
+    cursorRef.current = cursor
+  }, [cursor])
+  // The authoritative store, for adopting external style changes (an MCP agent).
+  const storeState = useInterfaceStore()
   // The net (M??): which prompts the controller has selected, keyed by prompt
   // text so the set survives a reorder or mid-list removal. Ephemeral — a
   // controller-side gesture, not part of the saved pad arrangement.
@@ -368,6 +377,44 @@ export function DeckColumn({
       cursor,
     )
   }, [deckId, targets, cursor])
+
+  // Adopt EXTERNAL style changes from the store (an MCP set_style / set_style_cursor)
+  // into the pad AND push the new blend to the worker — the read side the mirror above
+  // pairs with (ADR-0020, Phase 2). Our own pushes echo back value-equal (sample ids
+  // aside) and just arm the gate; a genuine external change replaces the targets/cursor
+  // and re-sends the blend. Gated until the store reflects this deck's own pushed
+  // arrangement, so the persisted layout isn't clobbered by the empty boot default.
+  const styleSyncedRef = useRef(false)
+  useEffect(() => {
+    const snap = storeState?.decks[deckId === 'a' ? 0 : 1]
+    if (!snap) return
+    const localTargets = targetsRef.current
+    const localCursor = cursorRef.current
+    // x/y are f32 in the store, so an f64->f32 round-trip can perturb the last digits;
+    // compare with an epsilon well below a meaningful pad move (~1e-6) but above f32
+    // noise, or our own echo would never look equal and the gate would never arm.
+    const near = (a: number, b: number) => Math.abs(a - b) < 1e-6
+    const sameTargets =
+      snap.styleTargets.length === localTargets.length &&
+      snap.styleTargets.every((s, i) => {
+        const t = localTargets[i]
+        return t && near(s.x, t.x) && near(s.y, t.y) && s.text === t.text
+      })
+    const sameCursor = near(snap.cursor.x, localCursor.x) && near(snap.cursor.y, localCursor.y)
+    if (sameTargets && sameCursor) {
+      styleSyncedRef.current = true
+      return
+    }
+    if (!styleSyncedRef.current) return
+    const nextTargets = snap.styleTargets.map((s) => ({ x: s.x, y: s.y, text: s.text }))
+    const nextCursor = { x: snap.cursor.x, y: snap.cursor.y }
+    setTargets(nextTargets)
+    setCursor(nextCursor)
+    sendStyle(nextTargets, nextCursor)
+    // sendStyle/setTargets/setCursor are stable enough; re-running only on a store
+    // change is the point (deps on them would fire every render).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeState, deckId])
 
   // A worker restart (crash or model switch) drops its sample cache;
   // the chips die with it rather than poisoning every style send.

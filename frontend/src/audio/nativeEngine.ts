@@ -73,6 +73,31 @@ export function getApiBaseUrl(): Promise<string> {
   return apiBaseUrlPromise
 }
 
+/** The native MCP server endpoint + bearer token (ADR-0020 Phase 2), reported by
+ * `app_info`. The server is always on; `port` is null only if the loopback bind
+ * failed. The Settings drawer surfaces these so a client can be pointed at the URL. */
+export type McpInfo = { port: number | null; token: string | null }
+
+export function getMcpInfo(): Promise<McpInfo> {
+  return invoke<{ mcpPort: number | null; mcpToken: string | null }>('app_info')
+    .then((info) => ({ port: info.mcpPort ?? null, token: info.mcpToken ?? null }))
+    .catch(() => ({ port: null, token: null }))
+}
+
+/** Mint a new MCP bearer token, persist it, and swap it in live (the Settings
+ * "Rotate token" button) — invalidating a leaked token without an app restart.
+ * Resolves to the new token. */
+export function rotateMcpToken(): Promise<string> {
+  return invoke<string>('rotate_mcp_token')
+}
+
+/** Set + persist the MCP server's loopback port and restart it on that port (the
+ * Settings port field). Resolves to the new port; rejects if it can't be bound (e.g.
+ * the port is already taken), leaving the running server untouched. */
+export function setMcpPort(port: number): Promise<number> {
+  return invoke<number>('set_mcp_port', { port })
+}
+
 /** Fire a command at the Rust engine (or a Tauri plugin, e.g. `plugin:dialog|open`).
  * Rejects (caught by callers that care) when the IPC bridge is absent — never
  * throws synchronously. Exported for the few non-engine native callers
@@ -251,6 +276,13 @@ export type DeckSnap = {
   /** The loaded track's identity on a playback deck (a read-back the store
    * mirrors), or null on a realtime deck / with no track. */
   track: { title: string; bpm: number | null; durationSeconds: number } | null
+  /** The playback deck's live transport (playhead / rate / loop) — a throttled
+   * read-back the webview mirrors up, null on a realtime deck / with no track. */
+  transport: {
+    playheadSeconds: number
+    rate: number
+    loopRegion: { startSeconds: number; endSeconds: number } | null
+  } | null
   /** Freeze/sample loop-slot labels, one per pad (null for an empty/unlabelled
    * slot) — a read-back the store mirrors. */
   loopLabels: (string | null)[]
@@ -282,6 +314,36 @@ export function subscribeStoreChanged(onChange: (state: InterfaceState) => void)
   return listenTo<InterfaceState>('store://changed', onChange)
 }
 
+/** An MCP agent's `load_track` (Rust emits `mcp://load-track`). The webview owns the
+ * decode + beatgrid analysis, so it reads the WAV and runs the deck's load flow. */
+export function subscribeLoadTrack(
+  onLoad: (payload: { deck: number; file: string; title: string }) => void,
+): () => void {
+  return listenTo('mcp://load-track', onLoad)
+}
+
+/** An MCP agent's `load_sample` (Rust emits `mcp://load-sample`); the webview installs
+ * it into the deck's pad bank. */
+export function subscribeLoadSample(
+  onLoad: (payload: {
+    deck: number
+    file: string
+    oneShot: boolean
+    label: string
+  }) => void,
+): () => void {
+  return listenTo('mcp://load-sample', onLoad)
+}
+
+/** An MCP agent's track-transport gesture (Rust emits `mcp://deck-command`): the
+ * webview runs the deck's own method (seek / rate / sync / beatloop) so its state and
+ * the UI follow. `value` is null for argument-less commands (sync). */
+export function subscribeDeckCommand(
+  onCommand: (payload: { deck: number; command: string; value: number | null }) => void,
+): () => void {
+  return listenTo('mcp://deck-command', onCommand)
+}
+
 /** Mirror a realtime deck's derived state (model + playing) into the store. The
  * webview owns the derivation (worker status + play/stop); this writes the current
  * value up so the store stays the single source of truth — no engine effect.
@@ -295,6 +357,21 @@ export function setDeckRealtime(deck: number, model: string | null, playing: boo
  * Fire-and-forget. */
 export function setDeckCues(deck: number, cues: (number | null)[]): void {
   void invoke('set_deck_cues', { deck, cues }).catch(() => {})
+}
+
+/** Mirror a playback deck's live transport (playhead / rate / loop) into the store
+ * (null clears it on unload / a realtime deck). A read-back the webview writes up at
+ * a throttled cadence — the playhead moves every audio frame; no engine effect.
+ * Fire-and-forget. */
+export function setDeckTransport(
+  deck: number,
+  transport: {
+    playheadSeconds: number
+    rate: number
+    loopRegion: { startSeconds: number; endSeconds: number } | null
+  } | null,
+): void {
+  void invoke('set_deck_transport', { deck, transport }).catch(() => {})
 }
 
 /** Mirror a playback deck's loaded-track identity into the store (null clears it).

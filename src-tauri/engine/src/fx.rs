@@ -61,8 +61,9 @@ enum Blend {
 
 impl FxKind {
     /// Knob position where the effect is off (`fx.ts` `fxRestPosition`): centre for
-    /// the bipolar filter, zero otherwise.
-    fn rest_position(self) -> f32 {
+    /// the bipolar filter, zero otherwise. `pub` so the MCP `set_fx` tool can mirror the
+    /// rest amount a kind-swap lands at into the store (the UI does the same follow-up).
+    pub fn rest_position(self) -> f32 {
         match self {
             FxKind::Filter => 0.5,
             _ => 0.0,

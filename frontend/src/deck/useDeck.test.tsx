@@ -117,6 +117,7 @@ function storeDeck(): DeckSnap {
     playing: false,
     cues: [],
     track: null,
+    transport: null,
     loopLabels: [],
     styleTargets: [],
     cursor: { x: 0.5, y: 0.5 },
@@ -1783,6 +1784,24 @@ describe('useDeck mixer projection (ADR-0020)', () => {
     // whose fx is still null must NOT flip the gate and clobber the FX.
     act(() => fireStore({ volume: 1, fx: { kind: null, amount: 0 } }))
     expect(result.current.fx.kind).toBe('filter')
+  })
+
+  it('arms the gate from a 14-bit-quantized echo, so an external FX move still adopts', () => {
+    const { result } = renderDeck(makeFakeEngine().engine)
+    // Select an effect: the fx ref is now { filter, rest 0.5 }.
+    act(() => {
+      result.current.setFx('filter')
+    })
+    expect(result.current.fx).toEqual({ kind: 'filter', amount: 0.5 })
+
+    // The FLX4 position-sync echoes our amount quantised to a 14-bit centre detent
+    // (0.5 -> 0.5000305). An exact compare would never arm the fx gate; `near` does —
+    // without this an MCP FX move stays wedged (the bug in commit 13b95e2's parent).
+    act(() => fireStore({ fx: { kind: 'filter', amount: 0.5000305 } }))
+
+    // A genuinely different amount is then an external (MCP) move and must be adopted.
+    act(() => fireStore({ fx: { kind: 'filter', amount: 0.9 } }))
+    expect(result.current.fx.amount).toBe(0.9)
   })
 })
 

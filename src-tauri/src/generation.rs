@@ -7,10 +7,9 @@
 //! server on a loopback port — the controller is generation-only: no deck workers, no
 //! static mount — and the webview fetches it via `getApiBaseUrl()`.
 //!
-//! Mirrors the sidecar's spawn/supervise/Drop-kill pattern. Gated behind the same
-//! `LSDJ_SIDECARS` migration flag; a failed/disabled spawn just leaves
-//! generation unreachable (the UI already surfaces those as fetch errors), with
-//! `port() == None`.
+//! Mirrors the sidecar's spawn/supervise/Drop-kill pattern. Started with the app; a
+//! failed spawn just leaves generation unreachable (the UI already surfaces those as
+//! fetch errors), with `port() == None`.
 
 use std::io;
 use std::net::{TcpListener, TcpStream};
@@ -28,16 +27,10 @@ pub struct GenerationServer {
 }
 
 impl GenerationServer {
-    /// Spawn the generation server (gated behind `LSDJ_SIDECARS`). Never fails
-    /// the app: a disabled or failed spawn yields `port() == None` and generation
-    /// is simply unreachable until enabled.
+    /// Spawn the generation server — started with the app. Never fails the app: a
+    /// failed spawn yields `port() == None` and generation is simply unreachable (the
+    /// webview surfaces that as fetch errors).
     pub fn start() -> GenerationServer {
-        if std::env::var("LSDJ_SIDECARS").is_err() {
-            return GenerationServer {
-                port: None,
-                child: Mutex::new(None),
-            };
-        }
         match Self::spawn() {
             Ok((port, child)) => {
                 println!("lsdj-app: generation server on 127.0.0.1:{port}");
@@ -140,20 +133,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generation_command_appends_the_flags() {
-        // SAFETY-ish: no other test reads LSDJ_GENERATION_CMD; cleared after.
+    fn generation_command_appends_flags_and_a_failed_spawn_yields_no_port() {
+        // SAFETY-ish: no other test reads LSDJ_GENERATION_CMD, so this single test
+        // owns it for both assertions (kept in one fn to avoid a parallel env race).
         std::env::set_var("LSDJ_GENERATION_CMD", "echo hi");
+
+        // The override is split into program + args with `--port` always appended.
         let cmd = generation_command(5123).unwrap();
         let argv: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         assert_eq!(cmd.get_program().to_string_lossy(), "echo");
         assert_eq!(argv, ["hi", "--port", "5123"]);
-        std::env::remove_var("LSDJ_GENERATION_CMD");
-    }
 
-    #[test]
-    fn disabled_without_the_env_flag() {
-        std::env::remove_var("LSDJ_SIDECARS");
+        // Now-always-on `start()` never fails the app: a command that exits without
+        // binding the port (echo) degrades to no advertised port.
         let server = GenerationServer::start();
         assert_eq!(server.port(), None);
+
+        std::env::remove_var("LSDJ_GENERATION_CMD");
     }
 }
