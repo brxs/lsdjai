@@ -26,6 +26,9 @@ def make_engine(embeddings: dict[str, np.ndarray]):
     engine._samples = {}
     engine._system = SimpleNamespace(embed_style=embed_style)
     engine._style = None
+    engine._state = None
+    engine._notes = None
+    engine._drums = None
     return engine, calls
 
 
@@ -155,6 +158,94 @@ def test_failed_embed_does_not_evict(monkeypatch):
     with pytest.raises(RuntimeError):
         engine.embed_sample("sample:new", sample_pcm(4))
     assert list(engine._samples) == ["sample:kept"]
+
+
+def make_streaming_engine():
+    """An engine whose generate() records the conditioning it was handed."""
+    engine, _ = make_engine({})
+    generate_calls = []
+
+    def generate(style=None, notes=None, drums=None, frames=None, state=None):
+        generate_calls.append({"notes": notes, "drums": drums})
+        return (
+            SimpleNamespace(samples=np.zeros((48_000, 2), dtype=np.float32)),
+            "stream-state",
+        )
+
+    engine._system.generate = generate
+    return engine, generate_calls
+
+
+def test_generate_chunk_is_masked_until_steered():
+    engine, calls = make_streaming_engine()
+    engine.generate_chunk()
+    assert calls == [{"notes": None, "drums": None}]
+
+
+def test_set_notes_applies_to_every_chunk_until_changed():
+    engine, calls = make_streaming_engine()
+    multihot = [0] * 128
+    multihot[60] = 3
+    engine.set_notes(multihot)
+    engine.generate_chunk()
+    engine.generate_chunk()
+    assert [call["notes"] for call in calls] == [multihot, multihot]
+    engine.set_notes(None)
+    engine.generate_chunk()
+    assert calls[-1]["notes"] is None
+
+
+def test_set_drums_wraps_the_flag_for_the_model():
+    engine, calls = make_streaming_engine()
+    engine.set_drums(0)
+    engine.generate_chunk()
+    engine.set_drums(1)
+    engine.generate_chunk()
+    engine.set_drums(None)
+    engine.generate_chunk()
+    assert [call["drums"] for call in calls] == [[0], [1], None]
+
+
+def test_set_notes_is_full_state_not_a_reference():
+    # The engine must hold its own copy: a sender mutating the list it
+    # passed cannot desync the held state (the idempotence ADR-0023 needs).
+    engine, calls = make_streaming_engine()
+    multihot = [0] * 128
+    multihot[60] = 3
+    engine.set_notes(multihot)
+    multihot[60] = 0
+    engine.generate_chunk()
+    assert calls[0]["notes"][60] == 3
+
+
+def test_set_notes_rejects_bad_shapes_and_values():
+    engine, _ = make_engine({})
+    with pytest.raises(ValueError, match="128"):
+        engine.set_notes([0] * 127)
+    with pytest.raises(ValueError, match="-1, 0, 1, 2, or 3"):
+        engine.set_notes([0] * 127 + [4])
+    with pytest.raises(ValueError, match="0, 1, or None"):
+        engine.set_drums(2)
+
+
+def test_render_clip_never_carries_the_stream_conditioning():
+    # A standalone clip is independent of the live stream (ADR-0012):
+    # held note/drum steering must not leak into it.
+    engine, _ = make_engine({"air horn": np.array([1.0, 0.0])})
+    kwargs_seen = []
+
+    def generate(style=None, frames=None, state=None, **extra):
+        kwargs_seen.append(extra)
+        return (
+            SimpleNamespace(samples=np.zeros((48_000, 2), dtype=np.float32)),
+            None,
+        )
+
+    engine._system.generate = generate
+    engine.set_notes([3] * 128)
+    engine.set_drums(1)
+    engine.render_clip("air horn", 1.0)
+    assert kwargs_seen == [{}]
 
 
 def test_render_clip_leaves_the_stream_untouched():

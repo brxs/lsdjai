@@ -15,6 +15,12 @@ FRAME_SECONDS = 0.04
 FRAMES_PER_CHUNK = 25
 CHUNK_SECONDS = FRAMES_PER_CHUNK * FRAME_SECONDS
 
+# Note conditioning (ADR-0023): one slot per MIDI pitch, each holding a wire
+# state (docs/spike-mrt2.md): -1 masked, 0 off, 1 sustain, 2 onset, 3 on with
+# the model deciding attack vs continuation.
+NOTE_SLOTS = 128
+NOTE_STATES = frozenset((-1, 0, 1, 2, 3))
+
 # The official models the in-app manager offers to download. This is the
 # installable catalog, NOT a discovery gate: `available_models()` discovers any
 # model folder on disk (drop-in models, finetunes), so this tuple only seeds the
@@ -69,6 +75,8 @@ class DeckEngine:
         self._system = system.MagentaRT2SystemMlxfn(size=model)
         self._state = None
         self._style = None
+        self._notes: list[int] | None = None
+        self._drums: int | None = None
         self._embed_cache: dict[str, np.ndarray] = {}
         self._samples: dict[str, np.ndarray] = {}
 
@@ -154,15 +162,45 @@ class DeckEngine:
             blend = term if blend.size == 0 else blend + term
         self._style = blend
 
+    def set_notes(self, notes: list[int] | None) -> None:
+        """Replace the held note conditioning wholesale (ADR-0023).
+
+        `notes` is the full current NOTE_SLOTS multihot (idempotent
+        full-state, never a delta) or None to return to masked — the model
+        plays freely. Takes effect on the next generate_chunk() and persists
+        until changed.
+        """
+        if notes is not None:
+            if len(notes) != NOTE_SLOTS:
+                raise ValueError(
+                    f"notes must hold {NOTE_SLOTS} slots, got {len(notes)}"
+                )
+            if any(state not in NOTE_STATES for state in notes):
+                raise ValueError("note states must be -1, 0, 1, 2, or 3")
+        self._notes = None if notes is None else list(notes)
+
+    def set_drums(self, flag: int | None) -> None:
+        """Set the drum conditioning flag (ADR-0023): 0 suppresses drums,
+        1 forces them, None returns to masked — the model decides. Takes
+        effect on the next generate_chunk() and persists until changed."""
+        if flag is not None and flag not in (0, 1):
+            raise ValueError("drum flag must be 0, 1, or None")
+        self._drums = flag
+
     def generate_chunk(self) -> bytes:
         """Generate CHUNK_SECONDS of audio, continuous with the previous call.
 
         Returns interleaved stereo float32 little-endian PCM at SAMPLE_RATE
         (the WebSocket wire format). With no prompt set the model runs
-        unconditioned.
+        unconditioned. Held note/drum conditioning (ADR-0023) applies to
+        every chunk until changed.
         """
         waveform, self._state = self._system.generate(
-            style=self._style, frames=FRAMES_PER_CHUNK, state=self._state
+            style=self._style,
+            notes=self._notes,
+            drums=None if self._drums is None else [self._drums],
+            frames=FRAMES_PER_CHUNK,
+            state=self._state,
         )
         return waveform.samples.astype(np.float32).tobytes()
 

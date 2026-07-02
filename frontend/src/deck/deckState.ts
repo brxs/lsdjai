@@ -38,8 +38,9 @@ export type DeckAction =
   | { type: 'socket_open' }
   | { type: 'server_event'; event: ServerEvent }
   | { type: 'worklet_stats'; stats: WorkletStats }
-  | { type: 'play_requested' }
-  | { type: 'stop_requested' }
+  // The Rust store's transport projected down (ADR-0020: the store owns
+  // `playing`; deck_play/deck_stop and the sidecar status relay write it there).
+  | { type: 'playing_changed'; playing: boolean }
   | { type: 'local_error'; error: string }
   // The available-models list + RAM info, on its own (the native shell fetches it
   // from the generation server — there is no `/ws/deck` hello to carry it). Sets
@@ -55,7 +56,8 @@ export type DeckState = {
   switchingModel: boolean
   /** The worker process died; the deck offers a restart. */
   workerDied: boolean
-  /** The user pressed play and the worker is expected to stream. */
+  /** The transport is running (generating — a primed deck counts). A projection
+   * of the Rust store's `playing`, which owns it (ADR-0020); no local writer. */
   playing: boolean
   /** The worklet is actually emitting sound (false while prebuffering). */
   audible: boolean
@@ -93,10 +95,8 @@ export function deckReducer(state: DeckState, action: DeckAction): DeckState {
   switch (action.type) {
     case 'socket_open':
       return { ...state, connection: 'open', error: null }
-    case 'play_requested':
-      return { ...state, playing: true }
-    case 'stop_requested':
-      return { ...state, playing: false }
+    case 'playing_changed':
+      return { ...state, playing: action.playing }
     case 'local_error':
       return { ...state, error: action.error }
     case 'deck_info':
@@ -137,18 +137,18 @@ function applyServerEvent(state: DeckState, event: ServerEvent): DeckState {
     case 'model_loading':
       // The old worker (and its stream and prompt) is gone. Adopting the
       // target model now lets the RAM warning lead the load instead of
-      // trailing it.
+      // trailing it. `playing` is not touched here: the Rust status relay
+      // drops it in the store, and the projection carries it down.
       return {
         ...state,
         model: event.model,
         switchingModel: true,
         workerDied: false,
-        playing: false,
         activeStyle: null,
         generationSpeed: null,
       }
     case 'worker_died':
-      return { ...state, workerDied: true, playing: false }
+      return { ...state, workerDied: true }
     case 'chunk':
       return { ...state, generationSpeed: event.rtf }
     case 'style_applied':

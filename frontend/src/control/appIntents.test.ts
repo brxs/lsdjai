@@ -62,6 +62,8 @@ function fakeDeck(state: Partial<DeckState> = {}): DeckControls {
     play: vi.fn(async () => {}),
     stop: vi.fn(),
     setStyle: vi.fn(),
+    setNotes: vi.fn(),
+    setDrums: vi.fn(),
     setModel: vi.fn(),
     restartWorker: vi.fn(),
     setVolume: vi.fn(),

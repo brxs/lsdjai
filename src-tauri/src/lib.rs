@@ -165,7 +165,17 @@ fn start_sidecars(
             DEFAULT_MODEL,
             handle,
             move |json| {
-                use tauri::Emitter;
+                use tauri::{Emitter, Manager};
+                // The transport derivation lives in Rust (ADR-0020: the store owns
+                // `playing`): a dying or model-switching worker stops generating, so
+                // the store drops the deck's transport before the event is relayed.
+                // `try_state`: the reader threads start before `setup` manages the
+                // store, and pre-boot status can't concern a playing deck anyway.
+                if sidecar::transport_ended(&json) {
+                    if let Some(store) = app.try_state::<store::InterfaceStore>() {
+                        store.set_playing(idx, false);
+                    }
+                }
                 let _ = app.emit("sidecar://status", SidecarStatus { deck: idx, json });
             },
             taps.clone(),
@@ -534,16 +544,20 @@ pub fn run() {
             commands::track_peaks,
             commands::engine_snapshot,
             commands::store_snapshot,
-            commands::set_deck_realtime,
+            commands::set_deck_model,
             commands::set_deck_cues,
             commands::set_deck_track,
             commands::set_deck_transport,
             commands::set_deck_loop_labels,
             commands::set_deck_style,
+            commands::set_deck_notes,
+            commands::set_deck_drums,
             commands::deck_play,
             commands::deck_stop,
             commands::deck_set_prompt,
             commands::deck_set_style,
+            commands::deck_set_notes,
+            commands::deck_set_drums,
             commands::deck_set_model,
             commands::deck_embed_sample,
             commands::subscribe_deck_pcm,

@@ -74,8 +74,16 @@ def run_deck_worker(
                     playing = True
                     pace_epoch = time.monotonic()
                     pace_seconds = 0.0
+                    # A fresh stream starts unsteered: note/drum conditioning
+                    # resets on every discontinuity (ADR-0023), like the beat
+                    # gate and freeze captures (ADR-0009/0010). The frontend
+                    # clears its own mirror on the same transitions.
+                    engine.set_notes(None)
+                    engine.set_drums(None)
             elif kind == "stop":
                 playing = False
+                engine.set_notes(None)
+                engine.set_drums(None)
             elif kind == "render_clip":
                 # Worker-side gate, where the truth lives: rendering on a
                 # playing deck would stall the pacing loop for seconds.
@@ -116,6 +124,40 @@ def run_deck_worker(
                                 "event": "sample_embedded",
                                 "id": cmd["id"],
                                 "embed_seconds": round(time.monotonic() - started, 3),
+                            },
+                        )
+                    )
+            elif kind in ("set_notes", "set_drums"):
+                # Idempotent full-state conditioning (ADR-0023): the payload
+                # replaces the held state wholesale; None returns to masked.
+                try:
+                    if kind == "set_notes":
+                        engine.set_notes(cmd["notes"])
+                    else:
+                        engine.set_drums(cmd["drums"])
+                except Exception:
+                    # The deck must survive a bad payload; the Rust deck command
+                    # validates shape at the trust boundary (the sidecar shell is
+                    # a pass-through), and the engine's range check is the truth.
+                    logger.exception("deck %s: %s failed", deck_id, kind)
+                    out_queue.put(
+                        (
+                            "status",
+                            {
+                                "event": "error",
+                                "error": f"{kind} failed; conditioning unchanged",
+                            },
+                        )
+                    )
+                else:
+                    field = "notes" if kind == "set_notes" else "drums"
+                    out_queue.put(
+                        (
+                            "status",
+                            {
+                                "event": f"{field}_applied",
+                                field: cmd[field],
+                                "effective_from_chunk": chunk_index,
                             },
                         )
                     )

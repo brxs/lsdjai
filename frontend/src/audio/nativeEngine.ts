@@ -291,6 +291,12 @@ export type DeckSnap = {
   styleTargets: { x: number; y: number; text: string }[]
   /** The 2D style-pad cursor (the blend point). */
   cursor: { x: number; y: number }
+  /** The realtime deck's note steering (ADR-0023) — held pitches + mode, or
+   * null when unsteered. Cleared on transport transitions. */
+  notes: { pitches: number[]; mode: 'chord' | 'onset' } | null
+  /** Drum conditioning (ADR-0023): null = the model decides, false = suppress
+   * drums, true = force them. Cleared like `notes`. */
+  drums: boolean | null
 }
 
 /** The authoritative interface state the webview projects (mirrors Rust
@@ -344,12 +350,13 @@ export function subscribeDeckCommand(
   return listenTo('mcp://deck-command', onCommand)
 }
 
-/** Mirror a realtime deck's derived state (model + playing) into the store. The
- * webview owns the derivation (worker status + play/stop); this writes the current
- * value up so the store stays the single source of truth — no engine effect.
+/** Mirror a realtime deck's model read-back into the store. The webview derives it
+ * from worker status ('ready'/'model_loading') and writes the current value up — no
+ * engine effect. `playing` is NOT mirrored: the store owns the transport
+ * (deck_play/deck_stop + the Rust status relay) and the webview only projects it.
  * Fire-and-forget (a dropped mirror write must never surface as a rejection). */
-export function setDeckRealtime(deck: number, model: string | null, playing: boolean): void {
-  void invoke('set_deck_realtime', { deck, model, playing }).catch(() => {})
+export function setDeckModel(deck: number, model: string | null): void {
+  void invoke('set_deck_model', { deck, model }).catch(() => {})
 }
 
 /** Mirror a playback deck's hot-cue points into the store (ADR-0015 → ADR-0020).
@@ -387,6 +394,23 @@ export function setDeckTrack(
  * webview writes up when its slots change. Fire-and-forget. */
 export function setDeckLoopLabels(deck: number, labels: (string | null)[]): void {
   void invoke('set_deck_loop_labels', { deck, labels }).catch(() => {})
+}
+
+/** Mirror a deck's note steering into the store (ADR-0023 over ADR-0020): the
+ * wire multihot still goes to the worker via deck_set_notes; this records the
+ * authored pitches + mode so an MCP agent reads (and writes) the same state.
+ * Null = unsteered. Fire-and-forget. */
+export function setDeckNotes(
+  deck: number,
+  notes: { pitches: number[]; mode: 'chord' | 'onset' } | null,
+): void {
+  void invoke('set_deck_notes', { deck, notes }).catch(() => {})
+}
+
+/** Mirror a deck's drum-conditioning tri-state into the store (null = the model
+ * decides). Fire-and-forget. */
+export function setDeckDrums(deck: number, drums: boolean | null): void {
+  void invoke('set_deck_drums', { deck, drums }).catch(() => {})
 }
 
 // Coalesce high-rate mirror writes to ~one invoke per animation frame, like the

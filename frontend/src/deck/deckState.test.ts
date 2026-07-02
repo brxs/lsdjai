@@ -91,7 +91,7 @@ describe('deckReducer', () => {
 
   it('enters a switching state and forgets the stream when a model loads', () => {
     const state = reduce([
-      { type: 'play_requested' },
+      { type: 'playing_changed', playing: true },
       {
         type: 'server_event',
         event: {
@@ -103,7 +103,10 @@ describe('deckReducer', () => {
       { type: 'server_event', event: { event: 'model_loading', model: 'mrt2_base' } },
     ])
     expect(state.switchingModel).toBe(true)
-    expect(state.playing).toBe(false)
+    // The transport is store-owned (ADR-0020): the reducer leaves `playing`
+    // alone here — the Rust status relay drops it in the store, and the
+    // projection dispatches the change separately.
+    expect(state.playing).toBe(true)
     expect(state.activeStyle).toBeNull()
     // Adopting the target immediately lets the RAM warning lead the load.
     expect(state.model).toBe('mrt2_base')
@@ -120,13 +123,16 @@ describe('deckReducer', () => {
     expect(state.model).toBe('mrt2_base')
   })
 
-  it('flags a dead worker and stops playing', () => {
+  it('flags a dead worker; the transport drop arrives via the store projection', () => {
     const state = reduce([
-      { type: 'play_requested' },
+      { type: 'playing_changed', playing: true },
       { type: 'server_event', event: { event: 'worker_died', model: 'mrt2_small' } },
     ])
     expect(state.workerDied).toBe(true)
-    expect(state.playing).toBe(false)
+    // Store-owned transport (ADR-0020): the death itself does not flip `playing`
+    // in the reducer — the Rust relay writes the store, the projection follows.
+    expect(state.playing).toBe(true)
+    expect(reduce([{ type: 'playing_changed', playing: false }]).playing).toBe(false)
   })
 
   it('deck_info sets the model list + RAM without touching model/switch/style', () => {

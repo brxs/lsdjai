@@ -45,6 +45,22 @@ describe('sendNativeDeckCommand', () => {
     ])
   })
 
+  it('maps set_notes/set_drums to the deck_* commands, null passing through', () => {
+    const multihot = new Array<number>(128).fill(0)
+    multihot[60] = 3
+    sendNativeDeckCommand('a', { type: 'set_notes', notes: multihot })
+    sendNativeDeckCommand('a', { type: 'set_notes', notes: null })
+    sendNativeDeckCommand('b', { type: 'set_drums', drums: 0 })
+    sendNativeDeckCommand('b', { type: 'set_drums', drums: null })
+
+    expect(invokeCalls).toEqual([
+      { cmd: 'deck_set_notes', args: { deck: 0, notes: multihot } },
+      { cmd: 'deck_set_notes', args: { deck: 0, notes: null } },
+      { cmd: 'deck_set_drums', args: { deck: 1, drums: 0 } },
+      { cmd: 'deck_set_drums', args: { deck: 1, drums: null } },
+    ])
+  })
+
   it('maps set_model and restart to deck_set_model (with the model)', () => {
     sendNativeDeckCommand('a', { type: 'set_model', model: 'mrt2_base' })
     sendNativeDeckCommand('b', { type: 'restart', model: 'mrt2_small' })

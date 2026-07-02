@@ -31,6 +31,8 @@ const deck = (): DeckSnap => ({
   loopLabels: [],
   styleTargets: [],
   cursor: { x: 0.5, y: 0.5 },
+  notes: null,
+  drums: null,
 })
 
 const sample = (over: Partial<InterfaceState> = {}): InterfaceState => ({

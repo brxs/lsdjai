@@ -23,12 +23,22 @@ import { useAudioEngine } from '../audio/engineContext'
 import {
   getApiBaseUrl,
   setDeckCues,
+  setDeckDrums,
   setDeckLoopLabels,
-  setDeckRealtime,
+  setDeckModel,
+  setDeckNotes,
   setDeckTrack,
   setDeckTransport,
   subscribeModelsChanged,
 } from '../audio/nativeEngine'
+import {
+  buildNoteMultihot,
+  drumWireFlag,
+  isNotePitch,
+  sameNoteSteering,
+  type NoteMode,
+  type NoteSteering,
+} from '../audio/notes'
 import { fxKindFromSnap, useInterfaceStore } from '../audio/interfaceStore'
 import {
   sendNativeDeckCommand,
@@ -278,6 +288,11 @@ export type DeckControls = {
   play: () => Promise<void>
   stop: () => void
   setStyle: (style: ActiveStyle) => void
+  /** Note/drum steering (ADR-0023): idempotent full-state sends at chunk
+   * cadence — empty pitches / null clear back to "the model decides". State
+   * resets on stream discontinuities (play/prime/stop/model switch/crash). */
+  setNotes: (pitches: number[], mode?: NoteMode) => void
+  setDrums: (drums: boolean | null) => void
   setModel: (model: string) => void
   restartWorker: () => void
   setVolume: (volume: number) => void
@@ -488,13 +503,30 @@ export function useDeck(deckId: DeckId): DeckControls {
     }
   }, [storeState, deckIndex])
 
-  // Mirror the realtime deck's derived read-backs (model + playing) UP into the
-  // store, so a future MCP agent observes them (ADR-0020). The webview owns the
-  // derivation (worker status + play/stop, in the reducer); this is a write-only
-  // push, not a projection — nothing reads it back into React.
+  // Mirror the realtime deck's model read-back UP into the store, so an MCP agent
+  // observes it (ADR-0020). The webview derives it from worker status ('ready' /
+  // 'model_loading'); a write-only mirror. `playing` is deliberately NOT mirrored:
+  // the store owns the transport — deck_play/deck_stop write it for every
+  // controller, and the Rust status relay drops it when a worker dies or reloads —
+  // and the projection below is the reducer's only coupling to it.
   useEffect(() => {
-    setDeckRealtime(deckIndex, state.model, state.playing)
-  }, [deckIndex, state.model, state.playing])
+    setDeckModel(deckIndex, state.model)
+  }, [deckIndex, state.model])
+
+  // Note/drum steering (ADR-0023): the authored state (held pitches + mode /
+  // the drum tri-state) in refs beside the store mirror. Reset on stream
+  // discontinuities like the trackers — the worker clears its engine state on
+  // the play/stop commands, and a fresh worker starts masked, so clearing here
+  // (local + store) keeps every holder telling the same story.
+  const notesRef = useRef<NoteSteering | null>(null)
+  const drumsRef = useRef<boolean | null>(null)
+  const clearConditioning = useCallback(() => {
+    if (notesRef.current === null && drumsRef.current === null) return
+    notesRef.current = null
+    drumsRef.current = null
+    setDeckNotes(deckIndex, null)
+    setDeckDrums(deckIndex, null)
+  }, [deckIndex])
 
   // Mirror the loaded track's hot-cue points UP into the store (ADR-0015 →
   // ADR-0020): the cue STATE LOCATION moves to the store, while the webview keeps
@@ -626,22 +658,35 @@ export function useDeck(deckId: DeckId): DeckControls {
     return channelPromiseRef.current
   }, [engine, deckId])
 
-  // Adopt an EXTERNAL play/stop from the store (an MCP deck_play / deck_stop) so the
-  // on-screen transport reflects it — the read side the realtime mirror push pairs
-  // with. The agent's tool already drove the engine + worker, so this flips the
-  // reducer's play intent; our own play/stop keeps store and state equal, so it
-  // no-ops. On an external play we also ensure the deck channel exists (idempotent,
-  // applies the current params and starts the stats poll — no ring reset), so the
-  // buffer/BPM/underrun meters populate for an agent-started deck too.
+  // Project the store's transport into the reducer (ADR-0020: the store OWNS
+  // `playing`). Every path lands there — our own play()/stop() via the deck_play /
+  // deck_stop commands, an MCP agent's tools, the Rust status relay when a worker
+  // dies or reloads — so the button lights when the store's snapshot round-trips,
+  // and never before. One direction only (nothing mirrors `playing` back up), so
+  // no echo can loop, and the store's emit order is the total order. On a play we
+  // also ensure the deck channel exists (idempotent — applies the current params
+  // and starts the stats poll, no ring reset), so the buffer/BPM/underrun meters
+  // populate for an agent-started deck too. `playPendingRef` is play()/prime()'s
+  // in-flight guard, armed ONLY for an intent that starts the transport (stopped
+  // → playing): a re-play/re-prime on a playing deck is a store no-op the dedupe
+  // never echoes, so arming there would wedge the guard until unrelated churn.
+  // `playingRef` mirrors the projected transport for those callbacks (they keep
+  // stable deps on purpose).
+  const playPendingRef = useRef(false)
+  const playingRef = useRef(false)
+  useEffect(() => {
+    playingRef.current = state.playing
+  }, [state.playing])
   useEffect(() => {
     const storePlaying = storeState?.decks[deckIndex]?.playing
-    if (storePlaying === undefined || storePlaying === state.playing) return
-    if (storePlaying) {
-      void ensureChannel().catch(() => {})
-      dispatch({ type: 'play_requested' })
-    } else {
-      dispatch({ type: 'stop_requested' })
-    }
+    if (storePlaying === undefined) return
+    // ANY snapshot re-arms the transport intents — before the equality return:
+    // store mutations are serialized, so a snapshot arriving after a tap already
+    // reflects that tap's write, even one the value-change dedupe kept silent.
+    playPendingRef.current = false
+    if (storePlaying === state.playing) return
+    if (storePlaying) void ensureChannel().catch(() => {})
+    dispatch({ type: 'playing_changed', playing: storePlaying })
   }, [storeState, deckIndex, state.playing, ensureChannel])
 
   useEffect(() => {
@@ -657,6 +702,9 @@ export function useDeck(deckId: DeckId): DeckControls {
       if (status.event === 'model_loading' || status.event === 'worker_died') {
         channelRef.current?.reset()
         resetStreamMeasurements()
+        // The replacement worker starts masked; held steering dies with the
+        // stream (ADR-0023) — unlike style, which DeckColumn re-applies.
+        clearConditioning()
       }
       dispatch({ type: 'server_event', event: status as ServerEvent })
     })
@@ -700,7 +748,7 @@ export function useDeck(deckId: DeckId): DeckControls {
       channelRef.current = null
       channelPromiseRef.current = null
     }
-  }, [deckId, beat, loudness, bandScroller, resetStreamMeasurements])
+  }, [deckId, beat, loudness, bandScroller, resetStreamMeasurements, clearConditioning])
 
   // One estimate per second through the honesty gate (M14); the state
   // setter is a no-op re-render-wise while the gated value holds. The
@@ -797,6 +845,13 @@ export function useDeck(deckId: DeckId): DeckControls {
       setPrimed(false)
       return
     }
+    // In-flight guard: the button lights only when the store round-trip lands,
+    // so a second tap inside that window would re-run the ring reset on a
+    // just-started stream. Armed only when this intent STARTS the transport —
+    // a replay on a playing deck round-trips as a store no-op (no snapshot to
+    // clear on). The projection re-arms it; stop() is the recovery valve.
+    if (playPendingRef.current) return
+    if (!playingRef.current) playPendingRef.current = true
     try {
       const channel = await ensureChannel()
       await engine.resume()
@@ -807,15 +862,20 @@ export function useDeck(deckId: DeckId): DeckControls {
       resetStreamMeasurements()
       channel.setOnAir(true)
     } catch (error) {
+      playPendingRef.current = false
       dispatch({
         type: 'local_error',
         error: error instanceof Error ? error.message : String(error),
       })
       return
     }
+    // The deck_play command drives the worker AND writes the store's transport;
+    // the button lights when the snapshot round-trips (the transport projection).
     send({ type: 'play' })
-    dispatch({ type: 'play_requested' })
-  }, [ensureChannel, engine, send, setPrimed, resetStreamMeasurements])
+    // The play command clears the worker's held steering (ADR-0023);
+    // mirror that locally and in the store.
+    clearConditioning()
+  }, [ensureChannel, engine, send, setPrimed, resetStreamMeasurements, clearConditioning])
 
   const seekTrack = useCallback((seconds: number) => {
     if (modeRef.current !== 'playback') return
@@ -851,6 +911,10 @@ export function useDeck(deckId: DeckId): DeckControls {
       return
     }
     if (primedRef.current) return
+    // Same in-flight guard as play(); a re-prime of an already-playing deck
+    // (CUE after a drop) is a store no-op, so it must not arm the guard.
+    if (playPendingRef.current) return
+    if (!playingRef.current) playPendingRef.current = true
     try {
       const channel = await ensureChannel()
       await engine.resume()
@@ -858,6 +922,7 @@ export function useDeck(deckId: DeckId): DeckControls {
       resetStreamMeasurements()
       channel.setOnAir(false)
     } catch (error) {
+      playPendingRef.current = false
       dispatch({
         type: 'local_error',
         error: error instanceof Error ? error.message : String(error),
@@ -865,9 +930,11 @@ export function useDeck(deckId: DeckId): DeckControls {
       return
     }
     setPrimed(true)
+    // A primed deck IS playing (generating, off air): deck_play writes the store's
+    // transport, so the button lights over the same projection as a plain play.
     send({ type: 'play' })
-    dispatch({ type: 'play_requested' })
-  }, [ensureChannel, engine, send, setPrimed, resetStreamMeasurements, seekTrack])
+    clearConditioning()
+  }, [ensureChannel, engine, send, setPrimed, resetStreamMeasurements, seekTrack, clearConditioning])
 
   // Stop every layered sample on the engine (ADR-0022); the caller resets the UI
   // `layering` set in its own setLoop. Reads only refs, so it stays stable.
@@ -908,9 +975,12 @@ export function useDeck(deckId: DeckId): DeckControls {
       setLoop({ ...loopRef.current, active: null, layering: [] })
     }
     resetStreamMeasurements()
+    clearConditioning()
     setPrimed(false)
-    dispatch({ type: 'stop_requested' })
-  }, [send, setPrimed, setLoop, resetStreamMeasurements, silenceLayers])
+    // Recovery valve: if a play's round-trip never landed (dropped IPC), the
+    // pending guard must not wedge the transport — STOP always re-arms it.
+    playPendingRef.current = false
+  }, [send, setPrimed, setLoop, resetStreamMeasurements, silenceLayers, clearConditioning])
 
   const setStyle = useCallback(
     (style: ActiveStyle) => {
@@ -918,6 +988,79 @@ export function useDeck(deckId: DeckId): DeckControls {
     },
     [send],
   )
+
+  /** Steer the deck's harmony (ADR-0023): builds the full wire multihot
+   * (empty pitches clear to masked), sends it to the worker, and mirrors the
+   * authored state into the store so an MCP agent reads the same truth. */
+  const setNotes = useCallback(
+    (pitches: number[], mode: NoteMode = 'chord') => {
+      // Filter before authoring: an invalid pitch must not survive into the
+      // ref/wire/store — a non-empty hold of only invalid pitches would send
+      // an all-OFF multihot (suppress melody) while the Rust mirror guard
+      // drops the write, leaving the three holders telling different stories.
+      const held = pitches.filter(isNotePitch)
+      const previous = notesRef.current
+      const next: NoteSteering | null =
+        held.length === 0 ? null : { pitches: held, mode }
+      notesRef.current = next
+      send({
+        type: 'set_notes',
+        notes:
+          next === null
+            ? null
+            : buildNoteMultihot(next.pitches, mode, previous?.pitches ?? []),
+      })
+      setDeckNotes(deckIndex, next)
+    },
+    [send, deckIndex],
+  )
+
+  /** Drum conditioning (ADR-0023): null = the model decides, false =
+   * suppress, true = force. Sent full-state and mirrored like setNotes. */
+  const setDrums = useCallback(
+    (drums: boolean | null) => {
+      drumsRef.current = drums
+      send({ type: 'set_drums', drums: drumWireFlag(drums) })
+      setDeckDrums(deckIndex, drums)
+    },
+    [send, deckIndex],
+  )
+
+  // Adopt EXTERNAL note/drum steering from the store (an MCP set_notes /
+  // set_drums) and drive the worker — the read side the mirror writes above
+  // pair with (ADR-0020's projection carrying ADR-0023's channel). Our own
+  // writes echo back value-equal and no-op; no synced gate is needed because
+  // both sides start unsteered (null) and nothing is persisted or replayed.
+  // The store's transport-transition clear lands here too — the null it
+  // brings is idempotent against the reset the worker already did.
+  useEffect(() => {
+    const snap = storeState?.decks[deckIndex]
+    if (!snap) return
+    const externalNotes = snap.notes ?? null
+    if (!sameNoteSteering(externalNotes, notesRef.current)) {
+      const previous = notesRef.current
+      notesRef.current =
+        externalNotes === null
+          ? null
+          : { pitches: [...externalNotes.pitches], mode: externalNotes.mode }
+      send({
+        type: 'set_notes',
+        notes:
+          externalNotes === null
+            ? null
+            : buildNoteMultihot(
+                externalNotes.pitches,
+                externalNotes.mode,
+                previous?.pitches ?? [],
+              ),
+      })
+    }
+    const externalDrums = snap.drums ?? null
+    if (externalDrums !== drumsRef.current) {
+      drumsRef.current = externalDrums
+      send({ type: 'set_drums', drums: drumWireFlag(externalDrums) })
+    }
+  }, [storeState, deckIndex, send])
 
   const loadTrack = useCallback(
     async (wav: ArrayBuffer, title: string) => {
@@ -1692,6 +1835,8 @@ export function useDeck(deckId: DeckId): DeckControls {
     play,
     stop,
     setStyle,
+    setNotes,
+    setDrums,
     setModel,
     restartWorker,
     setVolume,
