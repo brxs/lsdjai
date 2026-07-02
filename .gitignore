@@ -8,3 +8,6 @@ demo-raw/
 # bundle output is src-tauri/sidecar-dist (ignored there).
 /build/
 /slipmate_infer.spec
+
+# Claude Code session plans (local scratch, never shipped)
+.claude/plans/

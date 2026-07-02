@@ -143,6 +143,30 @@ pub struct StyleTargetSnap {
     pub text: String,
 }
 
+/// The note mode a steering surface authors in (ADR-0023): chord-follow maps
+/// held pitches to "model decides the articulation"; onset marks fresh presses
+/// so the performer owns the attack timing. `Deserialize`/`JsonSchema` too —
+/// it crosses as a `set_deck_notes` / MCP `set_notes` argument.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteModeSnap {
+    Chord,
+    Onset,
+}
+
+/// A realtime deck's note steering (ADR-0023): the held MIDI pitches and the
+/// note mode. The webview owns the pitches→multihot mapping and drives the
+/// worker; the store holds the authored state so MCP writes project into the
+/// same path the UI uses. `Deserialize`/`JsonSchema` too — it crosses as a
+/// `set_deck_notes` / MCP `set_notes` argument.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteSteeringSnap {
+    /// Held MIDI pitches (0..=127).
+    pub pitches: Vec<u8>,
+    pub mode: NoteModeSnap,
+}
+
 /// One deck's state in the store: the mixer channel plus the realtime-deck
 /// read-backs the store mirrors (model / playing). Not `Copy` — `model` is a
 /// `String`.
@@ -184,6 +208,12 @@ pub struct DeckSnap {
     pub style_targets: Vec<StyleTargetSnap>,
     /// The 2D style-pad cursor (the blend point).
     pub cursor: PadPointSnap,
+    /// The realtime deck's note steering (ADR-0023), or `None` when unsteered.
+    /// Cleared on transport transitions — a discontinuity resets conditioning.
+    pub notes: Option<NoteSteeringSnap>,
+    /// Drum conditioning (ADR-0023): `None` = the model decides, `false` =
+    /// suppress drums, `true` = force them. Cleared like `notes`.
+    pub drums: Option<bool>,
 }
 
 impl Default for DeckSnap {
@@ -211,6 +241,8 @@ impl Default for DeckSnap {
             loop_labels: Vec::new(),
             style_targets: Vec::new(),
             cursor: PadPointSnap { x: 0.5, y: 0.5 },
+            notes: None,
+            drums: None,
         }
     }
 }
@@ -323,6 +355,14 @@ impl InterfaceState {
 
     pub fn set_playing(&mut self, deck: usize, playing: bool) {
         if let Some(d) = self.deck_mut(deck) {
+            if d.playing != playing {
+                // A transport transition is a stream discontinuity: held
+                // note/drum steering resets with it (ADR-0023) — the worker
+                // clears its engine state on the play/stop commands, and the
+                // store must never keep claiming steering the worker dropped.
+                d.notes = None;
+                d.drums = None;
+            }
             d.playing = playing;
         }
     }
@@ -373,6 +413,20 @@ impl InterfaceState {
     pub fn set_cursor(&mut self, deck: usize, cursor: PadPointSnap) {
         if let Some(d) = self.deck_mut(deck) {
             d.cursor = cursor;
+        }
+    }
+
+    /// Replace a deck's note steering wholesale (`None` = unsteered) — full
+    /// state, never a delta, the ADR-0023 idempotence rule.
+    pub fn set_notes(&mut self, deck: usize, notes: Option<NoteSteeringSnap>) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.notes = notes;
+        }
+    }
+
+    pub fn set_drums(&mut self, deck: usize, drums: Option<bool>) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.drums = drums;
         }
     }
 }
@@ -521,6 +575,18 @@ impl InterfaceStore {
     pub fn set_deck_cursor(&self, deck: usize, cursor: PadPointSnap) {
         self.mutate(move |s| s.set_cursor(deck, cursor));
     }
+
+    /// Replace a deck's note steering (UI/MIDI writes it up; MCP `set_notes` writes
+    /// it for the webview to adopt and drive the worker — ADR-0023 over ADR-0020's
+    /// projection). `None` = unsteered.
+    pub fn set_deck_notes(&self, deck: usize, notes: Option<NoteSteeringSnap>) {
+        self.mutate(move |s| s.set_notes(deck, notes));
+    }
+
+    /// Set a deck's drum conditioning tri-state (`None` = the model decides).
+    pub fn set_deck_drums(&self, deck: usize, drums: Option<bool>) {
+        self.mutate(move |s| s.set_drums(deck, drums));
+    }
 }
 
 #[cfg(test)]
@@ -547,7 +613,64 @@ mod tests {
             assert!(deck.loop_labels.is_empty());
             assert!(deck.style_targets.is_empty());
             assert_eq!(deck.cursor, PadPointSnap { x: 0.5, y: 0.5 });
+            assert_eq!(deck.notes, None);
+            assert_eq!(deck.drums, None);
         }
+    }
+
+    #[test]
+    fn note_and_drum_steering_are_mirrored_per_deck() {
+        let mut state = InterfaceState::default();
+        state.set_notes(
+            0,
+            Some(NoteSteeringSnap {
+                pitches: vec![60, 64, 67],
+                mode: NoteModeSnap::Chord,
+            }),
+        );
+        state.set_drums(0, Some(false));
+        assert_eq!(state.decks[0].notes.as_ref().unwrap().pitches, vec![60, 64, 67]);
+        assert_eq!(state.decks[0].drums, Some(false));
+        // The other deck is untouched.
+        assert_eq!(state.decks[1].notes, None);
+        assert_eq!(state.decks[1].drums, None);
+        // Clearing returns to unsteered.
+        state.set_notes(0, None);
+        state.set_drums(0, None);
+        assert_eq!(state.decks[0].notes, None);
+        assert_eq!(state.decks[0].drums, None);
+    }
+
+    #[test]
+    fn transport_transitions_reset_note_and_drum_steering() {
+        let mut state = InterfaceState::default();
+        state.set_playing(0, true);
+        state.set_notes(
+            0,
+            Some(NoteSteeringSnap {
+                pitches: vec![60],
+                mode: NoteModeSnap::Onset,
+            }),
+        );
+        state.set_drums(0, Some(true));
+        // Re-asserting the same transport state is not a discontinuity.
+        state.set_playing(0, true);
+        assert!(state.decks[0].notes.is_some());
+        // A stop is: steering resets with the stream (ADR-0023).
+        state.set_playing(0, false);
+        assert_eq!(state.decks[0].notes, None);
+        assert_eq!(state.decks[0].drums, None);
+        // Steering set while stopped dies at the next play — a fresh
+        // stream starts unsteered, exactly like the worker's engine.
+        state.set_notes(
+            0,
+            Some(NoteSteeringSnap {
+                pitches: vec![62],
+                mode: NoteModeSnap::Chord,
+            }),
+        );
+        state.set_playing(0, true);
+        assert_eq!(state.decks[0].notes, None);
     }
 
     #[test]

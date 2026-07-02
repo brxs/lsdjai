@@ -39,7 +39,7 @@ use crate::generation::GenerationServer;
 use crate::samples::{NewSample, SampleLibrary};
 use crate::sidecar::Sidecars;
 use crate::songs::{NewSong, SongLibrary};
-use crate::store::{InterfaceStore, PadPointSnap, StyleTargetSnap};
+use crate::store::{InterfaceStore, NoteModeSnap, NoteSteeringSnap, PadPointSnap, StyleTargetSnap};
 use lsdj_engine::host::Host;
 use lsdj_engine::FxKind;
 
@@ -226,6 +226,35 @@ struct SetPromptArgs {
     deck: usize,
     /// The text prompt the realtime deck should generate from.
     prompt: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SetNotesArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// The held MIDI pitches (0..=127); empty clears the steering.
+    pitches: Vec<u8>,
+    /// Note mode; omitted means chord-follow (the forgiving default).
+    mode: Option<NoteModeSnap>,
+}
+
+/// The drum-conditioning intent an agent authors (maps to the store's
+/// tri-state: suppress = false, force = true, auto = None/masked).
+#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum DrumSteerArg {
+    Suppress,
+    Force,
+    Auto,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SetDrumsArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// 'suppress' keeps drums out, 'force' asks for them, 'auto' hands the
+    /// choice back to the model.
+    mode: DrumSteerArg,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -581,6 +610,71 @@ impl McpHandler {
             Ok(()) => format!("deck {deck} switching to model {model}"),
             Err(e) => format!("could not switch deck {deck} to {model}: {e}"),
         }
+    }
+
+    /// Steer a realtime deck's harmony (ADR-0023). Writes the store; the webview
+    /// adopts the change, maps pitches + mode to the wire multihot, and drives the
+    /// worker — the same path a UI surface takes (the bidirectional projection),
+    /// not a hidden raw override.
+    #[tool(
+        description = "Steer a realtime deck's harmony with held MIDI pitches \
+                       (0-127); an empty list clears the steering (the model plays \
+                       freely). mode 'chord' (the default) lets the model choose \
+                       the articulation; 'onset' marks the pitches as fresh attacks. \
+                       Steering resets on play/stop/model switch — start the deck \
+                       first, then steer. A change is heard once the deck's buffered \
+                       audio drains (a few seconds). deck 0 = A, 1 = B."
+    )]
+    async fn set_notes(
+        &self,
+        Parameters(SetNotesArgs { deck, pitches, mode }): Parameters<SetNotesArgs>,
+    ) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        if pitches.iter().any(|&pitch| pitch > 127) {
+            return "pitches must be MIDI note numbers 0-127".to_string();
+        }
+        let store = self.app.state::<InterfaceStore>();
+        if pitches.is_empty() {
+            store.set_deck_notes(deck, None);
+            return format!("deck {deck} note steering cleared");
+        }
+        let count = pitches.len();
+        let mode = mode.unwrap_or(NoteModeSnap::Chord);
+        store.set_deck_notes(deck, Some(NoteSteeringSnap { pitches, mode }));
+        format!("deck {deck} steering {count} held note(s)")
+    }
+
+    /// Set a realtime deck's drum conditioning (ADR-0023) — the same store
+    /// projection as `set_notes`.
+    #[tool(
+        description = "Set a realtime deck's drum conditioning: 'suppress' keeps \
+                       drums out (sit beside another deck), 'force' asks for them, \
+                       'auto' hands the choice back to the model. Resets on \
+                       play/stop/model switch like note steering. deck 0 = A, 1 = B."
+    )]
+    async fn set_drums(
+        &self,
+        Parameters(SetDrumsArgs { deck, mode }): Parameters<SetDrumsArgs>,
+    ) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        let flag = match mode {
+            DrumSteerArg::Suppress => Some(false),
+            DrumSteerArg::Force => Some(true),
+            DrumSteerArg::Auto => None,
+        };
+        self.app.state::<InterfaceStore>().set_deck_drums(deck, flag);
+        format!(
+            "deck {deck} drums {}",
+            match mode {
+                DrumSteerArg::Suppress => "suppressed",
+                DrumSteerArg::Force => "forced",
+                DrumSteerArg::Auto => "back to the model",
+            }
+        )
     }
 
     /// Set a realtime deck's generation prompt. Routed through the style pad as one

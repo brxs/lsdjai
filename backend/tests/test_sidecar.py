@@ -33,6 +33,12 @@ class FakeEngine:
     def set_style(self, prompts, sample_keys=frozenset()):
         self.styles.append(prompts)
 
+    def set_notes(self, notes):
+        pass
+
+    def set_drums(self, flag):
+        pass
+
     def generate_chunk(self):
         return FAKE_PCM
 
@@ -97,6 +103,26 @@ def test_cmd_queue_parses_control_frames_and_shutdown_on_eof():
     assert cmd.get(timeout=1.0) == {"type": "play"}
     assert cmd.get(timeout=1.0) == {"type": "stop"}
     assert cmd.get(timeout=1.0) == {"type": "shutdown"}
+
+
+def test_cmd_queue_passes_note_conditioning_through_intact():
+    # The pump is a generic JSON pass-through; pin that ADR-0023's
+    # full-state conditioning payloads reach the worker unmodified.
+    multihot = [0] * 128
+    multihot[60] = 3
+    wire = bytearray()
+    rec = RecordingSock()
+    rec.buffer = wire
+    write_frame(
+        rec,
+        FRAME_CONTROL,
+        json.dumps({"type": "set_notes", "notes": multihot}).encode(),
+    )
+    write_frame(rec, FRAME_CONTROL, b'{"type":"set_drums","drums":null}')
+
+    cmd = SocketCmdQueue(io.BytesIO(bytes(wire)))
+    assert cmd.get(timeout=1.0) == {"type": "set_notes", "notes": multihot}
+    assert cmd.get(timeout=1.0) == {"type": "set_drums", "drums": None}
 
 
 def _read_frames_until(sock_file, predicate, timeout=3.0):

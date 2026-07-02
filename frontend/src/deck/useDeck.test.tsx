@@ -139,6 +139,8 @@ function storeDeck(): DeckSnap {
     loopLabels: [],
     styleTargets: [],
     cursor: { x: 0.5, y: 0.5 },
+    notes: null,
+    drums: null,
   }
 }
 
@@ -1889,5 +1891,183 @@ describe('useDeck realtime mirror + transport projection (ADR-0020)', () => {
     // transport mirror) carries the store's CURRENT playing — the deck stays lit.
     act(() => fireStore({ volume: 0.3 }))
     expect(result.current.state.playing).toBe(true)
+  })
+
+  it('ignores a second play tap while the store round-trip is in flight', async () => {
+    const { engine, channel } = makeFakeEngine()
+    const { result } = renderDeck(engine)
+    act(() => socket(0).serverOpen())
+    // Sever the echo: the first tap's round-trip has not landed yet.
+    native.invoke.mockImplementation((cmd: string) =>
+      cmd === 'app_info'
+        ? Promise.resolve({ generationPort: null })
+        : Promise.resolve(undefined),
+    )
+
+    await act(() => result.current.play())
+    await act(() => result.current.play())
+
+    // One intent, one ring reset — the second tap must not flush the
+    // just-started stream while the button is still dark.
+    expect(deckInvokes()).toEqual([['deck_play', { deck: 0 }]])
+    expect(vi.mocked(channel.reset).mock.calls.length).toBe(1)
+
+    // The snapshot lands: the transport lights and the guard re-arms.
+    act(() => fireStore({ playing: true }))
+    expect(result.current.state.playing).toBe(true)
+  })
+
+  it('re-priming an already-playing deck never wedges the transport guard', async () => {
+    const { engine, channel } = makeFakeEngine()
+    const { result } = renderDeck(engine)
+    act(() => socket(0).serverOpen())
+
+    // The routine set: CUE (prime) → PLAY (drop on air) → CUE → PLAY → CUE.
+    // Re-primes #2 and #3 round-trip as store no-ops (playing already true) —
+    // an intent-armed guard with a transition-gated clear wedged on them.
+    await act(() => result.current.prime())
+    await act(() => result.current.play())
+    await act(() => result.current.prime())
+    await act(() => result.current.play())
+    await act(() => result.current.prime())
+
+    expect(result.current.primed).toBe(true)
+    // Every prime parked the deck off air — none was silently swallowed.
+    const parks = vi.mocked(channel.setOnAir).mock.calls.filter(([on]) => !on)
+    expect(parks.length).toBe(3)
+  })
+})
+
+describe('useDeck note/drum steering (ADR-0023)', () => {
+  /** The chord-follow wire multihot: held pitches at model-decides (3), the
+   * rest off (0). */
+  function chordMultihot(pitches: number[]) {
+    const multihot = new Array<number>(128).fill(0)
+    for (const pitch of pitches) multihot[pitch] = 3
+    return multihot
+  }
+
+  function calls(cmd: string) {
+    return native.invoke.mock.calls.filter(([name]) => name === cmd)
+  }
+
+  async function playingDeck() {
+    const rendered = renderDeck(makeFakeEngine().engine)
+    act(() => socket(0).serverOpen())
+    await act(() => rendered.result.current.play())
+    return rendered
+  }
+
+  it('sends the full chord-follow multihot and mirrors the authored state', async () => {
+    const { result } = await playingDeck()
+    act(() => result.current.setNotes([60, 64, 67]))
+    expect(native.invoke).toHaveBeenCalledWith('deck_set_notes', {
+      deck: 0,
+      notes: chordMultihot([60, 64, 67]),
+    })
+    // The mirror rides nativeEngine's invoke (extra options arg): match on args.
+    expect(calls('set_deck_notes').at(-1)?.[1]).toEqual({
+      deck: 0,
+      notes: { pitches: [60, 64, 67], mode: 'chord' },
+    })
+  })
+
+  it('clears to null on an empty hold — masked, never all-zeros', async () => {
+    const { result } = await playingDeck()
+    act(() => result.current.setNotes([60]))
+    act(() => result.current.setNotes([]))
+    expect(calls('deck_set_notes').at(-1)?.[1]).toEqual({ deck: 0, notes: null })
+    expect(calls('set_deck_notes').at(-1)?.[1]).toEqual({ deck: 0, notes: null })
+  })
+
+  it('filters invalid pitches before authoring — never an all-OFF hold', async () => {
+    const { result } = await playingDeck()
+    // Only the valid pitch survives into the wire AND the store mirror, so the
+    // worker, the local ref, and the store keep telling the same story.
+    act(() => result.current.setNotes([60, 200, -1, 3.5]))
+    expect(calls('deck_set_notes').at(-1)?.[1]).toEqual({
+      deck: 0,
+      notes: chordMultihot([60]),
+    })
+    expect(calls('set_deck_notes').at(-1)?.[1]).toEqual({
+      deck: 0,
+      notes: { pitches: [60], mode: 'chord' },
+    })
+
+    // A hold of ONLY invalid pitches is an empty hold: masked, never the
+    // all-OFF multihot (suppress melody) a skipped-but-non-empty hold implies.
+    act(() => result.current.setNotes([200]))
+    expect(calls('deck_set_notes').at(-1)?.[1]).toEqual({ deck: 0, notes: null })
+    expect(calls('set_deck_notes').at(-1)?.[1]).toEqual({ deck: 0, notes: null })
+  })
+
+  it('onset mode marks fresh presses and sustains continued holds', async () => {
+    const { result } = await playingDeck()
+    act(() => result.current.setNotes([60], 'onset'))
+    let sent = calls('deck_set_notes').at(-1)?.[1] as { notes: number[] }
+    expect(sent.notes[60]).toBe(2)
+
+    act(() => result.current.setNotes([60, 64], 'onset'))
+    sent = calls('deck_set_notes').at(-1)?.[1] as { notes: number[] }
+    expect(sent.notes[60]).toBe(1)
+    expect(sent.notes[64]).toBe(2)
+  })
+
+  it('maps the drum tri-state onto the wire flag and mirrors it', async () => {
+    const { result } = await playingDeck()
+    act(() => result.current.setDrums(false))
+    expect(native.invoke).toHaveBeenCalledWith('deck_set_drums', { deck: 0, drums: 0 })
+    expect(calls('set_deck_drums').at(-1)?.[1]).toEqual({ deck: 0, drums: false })
+
+    act(() => result.current.setDrums(true))
+    expect(calls('deck_set_drums').at(-1)?.[1]).toEqual({ deck: 0, drums: 1 })
+
+    act(() => result.current.setDrums(null))
+    expect(calls('deck_set_drums').at(-1)?.[1]).toEqual({ deck: 0, drums: null })
+  })
+
+  it('adopts external MCP steering from the store, ignoring its own echo', async () => {
+    await playingDeck()
+    act(() => fireStore({ notes: { pitches: [48], mode: 'chord' } }))
+    expect(calls('deck_set_notes').at(-1)?.[1]).toEqual({
+      deck: 0,
+      notes: chordMultihot([48]),
+    })
+    const sends = calls('deck_set_notes').length
+
+    // The store echoing the value we now hold must not re-send.
+    act(() => fireStore({ notes: { pitches: [48], mode: 'chord' } }))
+    expect(calls('deck_set_notes')).toHaveLength(sends)
+  })
+
+  it('adopts external drum steering from the store', async () => {
+    await playingDeck()
+    act(() => fireStore({ drums: false }))
+    expect(calls('deck_set_drums').at(-1)?.[1]).toEqual({ deck: 0, drums: 0 })
+  })
+
+  it('stop clears the held steering locally and in the store', async () => {
+    const { result } = await playingDeck()
+    act(() => result.current.setNotes([60]))
+    act(() => result.current.setDrums(true))
+    act(() => result.current.stop())
+    expect(calls('set_deck_notes').at(-1)?.[1]).toEqual({ deck: 0, notes: null })
+    expect(calls('set_deck_drums').at(-1)?.[1]).toEqual({ deck: 0, drums: null })
+  })
+
+  it('a fresh play clears steering set while stopped', async () => {
+    const { result } = await playingDeck()
+    act(() => result.current.stop())
+    act(() => result.current.setNotes([60]))
+    await act(() => result.current.play())
+    // The play command reset the worker's state; the mirror must agree.
+    expect(calls('set_deck_notes').at(-1)?.[1]).toEqual({ deck: 0, notes: null })
+  })
+
+  it('a model switch clears the held steering — a fresh worker starts masked', async () => {
+    const { result } = await playingDeck()
+    act(() => result.current.setNotes([60]))
+    act(() => socket(0).serverEvent({ event: 'model_loading', model: 'mrt2_base' }))
+    expect(calls('set_deck_notes').at(-1)?.[1]).toEqual({ deck: 0, notes: null })
   })
 })

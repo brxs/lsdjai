@@ -21,10 +21,13 @@ class FakeEngine:
         self.style_sample_keys = []
         self.samples = []
         self.renders = []
+        self.notes = []
+        self.drums = []
         self.fail_set_style = False
         self.fail_embed_sample = False
         self.fail_generate = False
         self.fail_render = False
+        self.fail_set_notes = False
 
     def render_clip(self, prompt, seconds):
         if self.fail_render:
@@ -42,6 +45,14 @@ class FakeEngine:
         if self.fail_embed_sample:
             raise RuntimeError("audio embed blew up")
         self.samples.append((sample_id, len(pcm)))
+
+    def set_notes(self, notes):
+        if self.fail_set_notes:
+            raise ValueError("bad multihot")
+        self.notes.append(notes)
+
+    def set_drums(self, flag):
+        self.drums.append(flag)
 
     def generate_chunk(self):
         if self.fail_generate:
@@ -168,6 +179,69 @@ def test_set_style_resolves_sampled_entries_by_id(deck):
         ("sample:a:1", 0.5),
     ]
     assert deck.engine.style_sample_keys[-1] == frozenset({"sample:a:1"})
+
+
+def test_set_notes_applies_and_reports(deck):
+    multihot = [0] * 128
+    multihot[60] = 3
+    deck.send(type="set_notes", notes=multihot)
+    applied = deck.next_event("notes_applied")
+    assert applied["notes"] == multihot
+    assert applied["effective_from_chunk"] == 0
+    assert deck.engine.notes[-1] == multihot
+
+    # Full-state messages are idempotent: a replay applies cleanly.
+    deck.send(type="set_notes", notes=multihot)
+    assert deck.next_event("notes_applied")["notes"] == multihot
+    assert deck.engine.notes[-1] == multihot
+
+
+def test_set_drums_applies_and_reports(deck):
+    deck.send(type="set_drums", drums=0)
+    applied = deck.next_event("drums_applied")
+    assert applied["drums"] == 0
+    assert applied["effective_from_chunk"] == 0
+    assert deck.engine.drums[-1] == 0
+
+    # None returns the flag to masked — the model decides.
+    deck.send(type="set_drums", drums=None)
+    assert deck.next_event("drums_applied")["drums"] is None
+    assert deck.engine.drums[-1] is None
+
+
+def test_set_notes_failure_keeps_worker_alive(deck):
+    deck.engine.fail_set_notes = True
+    deck.send(type="set_notes", notes=[9])
+    assert "set_notes failed" in deck.next_event("error")["error"]
+
+    deck.engine.fail_set_notes = False
+    deck.send(type="play")
+    assert deck.next_event("audio") == FAKE_PCM
+
+
+def test_play_resets_note_and_drum_conditioning(deck):
+    multihot = [3] * 128
+    deck.send(type="set_notes", notes=multihot)
+    deck.send(type="set_drums", drums=1)
+    deck.next_event("drums_applied")
+    deck.send(type="play")
+    deck.next_event("audio")
+    # A fresh stream starts unsteered (ADR-0023's discontinuity rule).
+    assert deck.engine.notes[-1] is None
+    assert deck.engine.drums[-1] is None
+
+
+def test_stop_resets_note_and_drum_conditioning(deck):
+    deck.send(type="play")
+    deck.next_event("audio")
+    deck.send(type="set_notes", notes=[3] * 128)
+    deck.next_event("notes_applied")
+    deck.send(type="stop")
+    # A follow-up command's echo proves the FIFO drained past the stop.
+    deck.send(type="set_prompt", prompt="proof of drain")
+    deck.next_event("style_applied")
+    assert deck.engine.notes[-1] is None
+    assert deck.engine.drums[-1] is None
 
 
 def test_generation_failure_stops_deck_but_worker_survives(deck):
