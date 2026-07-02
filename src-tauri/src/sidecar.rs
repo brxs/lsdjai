@@ -588,6 +588,24 @@ pub fn sidecar_base_command() -> io::Result<Command> {
     Ok(cmd)
 }
 
+/// Whether a status event ends the deck's transport: the worker stopped
+/// generating — it died, or is reloading for a model switch — so the interface
+/// store's `playing` must drop with it. This is the Rust half of the transport
+/// derivation (ADR-0020: the store owns `playing`); the status relay consults it
+/// before forwarding the event to the webview. Unparseable JSON is not a
+/// transport signal.
+pub fn transport_ended(status_json: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(status_json)
+        .ok()
+        .and_then(|status| {
+            status
+                .get("event")
+                .and_then(|event| event.as_str())
+                .map(|event| event == "worker_died" || event == "model_loading")
+        })
+        .unwrap_or(false)
+}
+
 /// Build the command that launches the Python sidecar for a deck, pointed at the
 /// loopback `port` — the base command plus the deck-mode flags.
 pub fn sidecar_command(deck_id: &str, model: &str, port: u16) -> io::Result<Command> {
@@ -608,6 +626,20 @@ mod tests {
     use super::*;
     use lsdj_engine::Engine;
     use std::net::TcpStream;
+
+    #[test]
+    fn transport_ended_matches_only_worker_end_events() {
+        // The two events after which the worker is no longer generating.
+        assert!(transport_ended(r#"{"event":"worker_died","deck":"a"}"#));
+        assert!(transport_ended(r#"{"event":"model_loading","deck":"a","model":"mrt2_base"}"#));
+        // Everything else — including the events of a healthy stream — is not a
+        // transport signal, and neither is garbage.
+        assert!(!transport_ended(r#"{"event":"ready","deck":"a","model":"mrt2_small"}"#));
+        assert!(!transport_ended(r#"{"event":"chunk","index":3,"rtf":1.2}"#));
+        assert!(!transport_ended(r#"{"event":"error","error":"boom"}"#));
+        assert!(!transport_ended("not json"));
+        assert!(!transport_ended("{}"));
+    }
 
     #[test]
     fn frame_round_trips_through_a_buffer() {

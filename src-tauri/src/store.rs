@@ -464,19 +464,17 @@ impl InterfaceStore {
         self.mutate(|s| s.clear_fx(deck));
     }
 
-    /// Mirror a realtime deck's derived read-backs (model + playing) in one
-    /// mutation. The webview owns the derivation (from worker status + play/stop)
-    /// and writes the current value up; the store holds it for a future MCP read.
-    pub fn set_realtime(&self, deck: usize, model: Option<String>, playing: bool) {
-        self.mutate(move |s| {
-            s.set_model(deck, model);
-            s.set_playing(deck, playing);
-        });
+    /// Mirror a realtime deck's model read-back. The webview derives it from
+    /// worker status (`ready`/`model_loading`) and writes the current value up;
+    /// the store holds it for MCP reads.
+    pub fn set_deck_model(&self, deck: usize, model: Option<String>) {
+        self.mutate(move |s| s.set_model(deck, model));
     }
 
-    /// Set just the realtime deck's play/stop intent (MCP `deck_play` / `deck_stop`).
-    /// The webview adopts it and reflects the transport on screen, leaving the model
-    /// read-back alone.
+    /// Set a realtime deck's transport. The store OWNS `playing` (ADR-0020): the
+    /// `deck_play`/`deck_stop` commands write it for every controller (UI, MIDI,
+    /// MCP), the sidecar status relay drops it when a worker dies or reloads, and
+    /// the webview's button is a projection of this value — never a writer.
     pub fn set_playing(&self, deck: usize, playing: bool) {
         self.mutate(move |s| s.set_playing(deck, playing));
     }

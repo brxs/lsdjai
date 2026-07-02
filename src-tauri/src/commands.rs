@@ -962,6 +962,7 @@ pub struct PromptEntryArg {
 pub fn deck_play(
     state: tauri::State<'_, Sidecars>,
     engine: tauri::State<'_, Host>,
+    store: tauri::State<'_, InterfaceStore>,
     deck: usize,
 ) {
     if valid_deck(deck) {
@@ -969,6 +970,9 @@ pub fn deck_play(
         // arrives, then tell the worker to start generating.
         engine.set_deck_playing(deck, true);
         state.send(deck, &json!({ "type": "play" }).to_string());
+        // The store owns the transport (ADR-0020): every controller's play lands
+        // here, and the webview's button projects the snapshot back down.
+        store.set_playing(deck, true);
     }
 }
 
@@ -976,6 +980,7 @@ pub fn deck_play(
 pub fn deck_stop(
     state: tauri::State<'_, Sidecars>,
     engine: tauri::State<'_, Host>,
+    store: tauri::State<'_, InterfaceStore>,
     deck: usize,
 ) {
     if valid_deck(deck) {
@@ -984,6 +989,7 @@ pub fn deck_stop(
         // would keep playing and then underrun (the native stop bug).
         engine.set_deck_playing(deck, false);
         state.send(deck, &json!({ "type": "stop" }).to_string());
+        store.set_playing(deck, false);
     }
 }
 
@@ -1123,19 +1129,20 @@ pub fn store_snapshot(store: tauri::State<'_, InterfaceStore>) -> InterfaceState
     store.snapshot()
 }
 
-/// Mirror a realtime deck's derived read-backs (model + playing) into the store.
-/// These are derived in the webview from worker status + play/stop, so — unlike the
-/// mixer setters — the webview WRITES the current value up (no engine effect); the
-/// store holds it for a future MCP read (ADR-0020).
+/// Mirror a realtime deck's model read-back into the store. It is derived in the
+/// webview from worker status (`ready`/`model_loading`), so — unlike the mixer
+/// setters — the webview WRITES the current value up (no engine effect); the store
+/// holds it for an MCP read (ADR-0020). `playing` is deliberately NOT mirrored:
+/// the store owns the transport, written only by `deck_play`/`deck_stop` (any
+/// controller) and the sidecar status relay.
 #[tauri::command]
-pub fn set_deck_realtime(
+pub fn set_deck_model(
     store: tauri::State<'_, InterfaceStore>,
     deck: usize,
     model: Option<String>,
-    playing: bool,
 ) {
     if valid_deck(deck) {
-        store.set_realtime(deck, model, playing);
+        store.set_deck_model(deck, model);
     }
 }
 

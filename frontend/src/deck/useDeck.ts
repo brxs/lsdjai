@@ -24,7 +24,7 @@ import {
   getApiBaseUrl,
   setDeckCues,
   setDeckLoopLabels,
-  setDeckRealtime,
+  setDeckModel,
   setDeckTrack,
   setDeckTransport,
   subscribeModelsChanged,
@@ -488,13 +488,15 @@ export function useDeck(deckId: DeckId): DeckControls {
     }
   }, [storeState, deckIndex])
 
-  // Mirror the realtime deck's derived read-backs (model + playing) UP into the
-  // store, so a future MCP agent observes them (ADR-0020). The webview owns the
-  // derivation (worker status + play/stop, in the reducer); this is a write-only
-  // push, not a projection — nothing reads it back into React.
+  // Mirror the realtime deck's model read-back UP into the store, so an MCP agent
+  // observes it (ADR-0020). The webview derives it from worker status ('ready' /
+  // 'model_loading'); a write-only mirror. `playing` is deliberately NOT mirrored:
+  // the store owns the transport — deck_play/deck_stop write it for every
+  // controller, and the Rust status relay drops it when a worker dies or reloads —
+  // and the projection below is the reducer's only coupling to it.
   useEffect(() => {
-    setDeckRealtime(deckIndex, state.model, state.playing)
-  }, [deckIndex, state.model, state.playing])
+    setDeckModel(deckIndex, state.model)
+  }, [deckIndex, state.model])
 
   // Mirror the loaded track's hot-cue points UP into the store (ADR-0015 →
   // ADR-0020): the cue STATE LOCATION moves to the store, while the webview keeps
@@ -626,22 +628,20 @@ export function useDeck(deckId: DeckId): DeckControls {
     return channelPromiseRef.current
   }, [engine, deckId])
 
-  // Adopt an EXTERNAL play/stop from the store (an MCP deck_play / deck_stop) so the
-  // on-screen transport reflects it — the read side the realtime mirror push pairs
-  // with. The agent's tool already drove the engine + worker, so this flips the
-  // reducer's play intent; our own play/stop keeps store and state equal, so it
-  // no-ops. On an external play we also ensure the deck channel exists (idempotent,
-  // applies the current params and starts the stats poll — no ring reset), so the
-  // buffer/BPM/underrun meters populate for an agent-started deck too.
+  // Project the store's transport into the reducer (ADR-0020: the store OWNS
+  // `playing`). Every path lands there — our own play()/stop() via the deck_play /
+  // deck_stop commands, an MCP agent's tools, the Rust status relay when a worker
+  // dies or reloads — so the button lights when the store's snapshot round-trips,
+  // and never before. One direction only (nothing mirrors `playing` back up), so
+  // no echo can loop, and the store's emit order is the total order. On a play we
+  // also ensure the deck channel exists (idempotent — applies the current params
+  // and starts the stats poll, no ring reset), so the buffer/BPM/underrun meters
+  // populate for an agent-started deck too.
   useEffect(() => {
     const storePlaying = storeState?.decks[deckIndex]?.playing
     if (storePlaying === undefined || storePlaying === state.playing) return
-    if (storePlaying) {
-      void ensureChannel().catch(() => {})
-      dispatch({ type: 'play_requested' })
-    } else {
-      dispatch({ type: 'stop_requested' })
-    }
+    if (storePlaying) void ensureChannel().catch(() => {})
+    dispatch({ type: 'playing_changed', playing: storePlaying })
   }, [storeState, deckIndex, state.playing, ensureChannel])
 
   useEffect(() => {
@@ -813,8 +813,9 @@ export function useDeck(deckId: DeckId): DeckControls {
       })
       return
     }
+    // The deck_play command drives the worker AND writes the store's transport;
+    // the button lights when the snapshot round-trips (the transport projection).
     send({ type: 'play' })
-    dispatch({ type: 'play_requested' })
   }, [ensureChannel, engine, send, setPrimed, resetStreamMeasurements])
 
   const seekTrack = useCallback((seconds: number) => {
@@ -865,8 +866,9 @@ export function useDeck(deckId: DeckId): DeckControls {
       return
     }
     setPrimed(true)
+    // A primed deck IS playing (generating, off air): deck_play writes the store's
+    // transport, so the button lights over the same projection as a plain play.
     send({ type: 'play' })
-    dispatch({ type: 'play_requested' })
   }, [ensureChannel, engine, send, setPrimed, resetStreamMeasurements, seekTrack])
 
   // Stop every layered sample on the engine (ADR-0022); the caller resets the UI
@@ -909,7 +911,6 @@ export function useDeck(deckId: DeckId): DeckControls {
     }
     resetStreamMeasurements()
     setPrimed(false)
-    dispatch({ type: 'stop_requested' })
   }, [send, setPrimed, setLoop, resetStreamMeasurements, silenceLayers])
 
   const setStyle = useCallback(

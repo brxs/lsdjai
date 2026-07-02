@@ -418,8 +418,8 @@ impl McpHandler {
             return format!("invalid deck {deck}");
         }
         // Open the engine gate, then tell the worker to generate — the same order
-        // the `deck_play` command takes — and record the intent in the store so the
-        // webview reflects the transport on screen (the bidirectional projection).
+        // the `deck_play` command takes — and write the transport to the store,
+        // which owns `playing` (ADR-0020); the webview's button projects it.
         self.app.state::<Host>().set_deck_playing(deck, true);
         self.app
             .state::<Sidecars>()

@@ -344,12 +344,13 @@ export function subscribeDeckCommand(
   return listenTo('mcp://deck-command', onCommand)
 }
 
-/** Mirror a realtime deck's derived state (model + playing) into the store. The
- * webview owns the derivation (worker status + play/stop); this writes the current
- * value up so the store stays the single source of truth — no engine effect.
+/** Mirror a realtime deck's model read-back into the store. The webview derives it
+ * from worker status ('ready'/'model_loading') and writes the current value up — no
+ * engine effect. `playing` is NOT mirrored: the store owns the transport
+ * (deck_play/deck_stop + the Rust status relay) and the webview only projects it.
  * Fire-and-forget (a dropped mirror write must never surface as a rejection). */
-export function setDeckRealtime(deck: number, model: string | null, playing: boolean): void {
-  void invoke('set_deck_realtime', { deck, model, playing }).catch(() => {})
+export function setDeckModel(deck: number, model: string | null): void {
+  void invoke('set_deck_model', { deck, model }).catch(() => {})
 }
 
 /** Mirror a playback deck's hot-cue points into the store (ADR-0015 → ADR-0020).

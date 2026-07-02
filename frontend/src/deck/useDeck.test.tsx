@@ -48,18 +48,28 @@ const native: {
   statusCb: ((e: { payload: { deck: number; json: string } }) => void) | null
   storeCb: ((e: { payload: InterfaceState }) => void) | null
   pcmChannel: NativeChannel | null
-} = { invoke: vi.fn(), statusCb: null, storeCb: null, pcmChannel: null }
+  /** The harness store's transport for deck 'a' (index 0): the Rust store owns
+   * `playing` (ADR-0020), so the mock must too — deck_play/deck_stop write it and
+   * echo `store://changed`, and every fired snapshot carries the current value. */
+  storePlaying: boolean
+} = { invoke: vi.fn(), statusCb: null, storeCb: null, pcmChannel: null, storePlaying: false }
 
 function installNativeTauri() {
   native.statusCb = null
   native.storeCb = null
   native.pcmChannel = null
-  native.invoke = vi.fn((cmd: string) =>
+  native.storePlaying = false
+  native.invoke = vi.fn((cmd: string) => {
+    // The Rust deck_play/deck_stop commands write the store's transport and the
+    // store echoes a snapshot — with the real dedupe (a no-change mutation emits
+    // nothing). The webview's button only lights through this round-trip.
+    if (cmd === 'deck_play' && !native.storePlaying) fireStore({ playing: true })
+    if (cmd === 'deck_stop' && native.storePlaying) fireStore({ playing: false })
     // app_info feeds getApiBaseUrl(); null port → '' (relative fetches).
-    cmd === 'app_info'
+    return cmd === 'app_info'
       ? Promise.resolve({ generationPort: null })
-      : Promise.resolve(undefined),
-  )
+      : Promise.resolve(undefined)
+  })
   class Channel {
     onmessage: ((buffer: ArrayBuffer) => void) | null = null
     constructor() {
@@ -94,8 +104,16 @@ function installNativeTauri() {
  * (index 0); `socket(0)` reads like the old fake-WebSocket accessor. */
 const socket = (deck: number) => ({
   serverOpen: () => {},
-  serverEvent: (event: object) =>
-    native.statusCb?.({ payload: { deck, json: JSON.stringify(event) } }),
+  serverEvent: (event: object) => {
+    // The Rust status relay derives the transport (ADR-0020): a dying or
+    // model-switching worker drops the store's `playing` before the event is
+    // forwarded — emulate it, so the projection is what the tests exercise.
+    const name = (event as { event?: string }).event
+    if ((name === 'model_loading' || name === 'worker_died') && native.storePlaying) {
+      fireStore({ playing: false })
+    }
+    native.statusCb?.({ payload: { deck, json: JSON.stringify(event) } })
+  },
 })
 
 /** Fire the captured PCM Channel's onmessage with one raw f32 frame buffer —
@@ -124,10 +142,14 @@ function storeDeck(): DeckSnap {
   }
 }
 
-/** Fire a `store://changed` event with deck 'a' (index 0) carrying `mix`. */
+/** Fire a `store://changed` event with deck 'a' (index 0) carrying `mix`. Deck 0's
+ * transport rides the harness store: a `playing` in `mix` moves it, and every
+ * snapshot carries the current value — like the real full-snapshot events, so
+ * unrelated churn never claims a playing deck stopped. */
 function fireStore(mix: Partial<DeckSnap>) {
+  if (mix.playing !== undefined) native.storePlaying = mix.playing
   const payload: InterfaceState = {
-    decks: [{ ...storeDeck(), ...mix }, storeDeck()],
+    decks: [{ ...storeDeck(), playing: native.storePlaying, ...mix }, storeDeck()],
     crossfade: 0.5,
     cueMix: 0.5,
   }
@@ -306,6 +328,8 @@ describe('useDeck connection', () => {
     act(() => socket(0).serverEvent({ event: 'worker_died', model: 'mrt2_small' }))
     expect(vi.mocked(channel.reset).mock.calls.length).toBe(resetsBefore + 1)
     expect(result.current.state.workerDied).toBe(true)
+    // The Rust relay dropped the store's transport; the projection followed.
+    expect(result.current.state.playing).toBe(false)
   })
 
   it('maps set_model and restart to native deck_set_model', () => {
@@ -1805,15 +1829,65 @@ describe('useDeck mixer projection (ADR-0020)', () => {
   })
 })
 
-describe('useDeck realtime mirror (ADR-0020)', () => {
-  it('writes the derived playing state up via set_deck_realtime', async () => {
+describe('useDeck realtime mirror + transport projection (ADR-0020)', () => {
+  it('mirrors the worker-reported model up via set_deck_model', () => {
+    renderDeck(makeFakeEngine().engine)
+    act(() => socket(0).serverOpen())
+    act(() => socket(0).serverEvent({ event: 'ready', deck: 'a', model: 'mrt2_base' }))
+    const calls = native.invoke.mock.calls.filter(([cmd]) => cmd === 'set_deck_model')
+    expect(calls.at(-1)?.[1]).toEqual({ deck: 0, model: 'mrt2_base' })
+  })
+
+  it('lights the transport from the store snapshot, never from local intent', async () => {
     const { result } = renderDeck(makeFakeEngine().engine)
-    await act(() => result.current.play())
-    const calls = native.invoke.mock.calls.filter(
-      ([cmd]) => cmd === 'set_deck_realtime',
+    act(() => socket(0).serverOpen())
+    // Sever the harness echo: deck_play reaches Rust, no snapshot has landed yet.
+    native.invoke.mockImplementation((cmd: string) =>
+      cmd === 'app_info'
+        ? Promise.resolve({ generationPort: null })
+        : Promise.resolve(undefined),
     )
-    // The write-only mirror fired, and the latest carries playing:true for deck 0.
-    expect(calls.length).toBeGreaterThan(0)
-    expect(calls.at(-1)?.[1]).toMatchObject({ deck: 0, playing: true })
+
+    await act(() => result.current.play())
+    // Pure projection: play() emits the intent but no longer flips the reducer.
+    expect(deckInvokes()).toEqual([['deck_play', { deck: 0 }]])
+    expect(result.current.state.playing).toBe(false)
+
+    // The store round-trip lands → the button lights.
+    act(() => fireStore({ playing: true }))
+    expect(result.current.state.playing).toBe(true)
+  })
+
+  it('adopts an agent play from the store and readies the deck channel', async () => {
+    const { engine } = makeFakeEngine()
+    const { result } = renderDeck(engine)
+    act(() => socket(0).serverOpen())
+
+    await act(async () => fireStore({ playing: true }))
+
+    expect(result.current.state.playing).toBe(true)
+    // The channel exists too, so the meters populate for an agent-started deck.
+    expect(engine.createDeckChannel).toHaveBeenCalled()
+  })
+
+  it('adopts an agent stop from the store', async () => {
+    const { result } = renderDeck(makeFakeEngine().engine)
+    act(() => socket(0).serverOpen())
+    await act(() => result.current.play())
+    expect(result.current.state.playing).toBe(true)
+
+    act(() => fireStore({ playing: false }))
+    expect(result.current.state.playing).toBe(false)
+  })
+
+  it('unrelated store churn leaves the transport alone', async () => {
+    const { result } = renderDeck(makeFakeEngine().engine)
+    act(() => socket(0).serverOpen())
+    await act(() => result.current.play())
+
+    // A snapshot fired for another control (a mixer echo, the other deck's
+    // transport mirror) carries the store's CURRENT playing — the deck stays lit.
+    act(() => fireStore({ volume: 0.3 }))
+    expect(result.current.state.playing).toBe(true)
   })
 })
