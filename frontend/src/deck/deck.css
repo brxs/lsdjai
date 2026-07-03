@@ -153,6 +153,13 @@
   --perform-rail: 1rem;
 }
 
+.deck--a .ui-xypad__surface,
+.deck--b .ui-xypad__surface {
+  /* The gutter comes OUT of the square's width — width:100% plus a margin
+     would overflow the panel by one rail. The 19rem cap still applies. */
+  width: calc(100% - var(--perform-rail));
+}
+
 .deck--a .ui-xypad__surface {
   margin-inline: var(--perform-rail) auto;
 }
