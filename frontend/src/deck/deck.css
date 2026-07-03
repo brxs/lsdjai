@@ -149,7 +149,9 @@
   overflow: hidden;
 }
 
-/* The door handle: a slim vertical tab on the pad's edge. */
+/* The door handle: a slim vertical tab on the pad's edge. Idle it reads as
+   a dark tab in the deck's accent ink; while MIDI steer is on it burns full
+   accent — the state stays legible with the door shut. */
 .deck__perform-handle {
   position: absolute;
   top: 50%;
@@ -160,20 +162,30 @@
   font: var(--silkscreen);
   letter-spacing: var(--silkscreen-spacing);
   text-transform: uppercase;
-  color: var(--color-on-accent);
+  background: var(--color-surface-raised);
   border: 1px solid var(--color-border-strong);
   cursor: pointer;
 }
 
 .deck__perform-handle--a {
   left: 0;
-  background: var(--color-deck-a);
+  color: var(--color-deck-a);
 }
 
 .deck__perform-handle--b {
   right: 0;
-  background: var(--color-deck-b);
+  color: var(--color-deck-b);
   transform: translateY(-50%) rotate(180deg);
+}
+
+.deck__perform-handle--live.deck__perform-handle--a {
+  background: var(--color-deck-a);
+  color: var(--color-on-accent);
+}
+
+.deck__perform-handle--live.deck__perform-handle--b {
+  background: var(--color-deck-b);
+  color: var(--color-on-accent);
 }
 
 /* The door itself: a flat accent slab with a faint scanline texture and a

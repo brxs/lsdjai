@@ -1,9 +1,10 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { useInterfaceStore } from '../audio/interfaceStore'
 import { setDeckPerformance, type DeckSnap } from '../audio/nativeEngine'
 import type { DeckId } from '../audio/types'
+import { Button } from '../ui/Button'
 import { Select } from '../ui/Select'
 
 /** Pitch-class names for the key picker and the held-note readout. */
@@ -20,14 +21,13 @@ function pitchName(pitch: number): string {
 
 /** The issue-48 performance surface as a sliding door over the 2D prompt pad
  * (ADR-0031): deck A's slides in from the left, deck B's from the right, in
- * the deck's accent. THE DOOR IS THE ARM STATE — opening it arms the deck
- * (FLX4 KEYBOARD pads and MIDI keys steer its harmony; generation tightens
- * to ~200 ms chunks), closing it disarms. A pure projection of the store's
- * performance config: the shell note-steering service owns the state, and
- * hardware arms it too (the FLX4's KEYBOARD pad-mode button slides the door
- * from the controller), so this renders whatever the store says, whoever
- * wrote it. The covered pad is the point: while the door is open the deck
- * plays notes, not prompt edits. */
+ * the deck's accent. The door is the CONFIG surface (view state, local per
+ * ADR-0020's narrowing); the MIDI STEER toggle inside it is the semantic arm
+ * (`performance.armed` in the store): while on, FLX4 KEYBOARD pads and MIDI
+ * keys steer the deck at ~200 ms chunks — door open or closed. Hardware arms
+ * it too (the KEYBOARD pad-mode selector), so a steering rising edge slides
+ * the door open to surface the config, and the handle burns in the deck
+ * accent while steering so the state reads with the door shut. */
 export function PerformanceDrawer({
   deckId,
   deckIndex,
@@ -45,12 +45,24 @@ export function PerformanceDrawer({
   )
   const held = snap?.notes?.pitches ?? []
 
+  // Door visibility is ephemeral view state (ADR-0020 narrowing): closing it
+  // does NOT stop steering. It auto-opens on a steering rising edge so an arm
+  // from the hardware selector (or a first pad press) surfaces the config.
+  const [open, setOpen] = useState(false)
+  const wasArmedRef = useRef(perf.armed)
+  useEffect(() => {
+    if (perf.armed && !wasArmedRef.current) setOpen(true)
+    wasArmedRef.current = perf.armed
+  }, [perf.armed])
+
   const write = useCallback(
     (next: Performance) => setDeckPerformance(deckIndex, next),
     [deckIndex],
   )
-  const open = useCallback(() => write({ ...perf, armed: true }), [write, perf])
-  const close = useCallback(() => write({ ...perf, armed: false }), [write, perf])
+  const toggleSteer = useCallback(
+    () => write({ ...perf, armed: !perf.armed }),
+    [write, perf],
+  )
   const onKey = useCallback(
     (value: string) => write({ ...perf, key: NOTE_NAMES.indexOf(value) }),
     [write, perf],
@@ -77,26 +89,28 @@ export function PerformanceDrawer({
     <>
       <button
         type="button"
-        className={`deck__perform-handle deck__perform-handle--${deckId}`}
-        onClick={open}
-        aria-expanded={perf.armed}
+        className={`deck__perform-handle deck__perform-handle--${deckId}${
+          perf.armed ? ' deck__perform-handle--live' : ''
+        }`}
+        onClick={() => setOpen(true)}
+        aria-expanded={open}
       >
         {t('deck.perform.open')}
       </button>
       <section
         className={`deck__perform-door deck__perform-door--${deckId}${
-          perf.armed ? ' deck__perform-door--open' : ''
+          open ? ' deck__perform-door--open' : ''
         }`}
         role="group"
         aria-label={t('deck.perform.title')}
-        aria-hidden={!perf.armed}
+        aria-hidden={!open}
       >
         <header className="deck__perform-head">
           <h3 className="deck__perform-title">{t('deck.perform.title')}</h3>
           <button
             type="button"
             className="deck__perform-close"
-            onClick={close}
+            onClick={() => setOpen(false)}
             aria-label={t('deck.perform.close')}
           >
             ✕
@@ -104,6 +118,13 @@ export function PerformanceDrawer({
         </header>
         <p className="deck__perform-hint">{t('deck.perform.hint')}</p>
         <div className="deck__perform-row">
+          <Button
+            onClick={toggleSteer}
+            aria-pressed={perf.armed}
+            lit={perf.armed}
+          >
+            {t('deck.perform.steer')}
+          </Button>
           <Select
             label={t('deck.perform.key')}
             value={NOTE_NAMES[perf.key] ?? 'C'}
@@ -124,9 +145,11 @@ export function PerformanceDrawer({
           />
         </div>
         <p className="deck__perform-live" role="status">
-          {held.length
-            ? t('deck.perform.held', { notes: held.map(pitchName).join(' ') })
-            : t('deck.perform.live')}
+          {!perf.armed
+            ? t('deck.perform.off')
+            : held.length
+              ? t('deck.perform.held', { notes: held.map(pitchName).join(' ') })
+              : t('deck.perform.live')}
         </p>
       </section>
     </>
