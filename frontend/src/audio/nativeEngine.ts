@@ -334,6 +334,13 @@ export type DeckSnap = {
     liveBeat: { anchorFrame: number; bpm: number } | null
     originFrames: number
   }
+  /** The worker crashed / is reloading — shell-written from the status relay
+   * (ADR-0020 phase A), so an agent sees deck health without the webview. */
+  workerDied: boolean
+  switchingModel: boolean
+  /** The deck's hardware SHIFT held-state, written by the native translator
+   * (the origin). */
+  shiftHeld: boolean
 }
 
 /** The authoritative interface state the webview projects (mirrors Rust
@@ -343,6 +350,14 @@ export type InterfaceState = {
   decks: DeckSnap[]
   crossfade: number
   cueMix: number
+  /** The shell recorder's state — written by the recording commands, so a
+   * reload (or an agent) reads the truth instead of a local flag. */
+  recording: { active: boolean; path: string | null }
+  /** Shell-persisted settings (ADR-0020 phase A): the pickers project these;
+   * the device/folder commands persist them Rust-side. */
+  mainDevice: string
+  cueDevice: string
+  recordingsFolder: string
 }
 
 /** Fetch the current interface-state snapshot (the projection's initial hydrate). */
@@ -439,6 +454,11 @@ export function setDeckLoopLabels(deck: number, labels: (string | null)[]): void
  * state, read by the native LED painter — ADR-0031). Fire-and-forget. */
 export function setDeckPrimed(deck: number, primed: boolean): void {
   void invoke('set_deck_primed', { deck, primed }).catch(() => {})
+}
+
+/** Set (and shell-persist) the recordings folder — "" = Downloads. */
+export function setRecordingsFolder(folder: string): void {
+  void invoke('set_recordings_folder', { folder }).catch(() => {})
 }
 
 /** Set a deck's performance-surface config (issue #48): arm/disarm, key,

@@ -38,12 +38,19 @@ const deck = (): DeckSnap => ({
   notes: null,
   drums: null,
   analysis: { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 },
+  workerDied: false,
+  switchingModel: false,
+  shiftHeld: false,
 })
 
 const sample = (over: Partial<InterfaceState> = {}): InterfaceState => ({
   decks: [deck(), deck()],
   crossfade: 0.3,
   cueMix: 0.4,
+  recording: { active: false, path: null },
+  mainDevice: '',
+  cueDevice: '',
+  recordingsFolder: '',
   ...over,
 })
 

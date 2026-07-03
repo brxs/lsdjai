@@ -397,6 +397,7 @@ fn recordings_dir(app: &tauri::AppHandle, folder: &str) -> Result<std::path::Pat
 #[tauri::command]
 pub fn start_recording(
     state: tauri::State<'_, Host>,
+    store: tauri::State<'_, InterfaceStore>,
     app: tauri::AppHandle,
     folder: String,
     name: String,
@@ -411,15 +412,28 @@ pub fn start_recording(
         let _ = std::fs::remove_file(&path);
         return Err(e);
     }
-    Ok(path.to_string_lossy().into_owned())
+    let path = path.to_string_lossy().into_owned();
+    // The recorder's state lives in the store (ADR-0020): a webview reload —
+    // or an agent — reads the truth instead of a local flag.
+    store.set_recording(true, Some(path.clone()));
+    Ok(path)
 }
 
 /// Stop recording: the engine flushes the remaining audio, patches the WAV header,
 /// and closes the file that [`start_recording`] opened. The path was already
 /// returned at start, so nothing comes back here but success or a write error.
 #[tauri::command]
-pub fn stop_recording(state: tauri::State<'_, Host>) -> Result<(), String> {
-    state.stop_recording()
+pub fn stop_recording(
+    state: tauri::State<'_, Host>,
+    store: tauri::State<'_, InterfaceStore>,
+) -> Result<(), String> {
+    let result = state.stop_recording();
+    if result.is_ok() {
+        // Keep the finished take's path readable until the next one starts.
+        let path = store.snapshot().recording.path;
+        store.set_recording(false, path);
+    }
+    result
 }
 
 /// Reveal the recordings folder in the OS file manager (driven from Rust, no opener

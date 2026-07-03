@@ -820,12 +820,19 @@ describe('DeckColumn', () => {
       notes: null,
       drums: null,
       analysis: { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 },
+      workerDied: false,
+      switchingModel: false,
+      shiftHeld: false,
       ...over,
     })
     const storeWith = (over: Partial<DeckSnap>): InterfaceState => ({
       decks: [deckSnap(over), deckSnap({})],
       crossfade: 0.5,
       cueMix: 0.5,
+      recording: { active: false, path: null },
+      mainDevice: '',
+      cueDevice: '',
+      recordingsFolder: '',
     })
 
     try {

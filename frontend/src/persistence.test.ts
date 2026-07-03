@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   loadAppSettings,
   loadDeckSettings,
+  takeLegacyShellSettings,
   updateAppSettings,
   updateDeckSettings,
 } from './persistence'
@@ -98,15 +99,29 @@ describe('persistence', () => {
     })
   })
 
-  it('round-trips the main (outputDevice) and cue (cueDevice) device names', () => {
-    updateAppSettings({ outputDevice: 'MacBook Speakers' })
-    updateAppSettings({ cueDevice: 'DDJ-FLX4' })
-    const loaded = loadAppSettings()
-    expect(loaded.outputDevice).toBe('MacBook Speakers')
-    expect(loaded.cueDevice).toBe('DDJ-FLX4')
-    // An empty name is "system default" / "same as main" — not persisted.
-    updateAppSettings({ cueDevice: '' })
-    expect(loadAppSettings().cueDevice).toBeUndefined()
+  it('migrates legacy device/folder settings ONCE, stripping the keys (ADR-0020 phase A)', () => {
+    // A blob saved by a pre-inversion build: shell-owned settings still in
+    // localStorage beside the surviving webview ones.
+    localStorage.setItem(
+      'lsdj:v1',
+      JSON.stringify({
+        app: {
+          crossfade: 0.4,
+          outputDevice: 'MacBook Speakers',
+          cueDevice: 'DDJ-FLX4',
+          recordingsFolder: '/Users/dj/Sets',
+        },
+      }),
+    )
+    expect(takeLegacyShellSettings()).toEqual({
+      outputDevice: 'MacBook Speakers',
+      cueDevice: 'DDJ-FLX4',
+      recordingsFolder: '/Users/dj/Sets',
+    })
+    // The keys are gone; the surviving settings are untouched; a second take
+    // finds nothing (the shell file owns them now).
+    expect(loadAppSettings()).toEqual({ crossfade: 0.4 })
+    expect(takeLegacyShellSettings()).toBeNull()
   })
 
   it('round-trips the beat view layout and drops garbage (M22)', () => {
@@ -124,20 +139,13 @@ describe('persistence', () => {
     expect(loadAppSettings().mediaHeight).toBe(320)
   })
 
-  it('round-trips the recordings folder, including an explicit reset to Downloads', () => {
-    updateAppSettings({ recordingsFolder: '/Users/dj/Sets' })
-    expect(loadAppSettings().recordingsFolder).toBe('/Users/dj/Sets')
-    // '' is a real value — "back to the Downloads default" — not a dropped field.
-    updateAppSettings({ recordingsFolder: '' })
-    expect(loadAppSettings().recordingsFolder).toBe('')
-  })
-
-  it('drops a non-string recordings folder', () => {
+  it('ignores garbage in the legacy shell-setting keys during migration', () => {
     localStorage.setItem(
       'lsdj:v1',
-      JSON.stringify({ app: { recordingsFolder: 42 } }),
+      JSON.stringify({ app: { recordingsFolder: 42, outputDevice: '' } }),
     )
-    expect(loadAppSettings().recordingsFolder).toBeUndefined()
+    // Nothing valid to migrate — and nothing to migrate is null, not {}.
+    expect(takeLegacyShellSettings()).toBeNull()
   })
 
   it('clamps the media height and drops a non-boolean open flag', () => {

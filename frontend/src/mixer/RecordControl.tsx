@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { useAudioEngine } from '../audio/engineContext'
+import { useInterfaceStore } from '../audio/interfaceStore'
 import { useControlBus } from '../control/busContext'
 import { Button } from '../ui/Button'
 import './mixer.css'
@@ -30,7 +31,10 @@ export function RecordControl({
 }) {
   const { t } = useTranslation()
   const engine = useAudioEngine()
-  const [recording, setRecording] = useState(false)
+  // The recorder's state is the store's (ADR-0020 phase A): the commands
+  // write it shell-side, so a webview reload — or an agent's take — reads
+  // the truth instead of a local flag.
+  const recording = useInterfaceStore()?.recording.active ?? false
   const [busy, setBusy] = useState(false)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [error, setError] = useState<string | null>(null)
@@ -59,9 +63,7 @@ export function RecordControl({
         setSavingPath(path)
         setElapsedSeconds(0)
         setSaved(null)
-        setRecording(true)
       } else {
-        setRecording(false)
         await engine.stopRecording()
         // Reassure the user where the take landed — the basename is enough; the
         // chosen folder is shown in settings.
@@ -69,7 +71,6 @@ export function RecordControl({
       }
       setError(null)
     } catch (cause) {
-      setRecording(false)
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setBusy(false)

@@ -142,6 +142,14 @@ impl Shared {
         match translated {
             Translated::None => {}
             Translated::Intent(intent) => {
+                // SHIFT originates HERE, so the store learns it at the source
+                // (ADR-0020 phase A); the intent still rides to the webview,
+                // whose copy projects it until the jog-steering consolidates.
+                if let translate::Intent::Shift { deck, held } = intent {
+                    if let Some(store) = self.app.try_state::<InterfaceStore>() {
+                        store.set_deck_shift(deck.index(), held);
+                    }
+                }
                 let _ = self.app.emit(INTENT_EVENT, &intent);
             }
             Translated::PerformancePad { deck, pad, down } => {

@@ -13,6 +13,7 @@ import {
   getMcpInfo,
   rotateMcpToken,
   setMcpPort,
+  setRecordingsFolder,
   subscribeLoadTrack,
   subscribeLoadSample,
   subscribeDeckCommand,
@@ -42,6 +43,7 @@ import {
   deletePreset,
   loadAppSettings,
   loadPresets,
+  takeLegacyShellSettings,
   updateAppSettings,
   upsertPresets,
   type AccentTheme,
@@ -255,13 +257,11 @@ function App() {
   // The chosen native MAIN output device by name (empty = system default;
   // master → its ch 1/2) and the headphone CUE device (empty = "same as main",
   // the FLX4 phones on ch 3/4; a different name routes cue to a second device).
-  // App owns the persisted choices; each picker owns its live list and switch.
-  const [mainDevice, setMainDevice] = useState(
-    () => loadAppSettings().outputDevice ?? '',
-  )
-  const [cueDevice, setCueDevice] = useState(
-    () => loadAppSettings().cueDevice ?? '',
-  )
+  // Shell-persisted store settings (ADR-0020 phase A): the pickers project the
+  // snapshot; a successful switch records + persists Rust-side, and the shell
+  // re-applies them at boot — no localStorage, no webview replay.
+  const mainDevice = store?.mainDevice ?? ''
+  const cueDevice = store?.cueDevice ?? ''
   // The beat view's home (M22): centre stacked, top bar, or off.
   const [beatView, setBeatView] = useState<BeatViewLayout>(
     () => loadAppSettings().beatView ?? 'center',
@@ -308,18 +308,15 @@ function App() {
     updateAppSettings({ accent: value })
   }, [])
 
-  // Where master-bus recordings are saved (empty = the OS Downloads folder, the
-  // default). App owns the persisted choice; RecordControl reads it to save the
-  // take, the Rust side recreates the folder and falls back to Downloads.
-  const [recordingsFolder, setRecordingsFolder] = useState(
-    () => loadAppSettings().recordingsFolder ?? '',
-  )
+  // Where master-bus recordings are saved (empty = the OS Downloads folder,
+  // the default). A shell-persisted store setting (ADR-0020 phase A):
+  // RecordControl reads the projection, the command persists Rust-side.
+  const recordingsFolder = store?.recordingsFolder ?? ''
   const [recordingsFolderError, setRecordingsFolderError] = useState<string | null>(
     null,
   )
   const handleRecordingsFolder = useCallback((path: string) => {
     setRecordingsFolder(path)
-    updateAppSettings({ recordingsFolder: path })
   }, [])
   const chooseRecordingsFolder = useCallback(async () => {
     setRecordingsFolderError(null)
@@ -378,26 +375,31 @@ function App() {
   useEffect(() => {
     engine.setCrossfade(crossfade)
     engine.setCueMix(cueMix)
-    // Apply persisted device choices best-effort (either may be gone since last
-    // run). Main first, so a "same as main" cue resolves against the right
-    // device on the engine side.
-    if (mainDevice) void engine.setMainDevice(mainDevice).catch(() => {})
-    if (cueDevice) void engine.setCueDevice(cueDevice).catch(() => {})
+    // Devices are no longer replayed here: the SHELL hydrates its persisted
+    // settings before the webview exists (ADR-0020 phase A).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine])
 
-  // The one place a successful device switch lands: state + persist. The picker
-  // has already performed the switch on the engine; we only record the choice
-  // (so a rejected switch never reaches here and the selection reverts to the
-  // last good value). Main persists under the legacy `outputDevice` key.
-  const handleMainDevice = useCallback((name: string) => {
-    setMainDevice(name)
-    updateAppSettings({ outputDevice: name })
-  }, [])
-  const handleCueDevice = useCallback((name: string) => {
-    setCueDevice(name)
-    updateAppSettings({ cueDevice: name })
-  }, [])
+  // One-time migration: device/folder choices saved by pre-inversion builds
+  // live in localStorage; once the store hydrates empty (a fresh shell
+  // settings file), push the legacy values through the same commands a picker
+  // uses — they persist shell-side — and drop the localStorage keys.
+  const migratedShellSettingsRef = useRef(false)
+  useEffect(() => {
+    if (!store || migratedShellSettingsRef.current) return
+    migratedShellSettingsRef.current = true
+    const legacy = takeLegacyShellSettings()
+    if (!legacy) return
+    if (legacy.outputDevice && !store.mainDevice) {
+      void engine.setMainDevice(legacy.outputDevice).catch(() => {})
+    }
+    if (legacy.cueDevice && !store.cueDevice) {
+      void engine.setCueDevice(legacy.cueDevice).catch(() => {})
+    }
+    if (legacy.recordingsFolder && !store.recordingsFolder) {
+      setRecordingsFolder(legacy.recordingsFolder)
+    }
+  }, [store, engine])
 
   useEffect(() => {
     window.addEventListener('keydown', handleShortcutKey)
@@ -761,15 +763,10 @@ function App() {
         <section className="modelmgr__section">
           <h3 className="modelmgr__heading">{t('settings.audio')}</h3>
           <div className="settings-audio">
-            <OutputDevicePicker
-              mode="main"
-              value={mainDevice}
-              onSelect={handleMainDevice}
-            />
+            <OutputDevicePicker mode="main" value={mainDevice} />
             <OutputDevicePicker
               mode="cue"
               value={cueDevice}
-              onSelect={handleCueDevice}
               mainDeviceName={mainDevice}
             />
           </div>

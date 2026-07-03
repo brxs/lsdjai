@@ -36,23 +36,45 @@ export type AppSettings = {
   cueMix: number
   beatView: BeatViewLayout
   accent: AccentTheme
-  /** Last-chosen native MAIN output device, by name (master → ch 1/2). The
-   * device may be gone on reload, so applying it is best-effort. (Key kept as
-   * `outputDevice` for back-compat with settings saved before the cue split.) */
-  outputDevice: string
-  /** Last-chosen headphone CUE output device, by name. Empty = "same as main"
-   * (the FLX4 phones jack on ch 3/4); a different name routes the cue to a
-   * second device. Best-effort on reload, like outputDevice. */
-  cueDevice: string
   /** Media-tray drawer state: whether it's expanded, and its height in px
    * (clamped to the tray's bounds on load). */
   mediaOpen: boolean
   mediaHeight: number
-  /** Folder master-bus recordings are saved into. Empty = the OS Downloads
-   * folder (the default); a chosen folder is an absolute path the user picked
-   * through the native dialog. The folder may be gone on reload — the Rust save
-   * recreates it, falling back to Downloads only when empty. */
-  recordingsFolder: string
+}
+
+/** The settings that moved to shell-side persistence (ADR-0020 phase A:
+ * output devices, recordings folder). Pre-inversion builds saved them in
+ * localStorage; this reads them ONCE for migration and strips the keys so
+ * they can never shadow the shell's settings file again. Null when nothing
+ * is left to migrate. */
+export function takeLegacyShellSettings(): {
+  outputDevice?: string
+  cueDevice?: string
+  recordingsFolder?: string
+} | null {
+  const persisted = read()
+  const stored = persisted.app as Record<string, unknown> | undefined
+  if (!stored || typeof stored !== 'object') return null
+  const legacy: {
+    outputDevice?: string
+    cueDevice?: string
+    recordingsFolder?: string
+  } = {}
+  if (typeof stored.outputDevice === 'string' && stored.outputDevice) {
+    legacy.outputDevice = stored.outputDevice
+  }
+  if (typeof stored.cueDevice === 'string' && stored.cueDevice) {
+    legacy.cueDevice = stored.cueDevice
+  }
+  if (typeof stored.recordingsFolder === 'string' && stored.recordingsFolder) {
+    legacy.recordingsFolder = stored.recordingsFolder
+  }
+  if (!Object.keys(legacy).length) return null
+  delete stored.outputDevice
+  delete stored.cueDevice
+  delete stored.recordingsFolder
+  write(persisted)
+  return legacy
 }
 
 const STORAGE_KEY = 'lsdj:v1'
@@ -181,22 +203,11 @@ export function loadAppSettings(): Partial<AppSettings> {
   ) {
     settings.accent = stored.accent
   }
-  if (typeof stored.outputDevice === 'string' && stored.outputDevice) {
-    settings.outputDevice = stored.outputDevice
-  }
-  if (typeof stored.cueDevice === 'string' && stored.cueDevice) {
-    settings.cueDevice = stored.cueDevice
-  }
   if (typeof stored.mediaOpen === 'boolean') {
     settings.mediaOpen = stored.mediaOpen
   }
   if (Number.isFinite(stored.mediaHeight)) {
     settings.mediaHeight = clampMediaHeight(stored.mediaHeight as number)
-  }
-  // A string (including '' — an explicit "back to Downloads") round-trips; any
-  // other shape loads as absent and the default ('') applies.
-  if (typeof stored.recordingsFolder === 'string') {
-    settings.recordingsFolder = stored.recordingsFolder
   }
   return settings
 }

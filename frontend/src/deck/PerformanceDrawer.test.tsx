@@ -39,6 +39,9 @@ function deckSnap(over: Partial<DeckSnap> = {}): DeckSnap {
     notes: null,
     drums: null,
     analysis: { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 },
+    workerDied: false,
+    switchingModel: false,
+    shiftHeld: false,
     ...over,
   }
 }
@@ -48,6 +51,10 @@ function storeWith(deck1: Partial<DeckSnap>): InterfaceState {
     decks: [deckSnap(), deckSnap(deck1)],
     crossfade: 0.5,
     cueMix: 0.5,
+    recording: { active: false, path: null },
+    mainDevice: '',
+    cueDevice: '',
+    recordingsFolder: '',
   }
 }
 

@@ -614,17 +614,20 @@ pub fn sidecar_base_command() -> io::Result<Command> {
 /// play-button-swallows-presses bug, found on the device). Unparseable JSON
 /// is not a transport signal.
 pub fn transport_ended(status_json: &str) -> bool {
+    matches!(
+        status_event(status_json).as_deref(),
+        Some("worker_died") | Some("model_loading") | Some("stopped")
+    )
+}
+
+/// The status line's event name, if the JSON parses to one — the relay's
+/// single parse point for transport and worker-health derivation.
+pub fn status_event(status_json: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(status_json)
-        .ok()
-        .and_then(|status| {
-            status
-                .get("event")
-                .and_then(|event| event.as_str())
-                .map(|event| {
-                    event == "worker_died" || event == "model_loading" || event == "stopped"
-                })
-        })
-        .unwrap_or(false)
+        .ok()?
+        .get("event")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 /// Build the command that launches the Python sidecar for a deck, pointed at the

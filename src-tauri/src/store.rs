@@ -311,6 +311,16 @@ pub struct DeckSnap {
     /// The deck's live beat analysis (ADR-0025) — a shell-written measurement,
     /// blank until the honesty gate acquires.
     pub analysis: AnalysisSnap,
+    /// The worker crashed and has not been restarted (the status relay writes
+    /// it — the same shell-side source the webview's reducer reads, so an
+    /// agent sees a dead deck without a webview round-trip).
+    pub worker_died: bool,
+    /// The worker is reloading for a model switch.
+    pub switching_model: bool,
+    /// The deck's hardware SHIFT is held — written by the native MIDI
+    /// translator (the state's origin); the webview's copy projects it for
+    /// the cross-deck jog steering until Phase D consolidates.
+    pub shift_held: bool,
 }
 
 impl Default for DeckSnap {
@@ -345,6 +355,28 @@ impl Default for DeckSnap {
             notes: None,
             drums: None,
             analysis: AnalysisSnap::default(),
+            worker_died: false,
+            switching_model: false,
+            shift_held: false,
+        }
+    }
+}
+
+/// The shell recorder's state (ADR-0028): whether a take is streaming to
+/// disk and where. Written by the recording commands themselves, so a
+/// webview reload (or an agent) reads the truth instead of a local flag.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingSnap {
+    pub active: bool,
+    pub path: Option<String>,
+}
+
+impl Default for RecordingSnap {
+    fn default() -> Self {
+        RecordingSnap {
+            active: false,
+            path: None,
         }
     }
 }
@@ -364,6 +396,15 @@ pub struct InterfaceState {
     pub crossfade: f32,
     /// Cue/master headphone blend (0 = cue only, 1 = master).
     pub cue_mix: f32,
+    /// The shell recorder's state (see [`RecordingSnap`]).
+    pub recording: RecordingSnap,
+    /// The chosen MAIN output device name ("" = system default) — shell-
+    /// persisted (ADR-0020 phase A); the webview picker is a projection.
+    pub main_device: String,
+    /// The chosen CUE output device name ("" = same as main).
+    pub cue_device: String,
+    /// The recordings folder ("" = Downloads).
+    pub recordings_folder: String,
 }
 
 impl Default for InterfaceState {
@@ -372,6 +413,10 @@ impl Default for InterfaceState {
             decks: vec![DeckSnap::default(); DECK_COUNT],
             crossfade: 0.5,
             cue_mix: 0.5,
+            recording: RecordingSnap::default(),
+            main_device: String::new(),
+            cue_device: String::new(),
+            recordings_folder: String::new(),
         }
     }
 }
@@ -569,6 +614,41 @@ impl InterfaceState {
         if let Some(d) = self.deck_mut(deck) {
             d.analysis = analysis;
         }
+    }
+
+    /// Record the worker's health from a status event: a crash sets `died`
+    /// (until a reload begins), a model switch sets `switching`, and `ready`
+    /// clears both — the same transitions the webview reducer derives from
+    /// the identical events, so the two views cannot diverge.
+    pub fn set_worker_health(&mut self, deck: usize, died: bool, switching: bool) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.worker_died = died;
+            d.switching_model = switching;
+        }
+    }
+
+    /// Record the deck's hardware SHIFT held-state (the native translator is
+    /// the origin; this is a plain shell-side write, not a mirror).
+    pub fn set_shift_held(&mut self, deck: usize, held: bool) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.shift_held = held;
+        }
+    }
+
+    /// Record the shell recorder's state (active + the take's path).
+    pub fn set_recording(&mut self, active: bool, path: Option<String>) {
+        self.recording = RecordingSnap { active, path };
+    }
+
+    /// Record the chosen output devices (shell-persisted settings).
+    pub fn set_output_devices(&mut self, main: String, cue: String) {
+        self.main_device = main;
+        self.cue_device = cue;
+    }
+
+    /// Record the recordings folder ("" = Downloads).
+    pub fn set_recordings_folder(&mut self, folder: String) {
+        self.recordings_folder = folder;
     }
 }
 
@@ -775,6 +855,33 @@ impl InterfaceStore {
     /// [`InterfaceStore::mutate`] keeps a held (or blank) reading silent.
     pub fn set_analysis(&self, deck: usize, analysis: AnalysisSnap) {
         self.mutate(move |s| s.set_analysis(deck, analysis));
+    }
+
+    /// Record the worker's health from the status relay (crash / model
+    /// switch / ready).
+    pub fn set_worker_health(&self, deck: usize, died: bool, switching: bool) {
+        self.mutate(move |s| s.set_worker_health(deck, died, switching));
+    }
+
+    /// Record a deck's hardware SHIFT held-state (native translator origin).
+    pub fn set_deck_shift(&self, deck: usize, held: bool) {
+        self.mutate(move |s| s.set_shift_held(deck, held));
+    }
+
+    /// Record the shell recorder's state (the recording commands write it).
+    pub fn set_recording(&self, active: bool, path: Option<String>) {
+        self.mutate(move |s| s.set_recording(active, path));
+    }
+
+    /// Record the chosen output devices (the device commands write it after
+    /// a successful switch; boot hydration seeds it from the settings file).
+    pub fn set_output_devices(&self, main: String, cue: String) {
+        self.mutate(move |s| s.set_output_devices(main, cue));
+    }
+
+    /// Record the recordings folder ("" = Downloads).
+    pub fn set_recordings_folder(&self, folder: String) {
+        self.mutate(move |s| s.set_recordings_folder(folder));
     }
 }
 
