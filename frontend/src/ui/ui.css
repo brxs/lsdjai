@@ -696,8 +696,15 @@
   white-space: nowrap;
 }
 
-/* Overlay slot: covers like the performance door slide INSIDE the square
-   surface (clipped here), above the net and dots. The wrapper is inert so an
+/* The frame: the surface square plus whatever gutter the caller reserves
+   beside it (via the surface's margins) — the overlay's positioning box, so
+   a cover can park in the gutter without sitting over pad coordinates. */
+.ui-xypad__frame {
+  position: relative;
+}
+
+/* Overlay slot: covers like the performance door slide inside the frame
+   (clipped here), above the net and dots. The wrapper is inert so an
    empty margin never blocks pad drags; its content re-enables hits itself. */
 .ui-xypad__overlay {
   position: absolute;

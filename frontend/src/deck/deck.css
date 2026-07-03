@@ -144,16 +144,21 @@
    Door open = the deck armed for note steering; the covered pad is the
    signal that pads/keys now play notes, not prompt edits. */
 
-/* Pin the pad square to the deck's OUTER edge — the side its door parks on
-   (A left, B right). The square caps at 19rem and would otherwise centre in
-   the wider panel, leaving an invisible black-on-black margin that made the
-   parked STEER rail look like it floated off the pad's edge. */
+/* The pad square keeps a rail-wide gutter on the deck's OUTER edge — the
+   side its door parks on (A left, B right). The parked STEER rail lives in
+   that gutter, flush against the square but NEVER over it: no pad
+   coordinate is under the rail, so a dot can't be dropped somewhere the
+   rail would then steal the grab from. */
+.deck {
+  --perform-rail: 1rem;
+}
+
 .deck--a .ui-xypad__surface {
-  margin-inline: 0 auto;
+  margin-inline: var(--perform-rail) auto;
 }
 
 .deck--b .ui-xypad__surface {
-  margin-inline: auto 0;
+  margin-inline: auto var(--perform-rail);
 }
 
 /* The door: ONE rigid assembly — [content | rail] for deck A, mirrored for
@@ -164,9 +169,8 @@
    push-back chevron. No pasted-on chrome: the rail IS the door's leading
    edge, its LED is the steering tell. */
 .deck__perform-door {
-  /* Slim grab strip: just wide enough for the vertical silkscreen label
-     and the LED; full height keeps it an easy click target. */
-  --perform-rail: 1rem;
+  /* --perform-rail (the slim grab strip's width) is set on .deck: the pad
+     gutter and the door's parking offset must share one value. */
   position: absolute;
   inset: 0;
   z-index: 2;
