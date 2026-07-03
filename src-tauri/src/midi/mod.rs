@@ -197,9 +197,24 @@ pub struct MidiService {
 }
 
 impl MidiService {
-    /// Spawn the scanner, painter, and ticker threads. Call once in `setup`;
-    /// the service lives in managed state for the app's lifetime.
+    /// Spawn the scanner, painter, and ticker threads. Call once in `setup`
+    /// (which Tauri runs on the MAIN thread — load-bearing, see below); the
+    /// service lives in managed state for the app's lifetime.
     pub fn start(app: AppHandle) -> Self {
+        // CoreMIDI delivers device-list updates to the run loop of the thread
+        // that created the process's FIRST MIDI client. The scanner lives on
+        // a plain background thread with no run loop, so without this anchor
+        // the process's device snapshot freezes at the first scan and a
+        // controller plugged in after launch NEVER appears — found on the
+        // device (the FLX4 hot-plugged after start stayed "no controller
+        // found"). Creating one client here, on the main thread whose event
+        // loop Tauri pumps, anchors notification delivery for the process.
+        // Dropping the wrapper is fine: coremidi 0.9 never disposes clients
+        // (its `Drop` is deliberately disabled upstream), so the underlying
+        // client — and the delivery it anchors — lives as long as the app.
+        if let Err(e) = MidiInput::new("LSDJai hot-plug anchor") {
+            eprintln!("lsdj-app: midi hot-plug anchor failed: {e}");
+        }
         let (paint_tx, paint_rx) = channel();
         let (rescan_tx, rescan_rx) = channel();
         let shared = Arc::new(Shared {
@@ -272,16 +287,24 @@ struct Match {
 
 /// The scanner: enumerate → bind the picked/first controller → attach
 /// non-controller inputs as keyboard-note sources → publish status; repeat
-/// every second (or immediately on a device pick). A fresh client per scan
-/// keeps the port list honest without a CFRunLoop on this thread; the
-/// churn is the cadence the retired shim already ran at.
+/// every second (or immediately on a device pick). ONE long-lived client
+/// does every enumeration: the port list is process-global state kept fresh
+/// by the main-thread anchor, and coremidi never disposes clients, so a
+/// fresh client per scan would leak one into the MIDI server every second.
 fn run_scanner(shared: Arc<Shared>, rescan_rx: Receiver<()>) {
+    let scan_client = match MidiInput::new("LSDJai") {
+        Ok(input) => input,
+        Err(e) => {
+            eprintln!("lsdj-app: midi scan client failed: {e}");
+            return;
+        }
+    };
     // The active controller's input connection + name (owned here — dropping
     // a connection closes it).
     let mut controller: Option<(String, MidiInputConnection<()>)> = None;
     let mut keyboards: HashMap<String, MidiInputConnection<()>> = HashMap::new();
     loop {
-        scan_once(&shared, &mut controller, &mut keyboards);
+        scan_once(&shared, &scan_client, &mut controller, &mut keyboards);
         match rescan_rx.recv_timeout(SCAN_INTERVAL) {
             Ok(()) | Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
@@ -291,17 +314,10 @@ fn run_scanner(shared: Arc<Shared>, rescan_rx: Receiver<()>) {
 
 fn scan_once(
     shared: &Arc<Shared>,
+    input: &MidiInput,
     controller: &mut Option<(String, MidiInputConnection<()>)>,
     keyboards: &mut HashMap<String, MidiInputConnection<()>>,
 ) {
-    let mut input = match MidiInput::new("LSDJai") {
-        Ok(input) => input,
-        Err(e) => {
-            eprintln!("lsdj-app: midi input client failed: {e}");
-            return;
-        }
-    };
-    input.ignore(Ignore::None);
     let ports = input.ports();
     let mut matched: Vec<Match> = Vec::new();
     let mut others: Vec<(String, midir::MidiInputPort)> = Vec::new();
@@ -336,6 +352,8 @@ fn scan_once(
         if let Some((name, driver)) = &active {
             match connect_controller(shared, name) {
                 Ok(connection) => {
+                    // Non-RT setup logging, like the audio-device line.
+                    println!("lsdj-app: midi controller bound — '{name}' ({})", driver.id);
                     *controller = Some((name.clone(), connection));
                     *shared.translator.lock().unwrap_or_else(|p| p.into_inner()) =
                         Flx4Translator::default();
