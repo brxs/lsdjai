@@ -1,6 +1,6 @@
 # 0005. Hardware control via Web MIDI in the frontend
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0031](0031-native-midi-in-the-rust-core-superseding-web-midi.md) (2026-07-03) — the *where* only: MIDI I/O moves from the webview (Web MIDI / the `tauri-plugin-midi` shim) into a native `midir` module in the Rust shell. The principles carry forward unchanged — measured byte maps (`docs/midi-ddj-flx4.md` as arbiter), pure tested translation tables, monitor verification against firmware, typed-intent decoupling, and tempo hardware staying unmapped (ADR-0004)
 - **Date:** 2026-06-10
 - **Deciders:** Daniel Peter
 
