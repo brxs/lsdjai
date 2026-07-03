@@ -86,36 +86,19 @@ export function PerformanceDrawer({
   )
 
   return (
-    <>
-      <button
-        type="button"
-        className={`deck__perform-handle deck__perform-handle--${deckId}${
-          perf.armed ? ' deck__perform-handle--live' : ''
-        }`}
-        onClick={() => setOpen(true)}
-        aria-expanded={open}
-      >
-        {t('deck.perform.open')}
-      </button>
-      <section
-        className={`deck__perform-door deck__perform-door--${deckId}${
-          open ? ' deck__perform-door--open' : ''
-        }`}
-        role="group"
-        aria-label={t('deck.perform.title')}
-        aria-hidden={!open}
-      >
-        <header className="deck__perform-head">
-          <h3 className="deck__perform-title">{t('deck.perform.title')}</h3>
-          <button
-            type="button"
-            className="deck__perform-close"
-            onClick={() => setOpen(false)}
-            aria-label={t('deck.perform.close')}
-          >
-            ✕
-          </button>
-        </header>
+    // One rigid assembly, like a real sliding door: the rail is PART of the
+    // door, so the tab you grab travels with it — closed, only the rail
+    // peeks out at the pad edge as the CTA; open, the same rail sits at the
+    // opposite edge as the push-back chevron. Its LED is the steering tell.
+    <section
+      className={`deck__perform-door deck__perform-door--${deckId}${
+        open ? ' deck__perform-door--open' : ''
+      }`}
+      role="group"
+      aria-label={t('deck.perform.title')}
+    >
+      <div className="deck__perform-content" aria-hidden={!open}>
+        <h3 className="deck__perform-title">{t('deck.perform.title')}</h3>
         <p className="deck__perform-hint">{t('deck.perform.hint')}</p>
         <div className="deck__perform-row">
           <Button
@@ -151,7 +134,27 @@ export function PerformanceDrawer({
               ? t('deck.perform.held', { notes: held.map(pitchName).join(' ') })
               : t('deck.perform.live')}
         </p>
-      </section>
-    </>
+      </div>
+      <button
+        type="button"
+        className="deck__perform-rail"
+        onClick={() => setOpen((previous) => !previous)}
+        aria-expanded={open}
+        aria-label={open ? t('deck.perform.close') : t('deck.perform.open')}
+      >
+        <span
+          className={`deck__perform-rail-led${
+            perf.armed ? ' deck__perform-rail-led--on' : ''
+          }`}
+          aria-hidden="true"
+        />
+        <span className="deck__perform-rail-label" aria-hidden="true">
+          {t('deck.perform.open')}
+        </span>
+        <span className="deck__perform-rail-chevron" aria-hidden="true">
+          {deckId === 'a' ? '<' : '>'}
+        </span>
+      </button>
+    </section>
   )
 }

@@ -135,7 +135,7 @@
     },
     "perform": {
       "title": "Play the deck",
-      "open": "Perform",
+      "open": "Keys",
       "close": "Close performance controls — back to prompts",
       "steer": "MIDI steer",
       "off": "Steering off — flip MIDI steer to play",

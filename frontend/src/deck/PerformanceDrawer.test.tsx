@@ -14,6 +14,8 @@ vi.mock('../audio/nativeEngine', async (importOriginal) => {
   return { ...original, setDeckPerformance: vi.fn() }
 })
 
+const CLOSE_LABEL = 'Close performance controls — back to prompts'
+
 function deckSnap(over: Partial<DeckSnap> = {}): DeckSnap {
   return {
     volume: 1,
@@ -54,28 +56,31 @@ beforeEach(() => {
 })
 
 describe('PerformanceDrawer', () => {
-  it('starts closed and idle: the door hidden, the handle unlit', () => {
-    render(<PerformanceDrawer deckId="b" deckIndex={1} />)
-    // Name matching is skipped for aria-hidden nodes; the render holds one group.
-    const door = screen.getByRole('group', { hidden: true })
-    expect(door).toHaveAttribute('aria-hidden', 'true')
+  it('starts parked: rail as the Keys tab, content untabbable, LED off', () => {
+    const { container } = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
+    const door = screen.getByRole('group', { name: 'Play the deck' })
     expect(door.className).not.toContain('deck__perform-door--open')
-    const handle = screen.getByRole('button', { name: 'Perform' })
-    expect(handle).toHaveAttribute('aria-expanded', 'false')
-    expect(handle.className).not.toContain('deck__perform-handle--live')
+    const rail = screen.getByRole('button', { name: 'Keys' })
+    expect(rail).toHaveAttribute('aria-expanded', 'false')
+    // The parked door body is hidden from the tree — only the rail remains.
+    expect(screen.queryByRole('button', { name: 'MIDI steer' })).toBeNull()
+    expect(container.querySelector('.deck__perform-rail-led--on')).toBeNull()
   })
 
-  it('the handle opens the door as pure view state — no arm write', () => {
-    render(<PerformanceDrawer deckId="b" deckIndex={1} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Perform' }))
+  it('the rail slides the door open and becomes the close chevron — no arm write', () => {
+    render(<PerformanceDrawer deckId="a" deckIndex={0} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Keys' }))
     const door = screen.getByRole('group', { name: 'Play the deck' })
-    expect(door).toHaveAttribute('aria-hidden', 'false')
+    expect(door.className).toContain('deck__perform-door--open')
+    // The same button now reads as the close control (the rail travelled).
+    const rail = screen.getByRole('button', { name: CLOSE_LABEL })
+    expect(rail).toHaveAttribute('aria-expanded', 'true')
     expect(setDeckPerformance).not.toHaveBeenCalled()
   })
 
   it('the MIDI steer toggle arms and disarms through the shell service', () => {
     const first = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Perform' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Keys' }))
     fireEvent.click(screen.getByRole('button', { name: 'MIDI steer' }))
     expect(setDeckPerformance).toHaveBeenCalledWith(1, {
       armed: true,
@@ -91,7 +96,7 @@ describe('PerformanceDrawer', () => {
       }),
     )
     render(<PerformanceDrawer deckId="b" deckIndex={1} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Perform' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Keys' }))
     fireEvent.click(screen.getByRole('button', { name: 'MIDI steer' }))
     expect(setDeckPerformance).toHaveBeenLastCalledWith(
       1,
@@ -99,10 +104,12 @@ describe('PerformanceDrawer', () => {
     )
   })
 
-  it('closing the door leaves steering on — the deck keeps following notes', () => {
+  it('closing the door leaves steering on — the rail LED stays lit', () => {
     // Arm through a live transition (the hardware path): the rising edge
     // auto-opens the door.
-    const { rerender } = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
+    const { container, rerender } = render(
+      <PerformanceDrawer deckId="b" deckIndex={1} />,
+    )
     vi.mocked(useInterfaceStore).mockReturnValue(
       storeWith({
         performance: { armed: true, key: 0, scale: 'major', mode: 'chord' },
@@ -110,27 +117,20 @@ describe('PerformanceDrawer', () => {
     )
     rerender(<PerformanceDrawer deckId="b" deckIndex={1} />)
     const door = screen.getByRole('group', { name: 'Play the deck' })
-    expect(door).toHaveAttribute('aria-hidden', 'false')
-    fireEvent.click(
-      screen.getByRole('button', {
-        name: 'Close performance controls — back to prompts',
-      }),
-    )
-    expect(door).toHaveAttribute('aria-hidden', 'true')
-    // View-only: no disarm crossed the boundary.
+    expect(door.className).toContain('deck__perform-door--open')
+
+    fireEvent.click(screen.getByRole('button', { name: CLOSE_LABEL }))
+    expect(door.className).not.toContain('deck__perform-door--open')
+    // View-only: no disarm crossed the boundary, and the LED still shows it.
     expect(setDeckPerformance).not.toHaveBeenCalled()
-    // The handle stays lit — steering reads with the door shut.
-    expect(screen.getByRole('button', { name: 'Perform' }).className).toContain(
-      'deck__perform-handle--live',
-    )
+    expect(container.querySelector('.deck__perform-rail-led--on')).not.toBeNull()
   })
 
   it('a steering rising edge (hardware arm) slides the door open', () => {
     const { rerender } = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
-    expect(screen.getByRole('group', { hidden: true })).toHaveAttribute(
-      'aria-hidden',
-      'true',
-    )
+    expect(
+      screen.getByRole('group', { name: 'Play the deck' }).className,
+    ).not.toContain('deck__perform-door--open')
     // The FLX4 KEYBOARD selector arms it: the store snapshot flips.
     vi.mocked(useInterfaceStore).mockReturnValue(
       storeWith({
@@ -138,8 +138,9 @@ describe('PerformanceDrawer', () => {
       }),
     )
     rerender(<PerformanceDrawer deckId="b" deckIndex={1} />)
-    const door = screen.getByRole('group', { name: 'Play the deck' })
-    expect(door).toHaveAttribute('aria-hidden', 'false')
+    expect(
+      screen.getByRole('group', { name: 'Play the deck' }).className,
+    ).toContain('deck__perform-door--open')
     expect(screen.getByLabelText('Key')).toHaveValue('A')
     expect(screen.getByLabelText('Scale')).toHaveValue('minor')
     expect(screen.getByLabelText('Note mode')).toHaveValue('onset')
@@ -152,6 +153,7 @@ describe('PerformanceDrawer', () => {
       }),
     )
     render(<PerformanceDrawer deckId="b" deckIndex={1} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Keys' }))
     fireEvent.change(screen.getByLabelText('Key'), { target: { value: 'D' } })
     expect(setDeckPerformance).toHaveBeenLastCalledWith(
       1,
@@ -167,12 +169,12 @@ describe('PerformanceDrawer', () => {
   })
 
   it('the HUD strip reads off / live / holding', () => {
-    const { unmount } = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Perform' }))
+    const first = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Keys' }))
     expect(screen.getByRole('status')).toHaveTextContent(
       'Steering off — flip MIDI steer to play',
     )
-    unmount()
+    first.unmount()
 
     vi.mocked(useInterfaceStore).mockReturnValue(
       storeWith({
@@ -180,9 +182,7 @@ describe('PerformanceDrawer', () => {
       }),
     )
     const second = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
-    // Mounted already-armed: the door starts closed (no rising edge) — open
-    // it by hand to read the HUD.
-    fireEvent.click(screen.getByRole('button', { name: 'Perform' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Keys' }))
     expect(screen.getByRole('status')).toHaveTextContent('Live — waiting for notes')
     second.unmount()
 
@@ -193,7 +193,7 @@ describe('PerformanceDrawer', () => {
       }),
     )
     render(<PerformanceDrawer deckId="b" deckIndex={1} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Perform' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Keys' }))
     expect(screen.getByRole('status')).toHaveTextContent('Holding C4 E4 G4')
   })
 })

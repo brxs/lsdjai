@@ -149,60 +149,19 @@
   overflow: hidden;
 }
 
-/* The door handle: a slim vertical tab on the pad's edge. Idle it reads as
-   a dark tab in the deck's accent ink; while MIDI steer is on it burns full
-   accent — the state stays legible with the door shut. */
-.deck__perform-handle {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 2;
-  writing-mode: vertical-rl;
-  padding: var(--space-3) var(--space-1);
-  font: var(--silkscreen);
-  letter-spacing: var(--silkscreen-spacing);
-  text-transform: uppercase;
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-border-strong);
-  cursor: pointer;
-}
-
-.deck__perform-handle--a {
-  left: 0;
-  color: var(--color-deck-a);
-}
-
-.deck__perform-handle--b {
-  right: 0;
-  color: var(--color-deck-b);
-  transform: translateY(-50%) rotate(180deg);
-}
-
-.deck__perform-handle--live.deck__perform-handle--a {
-  background: var(--color-deck-a);
-  color: var(--color-on-accent);
-}
-
-.deck__perform-handle--live.deck__perform-handle--b {
-  background: var(--color-deck-b);
-  color: var(--color-on-accent);
-}
-
-/* The door itself: a flat accent slab with a faint scanline texture and a
-   hazard-striped leading edge, sliding like a machine gate. */
+/* The door: ONE rigid assembly — [content | rail] for deck A, mirrored for
+   deck B — sliding as a whole like a machine gate. Closed, only the rail
+   peeks out at the pad edge (the "KEYS" tab); open, the same rail sits at
+   the opposite edge as the push-back chevron. No pasted-on chrome: the rail
+   IS the door's leading edge, its LED is the steering tell. */
 .deck__perform-door {
+  --perform-rail: 1.6rem;
   position: absolute;
   inset: 0;
-  z-index: 3;
+  z-index: 2;
   display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3);
   color: var(--color-on-accent);
-  visibility: hidden;
-  transition:
-    transform 0.3s cubic-bezier(0.2, 0.9, 0.25, 1),
-    visibility 0s linear 0.3s;
+  transition: transform 0.3s cubic-bezier(0.2, 0.9, 0.25, 1);
 }
 
 .deck__perform-door--a {
@@ -213,17 +172,11 @@
       transparent 1px 3px
     ),
     var(--color-deck-a);
-  border-right: 0.6rem solid transparent;
-  border-image: repeating-linear-gradient(
-      45deg,
-      var(--color-on-accent) 0 6px,
-      var(--color-deck-a) 6px 12px
-    )
-    1;
-  transform: translateX(calc(-100% - 2px));
+  transform: translateX(calc(-100% + var(--perform-rail)));
 }
 
 .deck__perform-door--b {
+  flex-direction: row-reverse;
   background:
     repeating-linear-gradient(
       0deg,
@@ -231,34 +184,92 @@
       transparent 1px 3px
     ),
     var(--color-deck-b);
-  border-left: 0.6rem solid transparent;
-  border-image: repeating-linear-gradient(
-      -45deg,
-      var(--color-on-accent) 0 6px,
-      var(--color-deck-b) 6px 12px
-    )
-    1;
-  transform: translateX(calc(100% + 2px));
+  transform: translateX(calc(100% - var(--perform-rail)));
 }
 
 .deck__perform-door--open {
-  visibility: visible;
   transform: translateX(0);
-  transition: transform 0.3s cubic-bezier(0.2, 0.9, 0.25, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .deck__perform-door,
-  .deck__perform-door--open {
+  .deck__perform-door {
     transition: none;
   }
 }
 
-.deck__perform-head {
+/* The door body: hidden (and untabbable) while the door is parked so only
+   the rail remains interactive; the visibility flip waits out the slide. */
+.deck__perform-content {
+  flex: 1;
+  min-width: 0;
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+  flex-direction: column;
   gap: var(--space-2);
+  padding: var(--space-3);
+  visibility: hidden;
+  transition: visibility 0s linear 0.3s;
+}
+
+.deck__perform-door--open .deck__perform-content {
+  visibility: visible;
+  transition: none;
+}
+
+/* The rail: the door's grab edge. Grip ridges instead of a printed label
+   frame; the LED at its head shows MIDI steer with the door shut. */
+.deck__perform-rail {
+  flex: none;
+  width: var(--perform-rail);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  background: color-mix(in srgb, var(--color-on-accent) 14%, transparent);
+  border: 0;
+  color: var(--color-on-accent);
+  cursor: pointer;
+}
+
+.deck__perform-door--a .deck__perform-rail {
+  border-left: 1px solid color-mix(in srgb, var(--color-on-accent) 35%, transparent);
+}
+
+.deck__perform-door--b .deck__perform-rail {
+  border-right: 1px solid color-mix(in srgb, var(--color-on-accent) 35%, transparent);
+}
+
+.deck__perform-rail-led {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--color-led-off);
+}
+
+.deck__perform-rail-led--on {
+  background: var(--color-led-ok);
+}
+
+.deck__perform-rail-label {
+  writing-mode: vertical-rl;
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  margin: auto 0;
+}
+
+.deck__perform-rail-chevron {
+  display: none;
+  font: 700 var(--text-m) var(--font-mono);
+  margin: auto 0;
+}
+
+.deck__perform-door--open .deck__perform-rail-label {
+  display: none;
+}
+
+.deck__perform-door--open .deck__perform-rail-chevron {
+  display: block;
 }
 
 .deck__perform-title {
@@ -267,16 +278,6 @@
   font-size: var(--text-s);
   letter-spacing: var(--silkscreen-spacing);
   text-transform: uppercase;
-}
-
-.deck__perform-close {
-  background: transparent;
-  border: 1px solid var(--color-on-accent);
-  color: var(--color-on-accent);
-  font: 700 var(--text-s) var(--font-ui);
-  line-height: 1;
-  padding: var(--space-1) var(--space-2);
-  cursor: pointer;
 }
 
 .deck__perform-hint {
