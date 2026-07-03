@@ -39,6 +39,7 @@ use tauri::Manager;
 
 mod analysis;
 mod commands;
+mod decode;
 mod generation;
 mod library;
 mod mcp;
@@ -494,6 +495,7 @@ pub fn run() {
             app.manage(sidecars);
             app.manage(taps);
             app.manage(analysis_feed);
+            app.manage(analysis::track::TrackAnalysis::new(lsdj_engine::DECK_COUNT));
             app.manage(generation_server);
             // The native MCP server (ADR-0020 Phase 2): an external agent as a
             // co-DJ. Always on, loopback-only, token-guarded; its tools mutate the
@@ -538,7 +540,9 @@ pub fn run() {
             commands::delete_generated_sample,
             commands::open_samples_folder,
             commands::save_loop_slot,
-            commands::load_track,
+            commands::load_track_file,
+            commands::load_track_bytes,
+            commands::track_bands,
             commands::unload_track,
             commands::play_track,
             commands::pause_track,

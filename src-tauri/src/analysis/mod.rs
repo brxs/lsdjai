@@ -3,5 +3,8 @@
 //! TypeScript. Runs on shell threads — never the `cpal` callback, which must
 //! never read analysis state (ADR-0025).
 
+pub mod bands;
 pub mod beat;
+pub mod grid;
 pub mod live;
+pub mod track;

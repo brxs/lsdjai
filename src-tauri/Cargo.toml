@@ -73,6 +73,17 @@ rand = "0.10"
 # HTTP, so default TLS is dropped to keep the dependency lean. Shares axum's
 # hyper/tokio tree.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
+# Shell-side track decode (ADR-0030): pure-Rust demux + decode covering the
+# folder browser's extension allowlist (wav/aiff via riff, flac/ogg-vorbis in
+# the defaults, mp3, and m4a via isomp4+aac+alac). The de-facto Rust audio
+# decoder — already in the tree transitively (fundsp), pinned to that same
+# version; `is_audio_file` must stay derived from these features so the
+# browser never offers a file the decoder refuses.
+symphonia = { version = "=0.5.5", features = ["mp3", "aac", "alac", "isomp4", "aiff"] }
+# Offline resample of decoded tracks to the engine's 48 kHz (ADR-0030) — the
+# same crate, pin, and feature the engine's output path justified (ADR-0029);
+# this use is allocating and non-RT (a load, not a callback).
+rubato = { version = "=3.0.0", default-features = false, features = ["fft_resampler"] }
 
 [dev-dependencies]
 # The ADR-0025 corpus regression replays the spike WAVs (16-bit PCM) through
