@@ -7,7 +7,20 @@ import type { FxKind } from '../audio/fx'
 import { createControlBus, type ControlBus } from '../control/bus'
 import { ControlBusProvider } from '../control/ControlBusProvider'
 import { loadDeckSettings, updateDeckSettings } from '../persistence'
+import { setDeckStyle } from '../audio/nativeEngine'
 import { DeckColumn } from './DeckColumn'
+
+// The style mirror is observed, not run: the net selection now rides the
+// atomic set_deck_style store write (targets + cursor + mask in one command),
+// so these tests read the mask from the mirror's calls.
+vi.mock('../audio/nativeEngine', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../audio/nativeEngine')>()
+  return {
+    ...original,
+    setDeckStyle: vi.fn(),
+    hasPendingStyleMirror: () => false,
+  }
+})
 import { initialDeckState, type DeckState } from './deckState'
 import { GENERATE_PROMPT_MAX_LENGTH } from './useDeck'
 import type { DeckMode, LoopState, TrackState } from './useDeck'
@@ -46,9 +59,6 @@ function renderPanel(
         onSetStyle={(handlers.onSetStyle as (s: object) => void) ?? noop}
         onSetModel={(handlers.onSetModel as (m: string) => void) ?? noop}
         onRestart={handlers.onRestart ?? noop}
-        onSelectionChange={
-          handlers.onSelectionChange as (selected: boolean[]) => void
-        }
         shiftedDeck={shiftedDeck}
         fx={fx}
         onSetFx={(handlers.onSetFx as (k: unknown) => void) ?? noop}
@@ -646,22 +656,18 @@ describe('DeckColumn', () => {
   })
 
   it('toggles a pad target into and out of the net selection', () => {
-    const onSelectionChange = vi.fn()
     const bus = createControlBus()
-    renderPanel(
-      { connection: 'open' },
-      { onSelectionChange: onSelectionChange as () => void },
-      bus,
-    )
+    renderPanel({ connection: 'open' }, {}, bus)
     addTarget('funk')
     addTarget('techno')
 
     act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 1 }))
-    expect(onSelectionChange).toHaveBeenLastCalledWith([false, true])
+    // The mask rides the atomic style mirror (4th argument).
+    expect(vi.mocked(setDeckStyle).mock.calls.at(-1)?.[3]).toEqual([false, true])
 
     // Re-tapping the same pad deselects it.
     act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 1 }))
-    expect(onSelectionChange).toHaveBeenLastCalledWith([false, false])
+    expect(vi.mocked(setDeckStyle).mock.calls.at(-1)?.[3]).toEqual([false, false])
   })
 
   it('highlights a selected dot in the net', () => {
@@ -750,21 +756,16 @@ describe('DeckColumn', () => {
   })
 
   it('drops a prompt from the selection when it is removed', () => {
-    const onSelectionChange = vi.fn()
     const bus = createControlBus()
-    renderPanel(
-      { connection: 'open' },
-      { onSelectionChange: onSelectionChange as () => void },
-      bus,
-    )
+    renderPanel({ connection: 'open' }, {}, bus)
     addTarget('funk')
     addTarget('techno')
     act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 0 }))
-    expect(onSelectionChange).toHaveBeenLastCalledWith([true, false])
+    expect(vi.mocked(setDeckStyle).mock.calls.at(-1)?.[3]).toEqual([true, false])
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove funk' }))
     // funk is gone; the stale selection is pruned, techno stays unselected.
-    expect(onSelectionChange).toHaveBeenLastCalledWith([false])
+    expect(vi.mocked(setDeckStyle).mock.calls.at(-1)?.[3]).toEqual([false])
   })
 
   // Deck A is the shifted deck, so its jogs steer its cursor in 2D.

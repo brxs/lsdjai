@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import type { DeckId } from '../audio/types'
 import { FX_KINDS, fxRestPosition, type FxKind } from '../audio/fx'
 import { LOOP_LENGTH_OPTIONS, LOOP_SLOT_COUNT } from '../audio/loops'
-import { setDeckStyle } from '../audio/nativeEngine'
+import { hasPendingStyleMirror, setDeckStyle } from '../audio/nativeEngine'
 import { useInterfaceStore } from '../audio/interfaceStore'
 import { useControlBus } from '../control/busContext'
 import { PerformancePanel } from './PerformancePanel'
@@ -125,10 +125,6 @@ type DeckColumnProps = {
   onSetStyle: (style: ActiveStyle) => void
   onSetModel: (model: string) => void
   onRestart: () => void
-  /** Reports which pads are selected in the net, one boolean per target by
-   * pad index — App mirrors it into the store for the native pad LEDs
-   * (ADR-0031; the target count travels as the mirrored style targets). */
-  onSelectionChange?: (selected: boolean[]) => void
   /** Which deck's SHIFT is held (App-tracked). When it equals this deck's id,
    * the jogs steer this deck's cursor — jog A the x axis, jog B the y. */
   shiftedDeck?: DeckId | null
@@ -194,7 +190,6 @@ export function DeckColumn({
   onSetStyle,
   onSetModel,
   onRestart,
-  onSelectionChange,
   shiftedDeck,
   primed = false,
   fx,
@@ -365,17 +360,22 @@ export function DeckColumn({
     })
   }, [deckId, targets, cursor])
 
-  // Mirror the 2D style-pad targets + cursor UP into the store (ADR-0020): the UI
-  // source the deck blends into the worker prompt. The blended prompt still goes to
-  // the worker via the throttled style send; this is a write-only read-back mirror
-  // (sampled-target embedding ids stay out, like the persisted layout).
+  // Mirror the 2D style-pad state UP into the store (ADR-0020): targets +
+  // cursor + the net selection mask (the native pad LEDs' bright/dim input,
+  // ADR-0031) in one atomic write — a split mirror emitted snapshots pairing
+  // stale targets with a fresh mask, which the adoption gate below read as an
+  // external change and reverted a just-added prompt on a playing deck. The
+  // blended prompt still goes to the worker via the throttled style send;
+  // this is a write-only read-back mirror (sampled-target embedding ids stay
+  // out, like the persisted layout).
   useEffect(() => {
     setDeckStyle(
       deckId === 'a' ? 0 : 1,
       targets.map((target) => ({ x: target.x, y: target.y, text: target.text })),
       cursor,
+      targets.map((target) => selected.has(target.text)),
     )
-  }, [deckId, targets, cursor])
+  }, [deckId, targets, cursor, selected])
 
   // Adopt EXTERNAL style changes from the store (an MCP set_style / set_style_cursor)
   // into the pad AND push the new blend to the worker — the read side the mirror above
@@ -387,6 +387,12 @@ export function DeckColumn({
   useEffect(() => {
     const snap = storeState?.decks[deckId === 'a' ? 0 : 1]
     if (!snap) return
+    // A snapshot arriving while our own mirror awaits its animation-frame
+    // flush predates the local edit by construction (analysis ticks and
+    // transport writes emit mid-window with stale style state) — adopting it
+    // would revert the edit. Skip; our flush lands next frame, the echo
+    // matches, and the gate re-arms.
+    if (hasPendingStyleMirror(deckId === 'a' ? 0 : 1)) return
     const localTargets = targetsRef.current
     const localCursor = cursorRef.current
     // x/y are f32 in the store, so an f64->f32 round-trip can perturb the last digits;
@@ -447,11 +453,6 @@ export function DeckColumn({
       ),
     )
   }
-
-  // Mirror the selection to the controller LEDs, one boolean per pad index.
-  useEffect(() => {
-    onSelectionChange?.(targets.map((target) => selected.has(target.text)))
-  }, [targets, selected, onSelectionChange])
 
   // The worker has no style after a reload, a model switch, or a crash
   // restart — re-apply the pad's arrangement once per such episode, as soon

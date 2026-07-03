@@ -586,7 +586,6 @@ pub fn run() {
             commands::set_deck_transport,
             commands::set_deck_loop_labels,
             commands::set_deck_style,
-            commands::set_deck_style_selection,
             commands::set_deck_primed,
             commands::set_deck_performance,
             commands::deck_play,

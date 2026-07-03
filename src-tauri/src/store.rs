@@ -484,10 +484,21 @@ impl InterfaceState {
         }
     }
 
-    pub fn set_style(&mut self, deck: usize, targets: Vec<StyleTargetSnap>, cursor: PadPointSnap) {
+    /// Replace the style pad wholesale — targets, cursor, AND the selection
+    /// mask in ONE mutation, so no emitted snapshot can ever pair fresh
+    /// targets with a stale mask (or vice versa); the projection's adoption
+    /// gate depends on that atomicity.
+    pub fn set_style(
+        &mut self,
+        deck: usize,
+        targets: Vec<StyleTargetSnap>,
+        cursor: PadPointSnap,
+        selected: Vec<bool>,
+    ) {
         if let Some(d) = self.deck_mut(deck) {
             d.style_targets = targets;
             d.cursor = cursor;
+            d.style_selected = selected;
         }
     }
 
@@ -506,13 +517,6 @@ impl InterfaceState {
     pub fn set_cursor(&mut self, deck: usize, cursor: PadPointSnap) {
         if let Some(d) = self.deck_mut(deck) {
             d.cursor = cursor;
-        }
-    }
-
-    /// Mirror the style-pad selection mask (which targets are in the blend).
-    pub fn set_style_selected(&mut self, deck: usize, selected: Vec<bool>) {
-        if let Some(d) = self.deck_mut(deck) {
-            d.style_selected = selected;
         }
     }
 
@@ -702,10 +706,17 @@ impl InterfaceStore {
         self.mutate(move |s| s.set_loop_labels(deck, labels));
     }
 
-    /// Mirror the realtime deck's 2D style-pad targets + cursor (the UI source the
-    /// deck blends into the worker prompt). `DeckColumn` writes them up on change.
-    pub fn set_deck_style(&self, deck: usize, targets: Vec<StyleTargetSnap>, cursor: PadPointSnap) {
-        self.mutate(move |s| s.set_style(deck, targets, cursor));
+    /// Mirror the realtime deck's 2D style-pad state (targets + cursor + the net
+    /// selection mask, one atomic write — see [`InterfaceState::set_style`]).
+    /// `DeckColumn` writes it up on change.
+    pub fn set_deck_style(
+        &self,
+        deck: usize,
+        targets: Vec<StyleTargetSnap>,
+        cursor: PadPointSnap,
+        selected: Vec<bool>,
+    ) {
+        self.mutate(move |s| s.set_style(deck, targets, cursor, selected));
     }
 
     /// Set one hot-cue pad's point (MCP `set_hot_cue` / `clear_hot_cue`). The webview
@@ -718,12 +729,6 @@ impl InterfaceStore {
     /// and re-pushes the blended prompt to the worker.
     pub fn set_deck_cursor(&self, deck: usize, cursor: PadPointSnap) {
         self.mutate(move |s| s.set_cursor(deck, cursor));
-    }
-
-    /// Mirror the style-pad selection mask (the webview writes it up on a net
-    /// selection change; the LED painter reads it).
-    pub fn set_deck_style_selected(&self, deck: usize, selected: Vec<bool>) {
-        self.mutate(move |s| s.set_style_selected(deck, selected));
     }
 
     /// Mirror the primed-off-air read-back (the transport-CUE LED state).
@@ -872,7 +877,7 @@ mod tests {
     }
 
     #[test]
-    fn style_targets_and_cursor_are_mirrored_per_deck() {
+    fn style_targets_cursor_and_selection_are_one_atomic_write() {
         let mut state = InterfaceState::default();
         state.set_style(
             0,
@@ -882,13 +887,20 @@ mod tests {
                 text: "dub".to_string(),
             }],
             PadPointSnap { x: 0.3, y: 0.4 },
+            vec![true],
         );
         assert_eq!(state.decks[0].style_targets.len(), 1);
         assert_eq!(state.decks[0].style_targets[0].text, "dub");
         assert_eq!(state.decks[0].cursor, PadPointSnap { x: 0.3, y: 0.4 });
+        assert_eq!(state.decks[0].style_selected, vec![true]);
         // The other deck is untouched.
         assert!(state.decks[1].style_targets.is_empty());
         assert_eq!(state.decks[1].cursor, PadPointSnap { x: 0.5, y: 0.5 });
+        // The mask replaces WITH the targets — never a stale pairing (the
+        // projection's adoption gate depends on the atomicity).
+        state.set_style(0, Vec::new(), PadPointSnap { x: 0.5, y: 0.5 }, Vec::new());
+        assert!(state.decks[0].style_targets.is_empty());
+        assert!(state.decks[0].style_selected.is_empty());
     }
 
     #[test]
@@ -992,6 +1004,7 @@ mod tests {
                 text: "a".to_string(),
             }],
             PadPointSnap { x: 0.5, y: 0.5 },
+            Vec::new(),
         );
         state.set_cursor(0, PadPointSnap { x: 0.7, y: 0.3 });
         assert_eq!(state.decks[0].cursor, PadPointSnap { x: 0.7, y: 0.3 });

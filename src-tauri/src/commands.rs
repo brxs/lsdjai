@@ -1403,32 +1403,23 @@ pub fn set_deck_loop_labels(
     }
 }
 
-/// Mirror a realtime deck's 2D style-pad targets + cursor into the store (the UI
-/// source DeckColumn blends into the worker prompt). A read-back the webview writes
-/// up on change; no engine effect (the blended prompt still goes via deck_set_style).
+/// Mirror a realtime deck's 2D style-pad state into the store: targets, cursor,
+/// AND the net selection mask (the LED painter's bright/dim input) in ONE store
+/// mutation — a split write would emit a snapshot pairing stale targets with a
+/// fresh mask, and the webview's adoption gate would read that as an external
+/// change and clobber a just-added prompt (found on the device: adding a prompt
+/// to a playing deck reverted). A read-back the webview writes up on change; no
+/// engine effect (the blended prompt still goes via deck_set_style).
 #[tauri::command]
 pub fn set_deck_style(
     store: tauri::State<'_, InterfaceStore>,
     deck: usize,
     targets: Vec<crate::store::StyleTargetSnap>,
     cursor: crate::store::PadPointSnap,
-) {
-    if valid_deck(deck) {
-        store.set_deck_style(deck, targets, cursor);
-    }
-}
-
-/// Mirror the style-pad selection mask (which targets are in the active
-/// blend) into the store — the native LED painter reads it (ADR-0031: LEDs
-/// read the store), so the webview writes it up on a net selection change.
-#[tauri::command]
-pub fn set_deck_style_selection(
-    store: tauri::State<'_, InterfaceStore>,
-    deck: usize,
     selected: Vec<bool>,
 ) {
     if valid_deck(deck) {
-        store.set_deck_style_selected(deck, selected);
+        store.set_deck_style(deck, targets, cursor, selected);
     }
 }
 

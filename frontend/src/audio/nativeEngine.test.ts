@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { SAMPLE_RATE } from './types'
-import { createNativeEngine } from './nativeEngine'
+import {
+  createNativeEngine,
+  hasPendingStyleMirror,
+  setDeckStyle,
+} from './nativeEngine'
 
 // A controllable __TAURI__ global: records every invoke and serves a test
 // snapshot for `engine_snapshot`. rAF is stubbed so the poller can be flushed
@@ -378,5 +382,48 @@ describe('createNativeEngine — output device', () => {
 
     const engine = createNativeEngine()
     await expect(engine.setMainDevice('FLX4')).rejects.toThrow('device busy')
+  })
+})
+
+// The playing-deck prompt-revert regression: the style mirror must ship
+// targets + cursor + the net selection mask as ONE command (a split write
+// emitted a snapshot pairing stale targets with a fresh mask, which the
+// adoption gate adopted — reverting a just-added prompt), and the pending
+// window must be observable so the gate can skip mid-window snapshots.
+describe('the deck style mirror', () => {
+  const target = { x: 0.5, y: 0.5, text: 'dub techno' }
+  const cursor = { x: 0.5, y: 0.5 }
+
+  it('ships one atomic write carrying targets, cursor, and the selection mask', () => {
+    setDeckStyle(0, [target], cursor, [true])
+    // Coalesced: nothing crosses until the animation frame.
+    expect(calls.filter((c) => c.cmd === 'set_deck_style')).toHaveLength(0)
+    flushRaf()
+    const shipped = calls.filter((c) => c.cmd === 'set_deck_style')
+    expect(shipped).toHaveLength(1)
+    expect(shipped[0].args).toEqual({
+      deck: 0,
+      targets: [target],
+      cursor,
+      selected: [true],
+    })
+  })
+
+  it('reports the pending window per deck until the flush lands', () => {
+    expect(hasPendingStyleMirror(0)).toBe(false)
+    setDeckStyle(0, [target], cursor, [false])
+    expect(hasPendingStyleMirror(0)).toBe(true)
+    expect(hasPendingStyleMirror(1)).toBe(false)
+    flushRaf()
+    expect(hasPendingStyleMirror(0)).toBe(false)
+  })
+
+  it('coalesces rapid writes to the latest value in the frame', () => {
+    setDeckStyle(0, [target], cursor, [false])
+    setDeckStyle(0, [target, { ...target, text: 'acid' }], cursor, [false, true])
+    flushRaf()
+    const shipped = calls.filter((c) => c.cmd === 'set_deck_style')
+    expect(shipped).toHaveLength(1)
+    expect((shipped[0].args as { selected: boolean[] }).selected).toEqual([false, true])
   })
 })

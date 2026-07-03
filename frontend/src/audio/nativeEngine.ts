@@ -435,13 +435,6 @@ export function setDeckPrimed(deck: number, primed: boolean): void {
   void invoke('set_deck_primed', { deck, primed }).catch(() => {})
 }
 
-/** Mirror the style-pad selection mask (which targets are in the blend) into
- * the store — the native pad LEDs burn selected targets bright and dim the
- * rest (ADR-0031). Fire-and-forget. */
-export function setDeckStyleSelection(deck: number, selected: boolean[]): void {
-  void invoke('set_deck_style_selection', { deck, selected }).catch(() => {})
-}
-
 /** Set a deck's performance-surface config (issue #48): arm/disarm, key,
  * scale, note mode. Routed through the shell note-steering service — the
  * same single sender the hardware uses; arming also applies the ADR-0023
@@ -472,18 +465,31 @@ function coalesceMirror(key: string, run: () => void): void {
   })
 }
 
-/** Mirror a realtime deck's 2D style-pad targets + cursor into the store. The
- * blended prompt still goes to the worker via deck_set_style; this records the UI
- * source for a future MCP read. Coalesced to ~one invoke per frame (a style-pad
- * drag fires this per pointermove). Fire-and-forget. */
+/** Mirror a realtime deck's 2D style-pad state into the store: targets, cursor,
+ * AND the net selection mask in ONE command (a split write would emit a snapshot
+ * pairing stale targets with a fresh mask, which the adoption gate reads as an
+ * external change — the playing-deck prompt-revert bug). The blended prompt
+ * still goes to the worker via deck_set_style; this records the UI source.
+ * Coalesced to ~one invoke per frame (a style-pad drag fires per pointermove).
+ * Fire-and-forget. */
 export function setDeckStyle(
   deck: number,
   targets: { x: number; y: number; text: string }[],
   cursor: { x: number; y: number },
+  selected: boolean[],
 ): void {
   coalesceMirror(`set_deck_style:${deck}`, () => {
-    void invoke('set_deck_style', { deck, targets, cursor }).catch(() => {})
+    void invoke('set_deck_style', { deck, targets, cursor, selected }).catch(() => {})
   })
+}
+
+/** Whether a deck's style mirror is still waiting for its animation-frame
+ * flush. The adoption gate skips snapshots that land in that window: they
+ * predate the local edit by construction, and adopting one would revert it
+ * (the store writers that can emit mid-window — analysis ticks, transport —
+ * carry stale style state, not external style intent). */
+export function hasPendingStyleMirror(deck: number): boolean {
+  return mirrorPending.has(`set_deck_style:${deck}`)
 }
 
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }

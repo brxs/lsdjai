@@ -12,7 +12,6 @@ import {
   invoke,
   getMcpInfo,
   rotateMcpToken,
-  setDeckStyleSelection,
   setMcpPort,
   subscribeLoadTrack,
   subscribeLoadSample,
@@ -665,18 +664,10 @@ function App() {
 
   // The MIDI hook is now a projection + intent bridge (ADR-0031): the shell
   // owns the transport and paints the LEDs from the store, so App's old LED
-  // effects are gone. What remains webview-side is mirroring the two LED
-  // inputs React still owns into the store: the style-pad selection mask
-  // (below) and the primed flag (useDeck).
+  // effects are gone. The LED inputs React still owns mirror into the store
+  // where that state lives: the net selection rides DeckColumn's atomic
+  // style mirror, the primed flag rides useDeck's.
   const midi = useMidi()
-  const handleSelectionChangeA = useCallback(
-    (selected: boolean[]) => setDeckStyleSelection(0, selected),
-    [],
-  )
-  const handleSelectionChangeB = useCallback(
-    (selected: boolean[]) => setDeckStyleSelection(1, selected),
-    [],
-  )
 
   const ramWarning = combinedRamWarning(
     { a: deckA.state.model, b: deckB.state.model },
@@ -877,7 +868,6 @@ function App() {
           onSetStyle={deckA.setStyle}
           onSetModel={deckA.setModel}
           onRestart={deckA.restartWorker}
-          onSelectionChange={handleSelectionChangeA}
           shiftedDeck={shiftedDeck}
           primed={deckA.primed}
           fx={deckA.fx}
@@ -934,7 +924,6 @@ function App() {
           onSetStyle={deckB.setStyle}
           onSetModel={deckB.setModel}
           onRestart={deckB.restartWorker}
-          onSelectionChange={handleSelectionChangeB}
           shiftedDeck={shiftedDeck}
           primed={deckB.primed}
           fx={deckB.fx}

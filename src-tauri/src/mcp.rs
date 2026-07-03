@@ -566,9 +566,11 @@ impl McpHandler {
             return format!("invalid deck {deck}");
         }
         let count = targets.len();
+        // An external arrangement replaces the pad wholesale; the net
+        // selection mask is webview-owned and starts empty (no net).
         self.app
             .state::<InterfaceStore>()
-            .set_deck_style(deck, targets, cursor);
+            .set_deck_style(deck, targets, cursor, Vec::new());
         format!("deck {deck} style set ({count} target(s))")
     }
 
@@ -701,6 +703,7 @@ impl McpHandler {
                 text: prompt.clone(),
             }],
             center,
+            Vec::new(),
         );
         format!("deck {deck} prompt set to \"{prompt}\"")
     }
