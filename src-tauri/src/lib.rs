@@ -37,6 +37,7 @@ use lsdj_engine::host::Host;
 use lsdj_engine::DeckHandle;
 use tauri::Manager;
 
+mod analysis;
 mod commands;
 mod generation;
 mod library;

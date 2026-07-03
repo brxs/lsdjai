@@ -74,6 +74,12 @@ rand = "0.10"
 # hyper/tokio tree.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 
+[dev-dependencies]
+# The ADR-0025 corpus regression replays the spike WAVs (16-bit PCM) through
+# the Rust estimator; hound is the de-facto WAV codec — reputable, tiny, and
+# pinned, so the cutover gate never rests on a hand-rolled parser.
+hound = "=3.5.1"
+
 # Workspace-level release profile. Cargo only honours `[profile.*]` at the
 # workspace root, so the engine crate's opt-level=3 lives here now (moved out of
 # engine/Cargo.toml, where it was silently ignored under the workspace).
