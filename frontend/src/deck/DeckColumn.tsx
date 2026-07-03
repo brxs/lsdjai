@@ -7,7 +7,7 @@ import { LOOP_LENGTH_OPTIONS, LOOP_SLOT_COUNT } from '../audio/loops'
 import { hasPendingStyleMirror, setDeckStyle } from '../audio/nativeEngine'
 import { useInterfaceStore } from '../audio/interfaceStore'
 import { useControlBus } from '../control/busContext'
-import { PerformancePanel } from './PerformancePanel'
+import { PerformanceDrawer } from './PerformanceDrawer'
 import { Button } from '../ui/Button'
 import { Knob } from '../ui/Knob'
 import { Meter } from '../ui/Meter'
@@ -864,16 +864,22 @@ export function DeckColumn({
           </Button>
         </div>
 
-        <XYPad
-          label={t('deck.style.pad')}
-          targets={padTargets}
-          cursor={cursor}
-          disabled={!operable || targets.length === 0}
-          onChange={handleCursor}
-          onTargetMove={handleTargetMove}
-          selectedIds={selected}
-          onCursorActivate={handleCursorActivate}
-        />
+        {/* The pad stage: the 2D prompt pad plus the performance door that
+            slides over it (issue #48) — deck A from the left, deck B from
+            the right. The door open = the deck armed for note steering. */}
+        <div className="deck__pad-stage">
+          <XYPad
+            label={t('deck.style.pad')}
+            targets={padTargets}
+            cursor={cursor}
+            disabled={!operable || targets.length === 0}
+            onChange={handleCursor}
+            onTargetMove={handleTargetMove}
+            selectedIds={selected}
+            onCursorActivate={handleCursorActivate}
+          />
+          <PerformanceDrawer deckId={deckId} deckIndex={deckId === 'a' ? 0 : 1} />
+        </div>
 
         {targets.length > 0 && (
           <ul className="deck__targets">
@@ -964,10 +970,6 @@ export function DeckColumn({
           </Button>
         </div>
 
-        {/* Play the deck (issue #48): arm the performance surface, pick the
-            key/scale/mode the hardware notes snap to. Store-projected — the
-            KEYBOARD pad-mode selector arms it from hardware too. */}
-        <PerformancePanel deckIndex={deckId === 'a' ? 0 : 1} />
       </Panel>
       )}
 

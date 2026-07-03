@@ -139,12 +139,138 @@
   align-items: flex-end;
 }
 
-.deck__perform {
+/* Play the deck (issue #48): the performance door slides over the 2D prompt
+   pad — deck A from the left, deck B from the right — in the deck's accent.
+   Door open = the deck armed for note steering; the covered pad is the
+   signal that pads/keys now play notes, not prompt edits. */
+
+.deck__pad-stage {
+  position: relative;
+  overflow: hidden;
+}
+
+/* The door handle: a slim vertical tab on the pad's edge. */
+.deck__perform-handle {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  writing-mode: vertical-rl;
+  padding: var(--space-3) var(--space-1);
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-on-accent);
+  border: 1px solid var(--color-border-strong);
+  cursor: pointer;
+}
+
+.deck__perform-handle--a {
+  left: 0;
+  background: var(--color-deck-a);
+}
+
+.deck__perform-handle--b {
+  right: 0;
+  background: var(--color-deck-b);
+  transform: translateY(-50%) rotate(180deg);
+}
+
+/* The door itself: a flat accent slab with a faint scanline texture and a
+   hazard-striped leading edge, sliding like a machine gate. */
+.deck__perform-door {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  border-top: 1px solid var(--color-border);
-  padding-top: var(--space-2);
+  gap: var(--space-2);
+  padding: var(--space-3);
+  color: var(--color-on-accent);
+  visibility: hidden;
+  transition:
+    transform 0.3s cubic-bezier(0.2, 0.9, 0.25, 1),
+    visibility 0s linear 0.3s;
+}
+
+.deck__perform-door--a {
+  background:
+    repeating-linear-gradient(
+      0deg,
+      color-mix(in srgb, var(--color-on-accent) 6%, transparent) 0 1px,
+      transparent 1px 3px
+    ),
+    var(--color-deck-a);
+  border-right: 0.6rem solid transparent;
+  border-image: repeating-linear-gradient(
+      45deg,
+      var(--color-on-accent) 0 6px,
+      var(--color-deck-a) 6px 12px
+    )
+    1;
+  transform: translateX(calc(-100% - 2px));
+}
+
+.deck__perform-door--b {
+  background:
+    repeating-linear-gradient(
+      0deg,
+      color-mix(in srgb, var(--color-on-accent) 6%, transparent) 0 1px,
+      transparent 1px 3px
+    ),
+    var(--color-deck-b);
+  border-left: 0.6rem solid transparent;
+  border-image: repeating-linear-gradient(
+      -45deg,
+      var(--color-on-accent) 0 6px,
+      var(--color-deck-b) 6px 12px
+    )
+    1;
+  transform: translateX(calc(100% + 2px));
+}
+
+.deck__perform-door--open {
+  visibility: visible;
+  transform: translateX(0);
+  transition: transform 0.3s cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deck__perform-door,
+  .deck__perform-door--open {
+    transition: none;
+  }
+}
+
+.deck__perform-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.deck__perform-title {
+  margin: 0;
+  font: var(--silkscreen);
+  font-size: var(--text-s);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+}
+
+.deck__perform-close {
+  background: transparent;
+  border: 1px solid var(--color-on-accent);
+  color: var(--color-on-accent);
+  font: 700 var(--text-s) var(--font-ui);
+  line-height: 1;
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+}
+
+.deck__perform-hint {
+  margin: 0;
+  font: 500 var(--text-xs) var(--font-mono);
+  opacity: 0.82;
 }
 
 .deck__perform-row {
@@ -154,11 +280,28 @@
   flex-wrap: wrap;
 }
 
-.deck__perform-held {
+/* The dark field modules read as stickers on the accent slab; their
+   silkscreen labels flip to the on-accent ink for contrast. */
+.deck__perform-door .ui-field__label {
+  color: var(--color-on-accent);
+}
+
+/* The live readout: a bottom HUD strip, monospace, like a status LCD. */
+.deck__perform-live {
+  margin: auto 0 0;
+  padding: var(--space-1) var(--space-2);
   font: 500 var(--text-xs) var(--font-mono);
-  min-height: 1.2em;
-  margin: 0;
-  color: var(--color-text-muted);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  background: var(--color-surface-inset);
+}
+
+.deck--a .deck__perform-live {
+  color: var(--color-deck-a);
+}
+
+.deck--b .deck__perform-live {
+  color: var(--color-deck-b);
 }
 
 .deck__targets {

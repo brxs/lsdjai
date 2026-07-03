@@ -135,8 +135,9 @@
     },
     "perform": {
       "title": "Play the deck",
-      "arm": "Play the deck",
-      "disarm": "Stop playing",
+      "open": "Perform",
+      "close": "Close performance controls — back to prompts",
+      "hint": "Pads (KEYBOARD mode) & MIDI keys play this deck's harmony, snapped to the key and scale below. Generation tightens to 200 ms while open.",
       "key": "Key",
       "scale": "Scale",
       "mode": "Note mode",
@@ -151,8 +152,7 @@
         "onset": "On-grid onset"
       },
       "held": "Holding {{notes}}",
-      "armedIdle": "Armed — pads and keys steer this deck",
-      "disarmed": "Arm to steer with the FLX4 KEYBOARD pads or a MIDI keyboard"
+      "live": "Live — waiting for notes"
     },
     "worker": {
       "died": "The deck engine crashed.",
