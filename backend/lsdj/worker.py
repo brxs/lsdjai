@@ -17,7 +17,7 @@ import logging
 import queue
 import time
 
-from .engine import CHUNK_SECONDS, DeckEngine
+from .engine import DeckEngine
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,35 @@ def run_deck_worker(
                                 "event": "sample_embedded",
                                 "id": cmd["id"],
                                 "embed_seconds": round(time.monotonic() - started, 3),
+                            },
+                        )
+                    )
+            elif kind == "set_chunk_frames":
+                # The ADR-0023 performance knob (issue #48): an armed deck
+                # runs small chunks for playable steering latency. Applied
+                # between chunks like every command; unlike note/drum
+                # steering it is a mode, so it survives play/stop.
+                try:
+                    engine.set_chunk_frames(cmd["frames"])
+                except Exception:
+                    logger.exception("deck %s: set_chunk_frames failed", deck_id)
+                    out_queue.put(
+                        (
+                            "status",
+                            {
+                                "event": "error",
+                                "error": "set_chunk_frames failed; chunk unchanged",
+                            },
+                        )
+                    )
+                else:
+                    out_queue.put(
+                        (
+                            "status",
+                            {
+                                "event": "chunk_frames_applied",
+                                "frames": cmd["frames"],
+                                "effective_from_chunk": chunk_index,
                             },
                         )
                     )
@@ -238,4 +267,7 @@ def run_deck_worker(
             )
         )
         chunk_index += 1
-        pace_seconds += CHUNK_SECONDS
+        # Pace on the engine's CURRENT chunk length — the performance knob
+        # changes it mid-stream, and pacing on a constant would let an armed
+        # deck run 5× ahead (or starve) of real time.
+        pace_seconds += engine.chunk_seconds

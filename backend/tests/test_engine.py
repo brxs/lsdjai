@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from lsdj.engine import DeckEngine
+from lsdj.engine import DeckEngine, FRAMES_PER_CHUNK
 
 
 AUDIO_EMBEDDING = np.array([9.0, -9.0])
@@ -29,6 +29,7 @@ def make_engine(embeddings: dict[str, np.ndarray]):
     engine._state = None
     engine._notes = None
     engine._drums = None
+    engine._chunk_frames = FRAMES_PER_CHUNK
     return engine, calls
 
 
@@ -226,6 +227,34 @@ def test_set_notes_rejects_bad_shapes_and_values():
         engine.set_notes([0] * 127 + [4])
     with pytest.raises(ValueError, match="0, 1, or None"):
         engine.set_drums(2)
+
+
+def test_chunk_frames_knob_changes_generation_length():
+    # The ADR-0023 performance knob: the default is the 1 s chunk; the knob
+    # shrinks the next generate() call and the pacing unit together.
+    engine, _ = make_engine({})
+    frames_seen = []
+
+    def generate(style=None, notes=None, drums=None, frames=None, state=None):
+        frames_seen.append(frames)
+        return (
+            SimpleNamespace(samples=np.zeros((48_000, 2), dtype=np.float32)),
+            "stream-state",
+        )
+
+    engine._system.generate = generate
+    engine.generate_chunk()
+    engine.set_chunk_frames(5)
+    engine.generate_chunk()
+    assert frames_seen == [FRAMES_PER_CHUNK, 5]
+    assert engine.chunk_seconds == pytest.approx(0.2)
+
+
+def test_set_chunk_frames_rejects_bad_values():
+    engine, _ = make_engine({})
+    for bad in (0, FRAMES_PER_CHUNK + 1, 2.5, True):
+        with pytest.raises(ValueError, match="chunk frames"):
+            engine.set_chunk_frames(bad)
 
 
 def test_render_clip_never_carries_the_stream_conditioning():
