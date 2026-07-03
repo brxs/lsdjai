@@ -1,6 +1,6 @@
 # 0030. Track decode and offline track analysis in the Rust shell
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-03
 - **Deciders:** Daniel Peter
 
