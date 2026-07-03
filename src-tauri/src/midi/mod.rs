@@ -1,0 +1,499 @@
+//! Native MIDI I/O in the Rust shell (ADR-0031, superseding ADR-0005's
+//! webview transport).
+//!
+//! This module owns everything `tauri-plugin-midi` + the webview `control/`
+//! byte path used to: device enumeration and hot-plug (a 1 Hz rescan — the
+//! same cadence the retired shim polled at), driver binding by port-name
+//! fragment, the position-sync SysEx on a fresh bind, byte→intent
+//! translation ([`translate`]), LED output ([`leds`]), and the raw-byte
+//! monitor the byte-map doc calls the arbiter.
+//!
+//! Routing (the ADR-0031 split, at the current state of ADR-0020's
+//! inversion): control-surface intents are forwarded to the webview over the
+//! `midi://intent` event and dispatched onto the existing ControlBus — the
+//! deck-control semantics they trigger (mode gating, persistence, auto-trim)
+//! still live in React, so applying them natively would fork those rules.
+//! The performance-note path ([`notes`], issue #48) never touches the
+//! webview: KEYBOARD-bank pads and external keyboards steer generation
+//! entirely in-process, beside the beat clock. As the store inversion
+//! proceeds, intent kinds migrate from the forward list to native
+//! application without touching the transport or the translator.
+//!
+//! Input callbacks run on CoreMIDI threads: they translate, route, and
+//! return — the heavy lifting (LED frames, beat math) lives on the painter
+//! and scheduler threads. Nothing here goes near the cpal callback.
+
+pub mod drivers;
+pub mod leds;
+pub mod notes;
+pub mod translate;
+
+use std::collections::HashMap;
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use midir::{Ignore, MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager};
+
+use lsdj_engine::host::Host;
+use lsdj_engine::{DECK_COUNT, LOOP_SLOT_COUNT};
+
+use crate::store::{InterfaceState, InterfaceStore};
+
+use drivers::{driver_for_name, Driver};
+use notes::NoteSteering;
+use translate::{Flx4Translator, Translated};
+
+/// The Tauri event carrying a translated control-surface intent to the
+/// webview ControlBus (the payload IS a `ControlIntent`).
+pub const INTENT_EVENT: &str = "midi://intent";
+/// The Tauri event announcing a connection-status change (same payload as
+/// the `midi_status` command).
+pub const STATUS_EVENT: &str = "midi://status";
+
+/// How often the scanner re-enumerates ports (the shim's hot-plug cadence).
+const SCAN_INTERVAL: Duration = Duration::from_secs(1);
+/// The monitor keeps the last few raw messages, like the webview ring it
+/// replaces.
+const MONITOR_SIZE: usize = 6;
+
+/// The connection status the webview shows (statusbar + picker). The
+/// browser-permission states of the Web MIDI era (idle / requesting /
+/// denied / unsupported) are gone — native access needs no gesture.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MidiStatusDto {
+    pub connected: bool,
+    /// The bound controller's raw port name, `None` when nothing matched.
+    pub device_name: Option<String>,
+    /// The bound controller's driver id (`"flx4"` / `"ddj400"`).
+    pub driver_id: Option<String>,
+    /// Every matched controller currently connected (for the picker).
+    pub devices: Vec<String>,
+}
+
+/// One raw message for the monitor (the firmware-verification loop).
+#[derive(Debug, Clone, Serialize)]
+pub struct MonitorEntryDto {
+    pub id: u64,
+    pub bytes: Vec<u8>,
+}
+
+/// A repaint trigger for the LED painter thread.
+enum Paint {
+    /// The store changed — recompute from this snapshot.
+    Snapshot(Box<InterfaceState>),
+    /// Force a full repaint (fresh bind / pad-mode switch cleared the pads).
+    Repaint,
+    /// Periodic tick: refresh the engine-owned inputs (loop slots).
+    Tick,
+}
+
+/// State shared between the IPC commands, the scanner thread, the input
+/// callbacks, and the painter.
+struct Shared {
+    app: AppHandle,
+    /// The bound controller's output connection (the LED / SysEx path).
+    output: Mutex<Option<MidiOutputConnection>>,
+    /// The active controller's translator — per-device state (14-bit MSB
+    /// cache, SHIFT), rebuilt on every rebind.
+    translator: Mutex<Flx4Translator>,
+    monitor: Mutex<(u64, Vec<MonitorEntryDto>)>,
+    status: Mutex<MidiStatusDto>,
+    /// The user's explicit device pick (a port name); `None` = first match
+    /// by registry order. Survives rescans so a chosen device stays chosen.
+    selected: Mutex<Option<String>>,
+    paint_tx: Sender<Paint>,
+}
+
+impl Shared {
+    /// Send raw bytes to the bound controller; a missing device is a no-op.
+    fn send(&self, bytes: &[u8]) {
+        let mut output = self.output.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(connection) = output.as_mut() {
+            let _ = connection.send(bytes);
+        }
+    }
+
+    /// Handle one message from the bound controller (CoreMIDI thread).
+    fn on_controller_message(&self, bytes: &[u8]) {
+        {
+            let mut monitor = self.monitor.lock().unwrap_or_else(|p| p.into_inner());
+            let id = monitor.0;
+            monitor.0 += 1;
+            let entries = &mut monitor.1;
+            if entries.len() >= MONITOR_SIZE {
+                entries.remove(0);
+            }
+            entries.push(MonitorEntryDto { id, bytes: bytes.to_vec() });
+        }
+        let translated = {
+            let mut translator = self.translator.lock().unwrap_or_else(|p| p.into_inner());
+            translator.translate(bytes)
+        };
+        match translated {
+            Translated::None => {}
+            Translated::Intent(intent) => {
+                let _ = self.app.emit(INTENT_EVENT, &intent);
+            }
+            Translated::PerformancePad { deck, pad, down } => {
+                if let Some(notes) = self.app.try_state::<NoteSteering>() {
+                    notes.pad_event(deck.index(), pad as usize, down);
+                }
+            }
+            Translated::PadModeSwitch { deck, keyboard } => {
+                if let Some(notes) = self.app.try_state::<NoteSteering>() {
+                    notes.pad_mode_selected(deck.index(), keyboard);
+                }
+                // The device cleared its pad LEDs on the switch — repaint.
+                let _ = self.paint_tx.send(Paint::Repaint);
+            }
+        }
+    }
+
+    /// Handle one message from a non-controller input (an external MIDI
+    /// keyboard): note on/off edges steer the armed deck(s).
+    fn on_keyboard_message(&self, bytes: &[u8]) {
+        let (status, pitch, velocity) = match bytes {
+            [status, pitch, velocity, ..] => (*status, *pitch, *velocity),
+            _ => return,
+        };
+        let kind = status & 0xf0;
+        let down = kind == 0x90 && velocity > 0;
+        let up = kind == 0x80 || (kind == 0x90 && velocity == 0);
+        if !(down || up) {
+            return;
+        }
+        if let Some(notes) = self.app.try_state::<NoteSteering>() {
+            notes.keyboard_event(pitch, down);
+        }
+    }
+
+    fn publish_status(&self, next: MidiStatusDto) {
+        let changed = {
+            let mut status = self.status.lock().unwrap_or_else(|p| p.into_inner());
+            if *status == next {
+                false
+            } else {
+                *status = next.clone();
+                true
+            }
+        };
+        if changed {
+            let _ = self.app.emit(STATUS_EVENT, &next);
+        }
+    }
+}
+
+/// The managed MIDI service: owns the scanner/painter threads and answers
+/// the IPC commands. Connections live on the scanner thread; everything
+/// else reaches the device through [`Shared`].
+pub struct MidiService {
+    shared: Arc<Shared>,
+    /// Wakes the scanner early (a device pick should not wait out the poll).
+    rescan_tx: Sender<()>,
+}
+
+impl MidiService {
+    /// Spawn the scanner, painter, and ticker threads. Call once in `setup`;
+    /// the service lives in managed state for the app's lifetime.
+    pub fn start(app: AppHandle) -> Self {
+        let (paint_tx, paint_rx) = channel();
+        let (rescan_tx, rescan_rx) = channel();
+        let shared = Arc::new(Shared {
+            app,
+            output: Mutex::new(None),
+            translator: Mutex::new(Flx4Translator::default()),
+            monitor: Mutex::new((0, Vec::new())),
+            status: Mutex::new(MidiStatusDto::default()),
+            selected: Mutex::new(None),
+            paint_tx,
+        });
+        {
+            let shared = shared.clone();
+            std::thread::Builder::new()
+                .name("midi-scan".into())
+                .spawn(move || run_scanner(shared, rescan_rx))
+                .expect("spawn midi scanner");
+        }
+        {
+            let shared = shared.clone();
+            std::thread::Builder::new()
+                .name("midi-leds".into())
+                .spawn(move || run_painter(shared, paint_rx))
+                .expect("spawn midi painter");
+        }
+        {
+            let paint_tx = shared.paint_tx.clone();
+            std::thread::Builder::new()
+                .name("midi-led-tick".into())
+                .spawn(move || loop {
+                    std::thread::sleep(SCAN_INTERVAL);
+                    if paint_tx.send(Paint::Tick).is_err() {
+                        return;
+                    }
+                })
+                .expect("spawn midi led ticker");
+        }
+        MidiService { shared, rescan_tx }
+    }
+
+    /// Register the store watcher that feeds the painter. Separate from
+    /// [`MidiService::start`] because the store is managed after the service
+    /// in `setup`.
+    pub fn watch_store(&self, store: &InterfaceStore) {
+        let paint_tx = self.shared.paint_tx.clone();
+        store.watch(move |state| {
+            let _ = paint_tx.send(Paint::Snapshot(Box::new(state.clone())));
+        });
+    }
+
+    pub fn status(&self) -> MidiStatusDto {
+        self.shared.status.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    pub fn monitor(&self) -> Vec<MonitorEntryDto> {
+        self.shared.monitor.lock().unwrap_or_else(|p| p.into_inner()).1.clone()
+    }
+
+    pub fn select(&self, name: String) {
+        *self.shared.selected.lock().unwrap_or_else(|p| p.into_inner()) = Some(name);
+        let _ = self.rescan_tx.send(());
+    }
+}
+
+/// One matched controller port.
+struct Match {
+    name: String,
+    driver: &'static Driver,
+}
+
+/// The scanner: enumerate → bind the picked/first controller → attach
+/// non-controller inputs as keyboard-note sources → publish status; repeat
+/// every second (or immediately on a device pick). A fresh client per scan
+/// keeps the port list honest without a CFRunLoop on this thread; the
+/// churn is the cadence the retired shim already ran at.
+fn run_scanner(shared: Arc<Shared>, rescan_rx: Receiver<()>) {
+    // The active controller's input connection + name (owned here — dropping
+    // a connection closes it).
+    let mut controller: Option<(String, MidiInputConnection<()>)> = None;
+    let mut keyboards: HashMap<String, MidiInputConnection<()>> = HashMap::new();
+    loop {
+        scan_once(&shared, &mut controller, &mut keyboards);
+        match rescan_rx.recv_timeout(SCAN_INTERVAL) {
+            Ok(()) | Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+fn scan_once(
+    shared: &Arc<Shared>,
+    controller: &mut Option<(String, MidiInputConnection<()>)>,
+    keyboards: &mut HashMap<String, MidiInputConnection<()>>,
+) {
+    let mut input = match MidiInput::new("LSDJai") {
+        Ok(input) => input,
+        Err(e) => {
+            eprintln!("lsdj-app: midi input client failed: {e}");
+            return;
+        }
+    };
+    input.ignore(Ignore::None);
+    let ports = input.ports();
+    let mut matched: Vec<Match> = Vec::new();
+    let mut others: Vec<(String, midir::MidiInputPort)> = Vec::new();
+    for port in ports {
+        let Ok(name) = input.port_name(&port) else { continue };
+        match driver_for_name(&name) {
+            Some(driver) => matched.push(Match { name, driver }),
+            None => others.push((name, port)),
+        }
+    }
+
+    // Honour an explicit selection while it is present, else the first match
+    // by registry order — deterministic regardless of OS enumeration order.
+    let selected = shared.selected.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let active = matched
+        .iter()
+        .find(|m| Some(&m.name) == selected.as_ref())
+        .or_else(|| {
+            drivers::DRIVERS
+                .iter()
+                .find_map(|d| matched.iter().find(|m| std::ptr::eq(m.driver, d)))
+        })
+        .map(|m| (m.name.clone(), m.driver));
+
+    // Rebind only when the active device actually changed: the translator
+    // state (14-bit MSB cache, SHIFT) must survive a steady-state rescan,
+    // and re-sending the position query would clobber software mixer moves.
+    let current = controller.as_ref().map(|(name, _)| name.clone());
+    if active.as_ref().map(|(name, _)| name) != current.as_ref() {
+        *controller = None; // drop the old connection first
+        *shared.output.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        if let Some((name, driver)) = &active {
+            match connect_controller(shared, name) {
+                Ok(connection) => {
+                    *controller = Some((name.clone(), connection));
+                    *shared.translator.lock().unwrap_or_else(|p| p.into_inner()) =
+                        Flx4Translator::default();
+                    bind_output(shared, driver, name);
+                    // A freshly bound device powered up dark / stale.
+                    let _ = shared.paint_tx.send(Paint::Repaint);
+                }
+                Err(e) => eprintln!("lsdj-app: midi connect '{name}' failed: {e}"),
+            }
+        }
+    }
+
+    // Non-controller inputs attach as keyboard-note sources (issue #48) —
+    // drop vanished ports, connect new ones.
+    let present: Vec<String> = others.iter().map(|(name, _)| name.clone()).collect();
+    keyboards.retain(|name, _| present.contains(name));
+    for (name, port) in others {
+        if keyboards.contains_key(&name) {
+            continue;
+        }
+        let mut keyboard_input = match MidiInput::new("LSDJai") {
+            Ok(input) => input,
+            Err(_) => continue,
+        };
+        keyboard_input.ignore(Ignore::None);
+        let router = shared.clone();
+        match keyboard_input.connect(
+            &port,
+            "lsdj-keyboard",
+            move |_stamp, bytes, _| router.on_keyboard_message(bytes),
+            (),
+        ) {
+            Ok(connection) => {
+                keyboards.insert(name, connection);
+            }
+            Err(e) => eprintln!("lsdj-app: midi keyboard connect failed: {e}"),
+        }
+    }
+
+    let (device_name, driver_id) = match &active {
+        Some((name, driver)) => (Some(name.clone()), Some(driver.id.to_string())),
+        None => (None, None),
+    };
+    shared.publish_status(MidiStatusDto {
+        connected: active.is_some(),
+        device_name,
+        driver_id,
+        devices: matched.iter().map(|m| m.name.clone()).collect(),
+    });
+}
+
+fn connect_controller(
+    shared: &Arc<Shared>,
+    name: &str,
+) -> Result<MidiInputConnection<()>, String> {
+    let mut input = MidiInput::new("LSDJai").map_err(|e| e.to_string())?;
+    input.ignore(Ignore::None);
+    let port = input
+        .ports()
+        .into_iter()
+        .find(|p| input.port_name(p).is_ok_and(|n| n == name))
+        .ok_or_else(|| "port vanished".to_string())?;
+    let router = shared.clone();
+    input
+        .connect(
+            &port,
+            "lsdj-controller",
+            move |_stamp, bytes, _| router.on_controller_message(bytes),
+            (),
+        )
+        .map_err(|e| e.to_string())
+}
+
+/// Bind the controller's output port and send the driver's position query —
+/// the device answers by dumping every analog position as CC traffic, which
+/// flows through the translator like any other move.
+fn bind_output(shared: &Arc<Shared>, driver: &Driver, name: &str) {
+    let output = match MidiOutput::new("LSDJai") {
+        Ok(output) => output,
+        Err(e) => {
+            eprintln!("lsdj-app: midi output client failed: {e}");
+            return;
+        }
+    };
+    let port = output
+        .ports()
+        .into_iter()
+        .find(|p| output.port_name(p).is_ok_and(|n| n.contains(driver.name_fragment)));
+    let Some(port) = port else {
+        eprintln!("lsdj-app: no midi output port for '{name}'");
+        return;
+    };
+    match output.connect(&port, "lsdj-leds") {
+        Ok(mut connection) => {
+            let _ = connection.send(driver.init_sysex);
+            *shared.output.lock().unwrap_or_else(|p| p.into_inner()) = Some(connection);
+        }
+        Err(e) => eprintln!("lsdj-app: midi output connect failed: {e}"),
+    }
+}
+
+/// The LED painter: recompute the full frame on every trigger and send only
+/// the groups whose bytes changed (a Repaint clears the diff baseline — the
+/// device's pads were just wiped). Loop-slot fill comes from the engine (the
+/// truth of the audio), everything else from the store snapshot.
+fn run_painter(shared: Arc<Shared>, paint_rx: Receiver<Paint>) {
+    let mut snapshot: Option<InterfaceState> = None;
+    let mut last_frame: Vec<Vec<[u8; 3]>> = Vec::new();
+    while let Ok(paint) = paint_rx.recv() {
+        match paint {
+            Paint::Snapshot(state) => snapshot = Some(*state),
+            Paint::Repaint => last_frame.clear(),
+            Paint::Tick => {}
+        }
+        // Without a store snapshot yet there is nothing truthful to paint.
+        let Some(state) = &snapshot else { continue };
+        if !shared.status.lock().unwrap_or_else(|p| p.into_inner()).connected {
+            continue;
+        }
+        let loop_filled: Vec<Vec<bool>> = match shared.app.try_state::<Host>() {
+            Some(host) => (0..DECK_COUNT)
+                .map(|deck| host.loop_slots(deck).iter().map(|slot| slot.filled).collect())
+                .collect(),
+            None => vec![vec![false; LOOP_SLOT_COUNT]; DECK_COUNT],
+        };
+        let frame = leds::full_frame(state, &loop_filled);
+        for (index, group) in frame.iter().enumerate() {
+            if last_frame.get(index) == Some(group) {
+                continue;
+            }
+            for message in group {
+                shared.send(message);
+            }
+        }
+        last_frame = frame;
+    }
+}
+
+// --- IPC commands (registered in lib.rs) ---
+
+/// The connection status for the statusbar (initial hydration; changes
+/// arrive on `midi://status`).
+#[tauri::command]
+pub fn midi_status(state: tauri::State<'_, MidiService>) -> MidiStatusDto {
+    state.status()
+}
+
+/// The last few raw messages for the hex monitor (polled, like the webview
+/// ring it replaces — the firmware-verification loop of ADR-0005 carried
+/// forward).
+#[tauri::command]
+pub fn midi_monitor(state: tauri::State<'_, MidiService>) -> Vec<MonitorEntryDto> {
+    state.monitor()
+}
+
+/// Choose which matched controller drives the app (the picker); rebinds on
+/// the immediate rescan this triggers.
+#[tauri::command]
+pub fn midi_select(state: tauri::State<'_, MidiService>, name: String) {
+    state.select(name);
+}

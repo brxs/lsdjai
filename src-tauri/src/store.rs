@@ -154,11 +154,48 @@ pub enum NoteModeSnap {
     Onset,
 }
 
+/// The key/scale a performance surface snaps to (issue #48). Chromatic is
+/// the no-snap escape hatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ScaleSnap {
+    Major,
+    Minor,
+    PentatonicMinor,
+    Chromatic,
+}
+
+/// A deck's performance-surface config (issue #48, ADR-0031): whether the
+/// surface is armed (armed decks take pad/keyboard notes AND run the small
+/// ADR-0023 performance chunk), the key/scale the notes snap to, and the
+/// note mode (chord-follow or on-grid onset). Owned by the shell
+/// note-steering service; the store holds it for the projection.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PerformanceSnap {
+    pub armed: bool,
+    /// Key root as a pitch class (0 = C … 11 = B).
+    pub key: u8,
+    pub scale: ScaleSnap,
+    pub mode: NoteModeSnap,
+}
+
+impl Default for PerformanceSnap {
+    fn default() -> Self {
+        PerformanceSnap {
+            armed: false,
+            key: 0,
+            scale: ScaleSnap::Major,
+            mode: NoteModeSnap::Chord,
+        }
+    }
+}
+
 /// A realtime deck's note steering (ADR-0023): the held MIDI pitches and the
-/// note mode. The webview owns the pitches→multihot mapping and drives the
-/// worker; the store holds the authored state so MCP writes project into the
-/// same path the UI uses. `Deserialize`/`JsonSchema` too — it crosses as a
-/// `set_deck_notes` / MCP `set_notes` argument.
+/// note mode. The shell note-steering service owns the pitches→multihot
+/// mapping and drives the worker directly (ADR-0031); the store holds the
+/// authored state so every surface projects the same truth. `Deserialize`/
+/// `JsonSchema` too — it crosses as an MCP `set_notes` argument.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteSteeringSnap {
@@ -244,8 +281,19 @@ pub struct DeckSnap {
     /// The realtime deck's 2D style-pad targets (prompt + position) — the UI source
     /// the deck blends into the worker prompt. Mirrored up by `DeckColumn`.
     pub style_targets: Vec<StyleTargetSnap>,
+    /// Which style targets are selected into the active blend (the net mask,
+    /// one bool per target) — mirrored up by the webview so the pad LEDs can
+    /// burn selected targets bright and dim the rest (ADR-0031: LEDs read the
+    /// store). Empty = no mask (every target pad lit full).
+    pub style_selected: Vec<bool>,
     /// The 2D style-pad cursor (the blend point).
     pub cursor: PadPointSnap,
+    /// Whether the deck is primed off-air (the transport-CUE LED state) — a
+    /// read-back the webview mirrors up; the deck's prime/play flow owns it.
+    pub primed: bool,
+    /// The performance-surface config (issue #48) — armed/key/scale/mode,
+    /// written through the shell note-steering service.
+    pub performance: PerformanceSnap,
     /// The realtime deck's note steering (ADR-0023), or `None` when unsteered.
     /// Cleared on transport transitions — a discontinuity resets conditioning.
     pub notes: Option<NoteSteeringSnap>,
@@ -281,7 +329,10 @@ impl Default for DeckSnap {
             transport: None,
             loop_labels: Vec::new(),
             style_targets: Vec::new(),
+            style_selected: Vec::new(),
             cursor: PadPointSnap { x: 0.5, y: 0.5 },
+            primed: false,
+            performance: PerformanceSnap::default(),
             notes: None,
             drums: None,
             analysis: AnalysisSnap::default(),
@@ -458,6 +509,27 @@ impl InterfaceState {
         }
     }
 
+    /// Mirror the style-pad selection mask (which targets are in the blend).
+    pub fn set_style_selected(&mut self, deck: usize, selected: Vec<bool>) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.style_selected = selected;
+        }
+    }
+
+    /// Mirror the primed-off-air read-back (the transport-CUE LED state).
+    pub fn set_primed(&mut self, deck: usize, primed: bool) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.primed = primed;
+        }
+    }
+
+    /// Record the performance-surface config (issue #48).
+    pub fn set_performance(&mut self, deck: usize, perf: PerformanceSnap) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.performance = perf;
+        }
+    }
+
     /// Replace a deck's note steering wholesale (`None` = unsteered) — full
     /// state, never a delta, the ADR-0023 idempotence rule.
     pub fn set_notes(&mut self, deck: usize, notes: Option<NoteSteeringSnap>) {
@@ -485,9 +557,17 @@ impl InterfaceState {
 /// The shell-level store: the locked [`InterfaceState`] plus the [`AppHandle`] used
 /// to broadcast changes. Held in Tauri managed state for the app's lifetime so every
 /// controller path (UI/MIDI commands today, MCP tools later) mutates the one copy.
+/// An in-process store-change listener (see [`InterfaceStore::watch`]).
+type StoreWatcher = Box<dyn Fn(&InterfaceState) + Send + Sync>;
+
 pub struct InterfaceStore {
     state: Mutex<InterfaceState>,
     app: AppHandle,
+    /// In-process change listeners (the native LED painter, ADR-0031), called
+    /// with the fresh snapshot after every real mutation — the Rust-side
+    /// equivalent of the webview's `store://changed` subscription, without a
+    /// serde round-trip.
+    watchers: Mutex<Vec<StoreWatcher>>,
 }
 
 impl InterfaceStore {
@@ -495,7 +575,17 @@ impl InterfaceStore {
         InterfaceStore {
             state: Mutex::new(InterfaceState::default()),
             app,
+            watchers: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Register an in-process change listener (never unregistered — watchers
+    /// live as long as the app, like the managed state that owns them).
+    pub fn watch(&self, watcher: impl Fn(&InterfaceState) + Send + Sync + 'static) {
+        self.watchers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(Box::new(watcher));
     }
 
     /// The current snapshot — what the webview hydrates from on mount (`store_snapshot`).
@@ -523,6 +613,9 @@ impl InterfaceStore {
             state.clone()
         };
         let _ = self.app.emit(STORE_CHANGED_EVENT, &snapshot);
+        for watcher in self.watchers.lock().unwrap_or_else(|p| p.into_inner()).iter() {
+            watcher(&snapshot);
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, InterfaceState> {
@@ -625,6 +718,23 @@ impl InterfaceStore {
     /// and re-pushes the blended prompt to the worker.
     pub fn set_deck_cursor(&self, deck: usize, cursor: PadPointSnap) {
         self.mutate(move |s| s.set_cursor(deck, cursor));
+    }
+
+    /// Mirror the style-pad selection mask (the webview writes it up on a net
+    /// selection change; the LED painter reads it).
+    pub fn set_deck_style_selected(&self, deck: usize, selected: Vec<bool>) {
+        self.mutate(move |s| s.set_style_selected(deck, selected));
+    }
+
+    /// Mirror the primed-off-air read-back (the transport-CUE LED state).
+    pub fn set_deck_primed(&self, deck: usize, primed: bool) {
+        self.mutate(move |s| s.set_primed(deck, primed));
+    }
+
+    /// Record a deck's performance-surface config (written by the shell
+    /// note-steering service — UI and hardware both go through it).
+    pub fn set_deck_performance(&self, deck: usize, perf: PerformanceSnap) {
+        self.mutate(move |s| s.set_performance(deck, perf));
     }
 
     /// Replace a deck's note steering (UI/MIDI writes it up; MCP `set_notes` writes

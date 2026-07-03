@@ -1,7 +1,8 @@
 //! LSDJai native shell — the Tauri v2 app host (Phase 2).
 //!
-//! This embeds the React frontend, wires the WebMIDI plugin, starts the Rust
-//! audio engine, and exposes the engine control surface to the webview over IPC.
+//! This embeds the React frontend, starts the Rust audio engine and the native
+//! MIDI service (ADR-0031), and exposes the engine control surface to the
+//! webview over IPC.
 //!
 //! # The audio host lifecycle (the load-bearing bit)
 //!
@@ -43,6 +44,7 @@ mod decode;
 mod generation;
 mod library;
 mod mcp;
+mod midi;
 mod models;
 mod samples;
 mod sidecar;
@@ -186,6 +188,12 @@ fn start_sidecars(
                         .try_state::<Host>()
                         .map_or(0.0, |host| host.health().context_frames as f64);
                     status_feed.reset(idx, origin);
+                    // Held note steering dies with the stream too (ADR-0023):
+                    // the worker dropped its conditioning, so the shell service
+                    // must drop the matching held state.
+                    if let Some(notes) = app.try_state::<midi::notes::NoteSteering>() {
+                        notes.reset(idx);
+                    }
                 }
                 let _ = app.emit("sidecar://status", SidecarStatus { deck: idx, json });
             },
@@ -423,9 +431,6 @@ fn set_cue_device(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        // The WebMIDI shim (ADR-0005): injects `navigator.requestMIDIAccess`
-        // into the webview.
-        .plugin(tauri_plugin_midi::init())
         // Native file/folder picker for the media browser's folder tab (WKWebView
         // has no File System Access API).
         .plugin(tauri_plugin_dialog::init())
@@ -491,6 +496,16 @@ pub fn run() {
             // projects. Mutated by the same commands that drive the engine, it emits
             // `store://changed` on every change.
             app.manage(store::InterfaceStore::new(app.handle().clone()));
+            // The shell note-steering service (issue #48, ADR-0031): the single
+            // sender for note/drum conditioning — native MIDI, MCP, and the UI
+            // all go through it.
+            app.manage(midi::notes::NoteSteering::new(app.handle().clone()));
+            // Native MIDI I/O (ADR-0031): controller binding, translation, LEDs,
+            // and the performance input — the webview shim is gone. The LED
+            // painter follows the store through the in-process watcher.
+            let midi_service = midi::MidiService::start(app.handle().clone());
+            midi_service.watch_store(&app.state::<store::InterfaceStore>());
+            app.manage(midi_service);
             app.manage(audio_state);
             app.manage(sidecars);
             app.manage(taps);
@@ -571,19 +586,21 @@ pub fn run() {
             commands::set_deck_transport,
             commands::set_deck_loop_labels,
             commands::set_deck_style,
-            commands::set_deck_notes,
-            commands::set_deck_drums,
+            commands::set_deck_style_selection,
+            commands::set_deck_primed,
+            commands::set_deck_performance,
             commands::deck_play,
             commands::deck_stop,
             commands::deck_set_prompt,
             commands::deck_set_style,
-            commands::deck_set_notes,
-            commands::deck_set_drums,
             commands::deck_set_model,
             commands::deck_embed_sample,
             commands::subscribe_deck_pcm,
             commands::unsubscribe_deck_pcm,
             commands::analysis_reset,
+            midi::midi_status,
+            midi::midi_monitor,
+            midi::midi_select,
             models::model_status,
             models::install_model,
             models::update_model,

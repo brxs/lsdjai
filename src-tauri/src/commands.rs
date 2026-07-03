@@ -35,10 +35,11 @@ use tauri_plugin_opener::OpenerExt;
 use crate::analysis::live::AnalysisFeed;
 use crate::analysis::track::{DeckTrack, TrackAnalysis};
 use crate::library;
+use crate::midi::notes::NoteSteering;
 use crate::samples::{NewSample, SampleEntry, SampleLibrary};
 use crate::sidecar::{PcmTaps, Sidecars};
 use crate::songs::{NewSong, SongEntry, SongLibrary};
-use crate::store::{InterfaceState, InterfaceStore};
+use crate::store::{InterfaceState, InterfaceStore, PerformanceSnap};
 
 /// Reject a deck index outside `[0, DECK_COUNT)`. A bad index from the webview is
 /// a no-op (the command returns without touching the engine), never a panic. Shared
@@ -1126,6 +1127,7 @@ pub fn deck_play(
     state: tauri::State<'_, Sidecars>,
     engine: tauri::State<'_, Host>,
     store: tauri::State<'_, InterfaceStore>,
+    notes: tauri::State<'_, NoteSteering>,
     deck: usize,
 ) {
     if valid_deck(deck) {
@@ -1136,6 +1138,9 @@ pub fn deck_play(
         // The store owns the transport (ADR-0020): every controller's play lands
         // here, and the webview's button projects the snapshot back down.
         store.set_playing(deck, true);
+        // A fresh stream starts unsteered (ADR-0023): the worker just reset its
+        // conditioning, so the note service drops the matching held state.
+        notes.reset(deck);
     }
 }
 
@@ -1144,6 +1149,7 @@ pub fn deck_stop(
     state: tauri::State<'_, Sidecars>,
     engine: tauri::State<'_, Host>,
     store: tauri::State<'_, InterfaceStore>,
+    notes: tauri::State<'_, NoteSteering>,
     deck: usize,
 ) {
     if valid_deck(deck) {
@@ -1153,6 +1159,7 @@ pub fn deck_stop(
         engine.set_deck_playing(deck, false);
         state.send(deck, &json!({ "type": "stop" }).to_string());
         store.set_playing(deck, false);
+        notes.reset(deck);
     }
 }
 
@@ -1234,39 +1241,20 @@ pub fn deck_set_style(state: tauri::State<'_, Sidecars>, deck: usize, prompts: V
     state.send(deck, &json!({ "type": "set_style", "prompts": entries }).to_string());
 }
 
-/// One slot per MIDI pitch on the note-conditioning wire (ADR-0023).
-pub const NOTE_SLOTS: usize = 128;
-
-/// Send a deck's full note multihot to the worker (ADR-0023): `None` clears to
-/// masked (the model plays freely); otherwise exactly [`NOTE_SLOTS`] states,
-/// each -1 (masked), 0 (off), 1 (sustain), 2 (onset), or 3 (model decides).
-/// Malformed shapes are a silent no-op at this trust boundary, like a bad deck.
+/// Set a deck's performance-surface config (issue #48): arm/disarm, key,
+/// scale, and note mode. Routed through the note-steering service — the same
+/// single sender the hardware and MCP use — which applies the ADR-0023 chunk
+/// knob on an armed transition and mirrors the store. A bad deck or key is a
+/// silent no-op at this trust boundary.
 #[tauri::command]
-pub fn deck_set_notes(state: tauri::State<'_, Sidecars>, deck: usize, notes: Option<Vec<i32>>) {
-    if !valid_deck(deck) {
-        return;
+pub fn set_deck_performance(
+    notes: tauri::State<'_, NoteSteering>,
+    deck: usize,
+    perf: PerformanceSnap,
+) {
+    if valid_deck(deck) && perf.key < 12 {
+        notes.set_performance(deck, perf);
     }
-    if let Some(states) = &notes {
-        if states.len() != NOTE_SLOTS || states.iter().any(|s| !(-1..=3).contains(s)) {
-            return;
-        }
-    }
-    state.send(deck, &json!({ "type": "set_notes", "notes": notes }).to_string());
-}
-
-/// Send a deck's drum-conditioning flag to the worker (ADR-0023): `None` clears
-/// to masked (the model decides), 0 suppresses drums, 1 forces them.
-#[tauri::command]
-pub fn deck_set_drums(state: tauri::State<'_, Sidecars>, deck: usize, drums: Option<i32>) {
-    if !valid_deck(deck) {
-        return;
-    }
-    if let Some(flag) = drums {
-        if !(0..=1).contains(&flag) {
-            return;
-        }
-    }
-    state.send(deck, &json!({ "type": "set_drums", "drums": drums }).to_string());
 }
 
 // --- Analysis PCM tap (gap 1: re-feed the TS beat/loudness/band analysis) ---
@@ -1430,35 +1418,25 @@ pub fn set_deck_style(
     }
 }
 
-/// Mirror a deck's note steering (held pitches + mode) into the store — the
-/// webview writes it up beside its `deck_set_notes` send, and clears it on
-/// stream discontinuities (ADR-0023). Pitches above 127 are a silent no-op.
+/// Mirror the style-pad selection mask (which targets are in the active
+/// blend) into the store — the native LED painter reads it (ADR-0031: LEDs
+/// read the store), so the webview writes it up on a net selection change.
 #[tauri::command]
-pub fn set_deck_notes(
+pub fn set_deck_style_selection(
     store: tauri::State<'_, InterfaceStore>,
     deck: usize,
-    notes: Option<crate::store::NoteSteeringSnap>,
-) {
-    if !valid_deck(deck) {
-        return;
-    }
-    if let Some(steering) = &notes {
-        if steering.pitches.iter().any(|&pitch| pitch > 127) {
-            return;
-        }
-    }
-    store.set_deck_notes(deck, notes);
-}
-
-/// Mirror a deck's drum-conditioning tri-state into the store (`None` = the
-/// model decides, `false` = suppress, `true` = force).
-#[tauri::command]
-pub fn set_deck_drums(
-    store: tauri::State<'_, InterfaceStore>,
-    deck: usize,
-    drums: Option<bool>,
+    selected: Vec<bool>,
 ) {
     if valid_deck(deck) {
-        store.set_deck_drums(deck, drums);
+        store.set_deck_style_selected(deck, selected);
+    }
+}
+
+/// Mirror the primed-off-air read-back into the store (the transport-CUE LED
+/// state) — the deck's prime/play flow writes it up on change.
+#[tauri::command]
+pub fn set_deck_primed(store: tauri::State<'_, InterfaceStore>, deck: usize, primed: bool) {
+    if valid_deck(deck) {
+        store.set_deck_primed(deck, primed);
     }
 }

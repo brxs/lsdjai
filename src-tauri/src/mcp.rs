@@ -39,7 +39,8 @@ use crate::generation::GenerationServer;
 use crate::samples::{NewSample, SampleLibrary};
 use crate::sidecar::Sidecars;
 use crate::songs::{NewSong, SongLibrary};
-use crate::store::{InterfaceStore, NoteModeSnap, NoteSteeringSnap, PadPointSnap, StyleTargetSnap};
+use crate::midi::notes::NoteSteering;
+use crate::store::{InterfaceStore, NoteModeSnap, PadPointSnap, StyleTargetSnap};
 use lsdj_engine::host::Host;
 use lsdj_engine::FxKind;
 
@@ -612,10 +613,10 @@ impl McpHandler {
         }
     }
 
-    /// Steer a realtime deck's harmony (ADR-0023). Writes the store; the webview
-    /// adopts the change, maps pitches + mode to the wire multihot, and drives the
-    /// worker — the same path a UI surface takes (the bidirectional projection),
-    /// not a hidden raw override.
+    /// Steer a realtime deck's harmony (ADR-0023). Routed through the shell
+    /// note-steering service (ADR-0031) — the single sender native MIDI and the
+    /// UI use: it builds the wire multihot, drives the worker directly, and
+    /// mirrors the store; the webview only displays.
     #[tool(
         description = "Steer a realtime deck's harmony with held MIDI pitches \
                        (0-127); an empty list clears the steering (the model plays \
@@ -635,19 +636,19 @@ impl McpHandler {
         if pitches.iter().any(|&pitch| pitch > 127) {
             return "pitches must be MIDI note numbers 0-127".to_string();
         }
-        let store = self.app.state::<InterfaceStore>();
-        if pitches.is_empty() {
-            store.set_deck_notes(deck, None);
-            return format!("deck {deck} note steering cleared");
-        }
         let count = pitches.len();
         let mode = mode.unwrap_or(NoteModeSnap::Chord);
-        store.set_deck_notes(deck, Some(NoteSteeringSnap { pitches, mode }));
+        self.app
+            .state::<NoteSteering>()
+            .apply_external(deck, &pitches, mode);
+        if count == 0 {
+            return format!("deck {deck} note steering cleared");
+        }
         format!("deck {deck} steering {count} held note(s)")
     }
 
-    /// Set a realtime deck's drum conditioning (ADR-0023) — the same store
-    /// projection as `set_notes`.
+    /// Set a realtime deck's drum conditioning (ADR-0023) — the same shell
+    /// service as `set_notes` (it sends the wire flag and mirrors the store).
     #[tool(
         description = "Set a realtime deck's drum conditioning: 'suppress' keeps \
                        drums out (sit beside another deck), 'force' asks for them, \
@@ -666,7 +667,7 @@ impl McpHandler {
             DrumSteerArg::Force => Some(true),
             DrumSteerArg::Auto => None,
         };
-        self.app.state::<InterfaceStore>().set_deck_drums(deck, flag);
+        self.app.state::<NoteSteering>().set_drums(deck, flag);
         format!(
             "deck {deck} drums {}",
             match mode {
