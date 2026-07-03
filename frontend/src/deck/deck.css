@@ -152,7 +152,9 @@
    push-back chevron. No pasted-on chrome: the rail IS the door's leading
    edge, its LED is the steering tell. */
 .deck__perform-door {
-  --perform-rail: 1.6rem;
+  /* Slim grab strip: just wide enough for the vertical silkscreen label
+     and the LED; full height keeps it an easy click target. */
+  --perform-rail: 1rem;
   position: absolute;
   inset: 0;
   z-index: 2;
