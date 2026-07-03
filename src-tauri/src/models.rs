@@ -594,12 +594,28 @@ impl Drop for InstallManager {
 /// them and leave the download running. The grandchildren are reparented to
 /// launchd, which reaps them.
 fn kill_group(child: &mut Child) {
+    let group = -(child.id() as libc::pid_t);
     // SAFETY: `kill(2)` with a negative pid signals the process group; the pid is a
     // live child we own. A failure (already-exited group) is ignored.
     unsafe {
-        libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+        libc::kill(group, libc::SIGKILL);
     }
     let _ = child.wait();
+    // A descendant that was mid-fork during the sweep can miss the signal — but
+    // it is still IN the group (fork inherits the pgid), so re-sweep until the
+    // group has no members (signal 0 probes without signalling). One pass
+    // suffices in practice; the bound keeps a stray unkillable member from
+    // spinning this thread forever.
+    for _ in 0..100 {
+        // SAFETY: as above; signal 0 sends nothing.
+        if unsafe { libc::kill(group, 0) } == -1 {
+            break;
+        }
+        unsafe {
+            libc::kill(group, libc::SIGKILL);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 fn cancelled(shared: &InstallShared) -> Result<(), String> {
@@ -1098,45 +1114,69 @@ printf '{"event":"done"}\n'
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let marker = tmp.join("grandchild-ran");
+        let pidfile = tmp.join("grandchild-pid");
         let stub = tmp.join("stub.sh");
         // A backgrounded grandchild (like `uv run`'s python) that would write the
-        // marker after a delay; the child then blocks. Killing only the immediate
-        // child orphans the grandchild, which survives to write the marker — the
-        // bug. Killing the group takes it down before the delay elapses.
+        // marker; the child then blocks. Killing only the immediate child orphans
+        // the grandchild, which survives to write the marker — the bug. "started"
+        // is echoed AFTER the fork and its pid is on disk first, so the stdout
+        // line is the synchronisation point — no timing budget to blow through
+        // under suite load. The long sleeps are ceilings, never waited out on
+        // the passing path.
         write_exec(
             &stub,
             &format!(
-                "#!/bin/sh\n( sleep 1; : > \"{}\" ) &\necho started\nsleep 5\n",
-                marker.display()
+                "#!/bin/sh\n( sleep 30; : > \"{}\" ) &\necho $! > \"{}\"\necho started\nsleep 30\n",
+                marker.display(),
+                pidfile.display()
             ),
         );
 
         let shared = shared();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
-            let handle = scope.spawn(|| {
+            scope.spawn(|| {
                 let mut cmd = Command::new("sh");
                 cmd.arg(&stub);
-                let _ = stream_child(&shared, "cancel-test", cmd, |_| {});
+                let _ = stream_child(&shared, "cancel-test", cmd, |line| {
+                    if line == "started" {
+                        let _ = started_tx.send(());
+                    }
+                });
             });
-            // Wait until the child is parked, then cancel it (take + kill group).
-            for _ in 0..200 {
-                let taken = shared
-                    .current_child
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .take();
-                if let Some(mut child) = taken {
-                    kill_group(&mut child);
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            let _ = handle.join();
+            // stdout lines only flow once the child is parked in `shared`, so
+            // after "started" the take cannot miss — and the grandchild exists.
+            started_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("stub never reported started");
+            let mut child = shared
+                .current_child
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take()
+                .expect("child parked before its stdout flowed");
+            kill_group(&mut child);
         });
 
-        // Past the grandchild's delay: it must have been killed with the group.
-        std::thread::sleep(Duration::from_millis(1500));
-        assert!(!marker.exists(), "grandchild survived the group kill");
+        // The group kill signals the grandchild atomically; its reaping (by
+        // launchd, once orphaned) is not — poll the pid until it is gone.
+        let pid: libc::pid_t = std::fs::read_to_string(&pidfile)
+            .expect("pidfile written before started")
+            .trim()
+            .parse()
+            .expect("pidfile holds a pid");
+        let mut gone = false;
+        for _ in 0..1000 {
+            // SAFETY: signal 0 probes liveness without signalling; a stale pid
+            // at worst delays the loop, it cannot kill anything.
+            if unsafe { libc::kill(pid, 0) } == -1 {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(gone, "grandchild survived the group kill");
+        assert!(!marker.exists(), "grandchild wrote past the group kill");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
