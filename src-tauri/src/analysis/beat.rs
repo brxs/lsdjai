@@ -558,6 +558,19 @@ pub(crate) mod fixtures {
         }
     }
 
+    /// Split an interleaved-stereo fixture into the `(left, right)` channel
+    /// pair the offline analyses take.
+    pub fn deinterleave(samples: &[f32]) -> (Vec<f32>, Vec<f32>) {
+        let frames = samples.len() / 2;
+        let mut left = vec![0.0f32; frames];
+        let mut right = vec![0.0f32; frames];
+        for i in 0..frames {
+            left[i] = samples[2 * i];
+            right[i] = samples[2 * i + 1];
+        }
+        (left, right)
+    }
+
     /// Interleaved stereo: decaying noise bursts on every beat over a
     /// quiet noise floor.
     pub fn click_track(bpm: f64, seconds: f64, sample_rate: f64, seed: u32) -> Vec<f32> {
@@ -615,7 +628,7 @@ mod tests {
     //! The behavioural contract, ported from `beat.test.ts` — same
     //! fixtures, same assertions, same tolerances.
 
-    use super::fixtures::{click_track, kick_hat_track, noise_source};
+    use super::fixtures::{click_track, deinterleave, kick_hat_track, noise_source};
     use super::*;
 
     const SAMPLE_RATE: f64 = 48_000.0;
@@ -817,17 +830,6 @@ mod tests {
         assert_eq!(gate.push(None), Some(128.0));
         assert_eq!(gate.push(None), None);
         assert_eq!(gate.current(), None);
-    }
-
-    fn deinterleave(samples: &[f32]) -> (Vec<f32>, Vec<f32>) {
-        let frames = samples.len() / 2;
-        let mut left = vec![0.0f32; frames];
-        let mut right = vec![0.0f32; frames];
-        for i in 0..frames {
-            left[i] = samples[2 * i];
-            right[i] = samples[2 * i + 1];
-        }
-        (left, right)
     }
 
     #[test]

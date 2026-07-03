@@ -149,7 +149,7 @@ pub fn track_beatgrid(
     let coarse_bpm = coarse?;
     let envelope = onset_envelope(left, right, sample_rate);
     let onsets = pick_onsets(&envelope);
-    eprintln!("[beatgrid] onsets {}", onsets.len());
+    eprintln!("lsdj-app: beatgrid onsets {}", onsets.len());
     if onsets.len() < MIN_ONSETS {
         return None;
     }
@@ -172,7 +172,7 @@ pub fn track_beatgrid(
         rate += RATE_STEP;
     }
     let (period_hops, fold) = best?;
-    eprintln!("[beatgrid] resultant {:.3}", fold.resultant);
+    eprintln!("lsdj-app: beatgrid resultant {:.3}", fold.resultant);
     if fold.resultant < MIN_RESULTANT {
         return None;
     }
@@ -190,7 +190,7 @@ pub fn track_beatgrid(
     match (&first, &second) {
         (Some(first), Some(second)) => {
             eprintln!(
-                "[beatgrid] halves {:.3}@{:.3} {:.3}@{:.3}",
+                "lsdj-app: beatgrid halves {:.3}@{:.3} {:.3}@{:.3}",
                 first.resultant, first.phase, second.resultant, second.phase
             );
             if first.resultant < MIN_RESULTANT
@@ -216,21 +216,12 @@ mod tests {
     //! fixtures, same assertions, same tolerances.
 
     use super::*;
-    use crate::analysis::beat::fixtures::{click_track, kick_hat_track, noise_source};
+    use crate::analysis::beat::fixtures::{
+        click_track, deinterleave, kick_hat_track, noise_source,
+    };
     use crate::analysis::beat::track_bpm;
 
     const SAMPLE_RATE: f64 = 48_000.0;
-
-    fn deinterleave(samples: &[f32]) -> (Vec<f32>, Vec<f32>) {
-        let frames = samples.len() / 2;
-        let mut left = vec![0.0f32; frames];
-        let mut right = vec![0.0f32; frames];
-        for i in 0..frames {
-            left[i] = samples[2 * i];
-            right[i] = samples[2 * i + 1];
-        }
-        (left, right)
-    }
 
     /// The production call shape: the load path always has the coarse pass.
     fn grid_of(left: &[f32], right: &[f32]) -> Option<Beatgrid> {

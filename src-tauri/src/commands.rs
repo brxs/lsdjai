@@ -770,20 +770,20 @@ pub struct LoadedTrackDto {
     pub grid: Option<crate::analysis::grid::Beatgrid>,
 }
 
-/// The shared load pipeline (ADR-0030): decode + resample to 48 kHz, run the
-/// offline analyses (coarse tempo → beatgrid → bands), hand the buffer to the
-/// engine, and set the deck's echo clock from the track tempo. The LIVE
-/// analysis is reset first and **waited on** — its blank hand-off must land
-/// before the track period below, or a stale blank from the analysis thread
-/// could stomp the freshly-set clock (the ownership hand-off, ADR-0025).
-fn install_track(
-    host: &Host,
-    feed: &AnalysisFeed,
-    tracks: &TrackAnalysis,
-    deck: usize,
-    bytes: Vec<u8>,
-    extension: Option<&str>,
-) -> Result<LoadedTrackDto, String> {
+/// The CPU-heavy half of a load (ADR-0030): decode + resample to 48 kHz, run
+/// the offline analyses (coarse tempo → beatgrid → bands), and lay the buffer
+/// out in the engine wire format. Touches no engine or analysis state, so it
+/// runs on a blocking thread — seconds of work for a long track must not sit
+/// on the async-command runtime and starve other IPC.
+struct AnalyzedTrack {
+    interleaved: Vec<f32>,
+    duration: f64,
+    bpm: Option<f64>,
+    grid: Option<crate::analysis::grid::Beatgrid>,
+    bands: crate::analysis::bands::TrackBands,
+}
+
+fn analyze_track(bytes: Vec<u8>, extension: Option<&str>) -> Result<AnalyzedTrack, String> {
     let decoded = crate::decode::decode_to_48k(bytes, extension)?;
     let coarse = crate::analysis::beat::track_bpm(&decoded.left, &decoded.right, SAMPLE_RATE as f64);
     let grid =
@@ -791,22 +791,49 @@ fn install_track(
     let bands = crate::analysis::bands::track_bands(&decoded.left, &decoded.right, SAMPLE_RATE as f64);
     // The refined grid BPM and the coarse verdict collapse to one number (M20).
     let bpm = grid.map(|g| g.bpm).or(coarse);
-    let duration = decoded.duration_seconds();
-    feed.reset_blocking(deck, host.health().context_frames as f64);
-    host.load_track(deck, decoded.interleaved());
-    host.set_beat_period(deck, bpm.map(|b| (60.0 / b) as f32));
-    tracks.set(deck, DeckTrack { bpm, bands });
-    Ok(LoadedTrackDto {
-        duration,
+    Ok(AnalyzedTrack {
+        interleaved: decoded.interleaved(),
+        duration: decoded.duration_seconds(),
         bpm,
         grid,
+        bands,
     })
+}
+
+/// The install half: hand the analysed buffer to the engine and set the
+/// deck's echo clock from the track tempo. The LIVE analysis is reset first
+/// and **waited on** — its blank hand-off must land before the track period
+/// below, or a stale blank from the analysis thread could stomp the
+/// freshly-set clock (the ownership hand-off, ADR-0025).
+fn install_track(
+    host: &Host,
+    feed: &AnalysisFeed,
+    tracks: &TrackAnalysis,
+    deck: usize,
+    analyzed: AnalyzedTrack,
+) -> LoadedTrackDto {
+    feed.reset_blocking(deck, host.health().context_frames as f64);
+    host.load_track(deck, analyzed.interleaved);
+    host.set_beat_period(deck, analyzed.bpm.map(|b| (60.0 / b) as f32));
+    tracks.set(
+        deck,
+        DeckTrack {
+            bpm: analyzed.bpm,
+            bands: analyzed.bands,
+        },
+    );
+    LoadedTrackDto {
+        duration: analyzed.duration,
+        bpm: analyzed.bpm,
+        grid: analyzed.grid,
+    }
 }
 
 /// Load a track onto a deck by scoped reference (ADR-0030): the shell reads,
 /// decodes (symphonia), resamples, analyses, and installs — the webview gets
-/// back `{duration, bpm, grid}` and fetches bands/peaks once. `async` keeps
-/// the decode off the main thread (it is seconds of CPU for a long track).
+/// back `{duration, bpm, grid}` and fetches bands/peaks once. The decode +
+/// analyses run on a `spawn_blocking` thread: seconds of CPU for a long
+/// track, which must block neither the main thread nor the async runtime.
 #[tauri::command]
 pub async fn load_track_file(
     state: tauri::State<'_, Host>,
@@ -827,7 +854,11 @@ pub async fn load_track_file(
         .extension()
         .and_then(|ext| ext.to_str())
         .map(str::to_ascii_lowercase);
-    install_track(&state, &feed, &tracks, deck, bytes, extension.as_deref())
+    let analyzed =
+        tauri::async_runtime::spawn_blocking(move || analyze_track(bytes, extension.as_deref()))
+            .await
+            .map_err(|e| format!("track analysis failed: {e}"))??;
+    Ok(install_track(&state, &feed, &tracks, deck, analyzed))
 }
 
 /// Load an in-memory take onto a deck (the freshly composed WAV that may not
@@ -848,7 +879,11 @@ pub async fn load_track_bytes(
     if !valid_deck(deck) {
         return Err("invalid deck".to_string());
     }
-    install_track(&state, &feed, &tracks, deck, payload[4..].to_vec(), None)
+    let bytes = payload[4..].to_vec();
+    let analyzed = tauri::async_runtime::spawn_blocking(move || analyze_track(bytes, None))
+        .await
+        .map_err(|e| format!("track analysis failed: {e}"))??;
+    Ok(install_track(&state, &feed, &tracks, deck, analyzed))
 }
 
 /// The loaded track's band profile as binary: `[u32 LE hop count][low f32

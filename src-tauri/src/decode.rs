@@ -114,6 +114,11 @@ pub fn decode_to_48k(bytes: Vec<u8>, extension: Option<&str>) -> Result<DecodedT
             if channels == 0 {
                 return Err("no audio channels in file".to_string());
             }
+        } else if spec.rate != sample_rate || spec.channels.count() != channels {
+            // A chained stream (e.g. concatenated Oggs) can change spec
+            // mid-file; reading on would misinterpret every later frame at
+            // the first spec. Refuse explicitly — no silent misread.
+            return Err("audio format changes mid-file".to_string());
         }
         let buffer = scratch.get_or_insert_with(|| {
             SampleBuffer::<f32>::new(decoded.capacity() as u64, spec)

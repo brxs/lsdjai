@@ -34,7 +34,7 @@ scaffolds the file from the template.
 | [0007](0007-flx4-phones-jack-via-a-backend-cue-sink.md) | FLX4 phones jack via a backend cue sink | Superseded by 0017 |
 | [0008](0008-color-fx-as-one-knob-curves-at-a-pre-fader-insert.md) | Color FX as one-knob curves at a pre-fader insert | Accepted |
 | [0009](0009-freeze-pads-loop-played-audio-at-the-channel-head.md) | Freeze pads loop played audio at the channel head | Accepted |
-| [0010](0010-beat-detection-on-the-output-behind-an-honesty-gate.md) | Beat detection on the output, behind an honesty gate | Accepted |
+| [0010](0010-beat-detection-on-the-output-behind-an-honesty-gate.md) | Beat detection on the output, behind an honesty gate | Superseded by 0025 |
 | [0011](0011-deck-to-deck-style-sampling-via-audio-embeddings.md) | Deck-to-deck style sampling via audio embeddings | Accepted |
 | [0012](0012-generated-pads-via-a-spawned-sa3-mlx-subprocess.md) | Generated pads via a spawned sa3_mlx subprocess | Accepted |
 | [0013](0013-playback-decks-play-decoded-tracks-loading-decides-the-mode.md) | Playback decks play decoded tracks; loading decides the mode | Accepted |
