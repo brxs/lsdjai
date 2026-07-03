@@ -1131,6 +1131,23 @@ pub fn unsubscribe_deck_pcm(taps: tauri::State<'_, PcmTaps>, deck: usize) {
     }
 }
 
+/// Reset a deck's live beat analysis (ADR-0025: estimates never span streams).
+/// The webview invokes this on the transport discontinuities it drives (play /
+/// prime / stop / mode switch); sidecar-origin discontinuities (model switch,
+/// worker death) reset shell-side without it. The engine-frame origin is
+/// captured here and rides the reset message, so tracker, gates, and origin
+/// re-anchor atomically in stream order.
+#[tauri::command]
+pub fn analysis_reset(
+    state: tauri::State<'_, Host>,
+    feed: tauri::State<'_, crate::analysis::live::AnalysisFeed>,
+    deck: usize,
+) {
+    if valid_deck(deck) {
+        feed.reset(deck, state.health().context_frames as f64);
+    }
+}
+
 /// The consolidated per-frame read-back: health + every deck's transport + every
 /// deck's loop slots in one round-trip. The webview polls this each animation
 /// frame and serves the synchronous getters from the cached result.

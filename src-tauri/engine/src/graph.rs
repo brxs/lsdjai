@@ -391,6 +391,12 @@ impl MixGraph {
         self.fx[deck].set_amount(amount);
     }
 
+    /// Set a deck's gated beat period (ADR-0025) — the synced dub echo's clock.
+    /// Non-RT; arithmetic only.
+    pub(crate) fn set_beat_period(&mut self, deck: usize, period_seconds: Option<f32>) {
+        self.fx[deck].set_beat_period(period_seconds);
+    }
+
     /// Process one frame: per-deck chain-head trim, per-deck EQ both channels, the
     /// Color FX insert, per-deck volume, equal-power crossfade + on-air gate, the
     /// master limiter, then the clip-guard ceiling clamp. Also derives the

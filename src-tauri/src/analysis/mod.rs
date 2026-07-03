@@ -4,3 +4,4 @@
 //! never read analysis state (ADR-0025).
 
 pub mod beat;
+pub mod live;

@@ -170,7 +170,7 @@ impl BeatTracker {
         let mut x = vec![0.0f32; n];
         let half = (SMOOTHING.len() as isize - 1) / 2;
         let mut mean = 0.0f64;
-        for i in 0..n {
+        for (i, value) in x.iter_mut().enumerate() {
             let mut sum = 0.0f64;
             let mut weight = 0.0f64;
             for (k, smooth) in SMOOTHING.iter().enumerate() {
@@ -181,8 +181,10 @@ impl BeatTracker {
                 sum += raw[j as usize] as f64 * smooth;
                 weight += smooth;
             }
-            x[i] = (sum / weight) as f32;
-            mean += x[i] as f64;
+            // Store rounded, read back rounded — the Float32Array semantics
+            // the corpus margins were measured under.
+            *value = (sum / weight) as f32;
+            mean += *value as f64;
         }
         mean /= n as f64;
         let mut r0 = 0.0f64;
@@ -405,6 +407,10 @@ impl BeatGate {
         self.displayed
     }
 
+    /// The held readout. The live path consumes `push`'s return; this exists
+    /// for the harnesses (the corpus test reads the final verdict, as the TS
+    /// suite did).
+    #[cfg(test)]
     pub fn current(&self) -> Option<f64> {
         self.displayed
     }
@@ -492,6 +498,9 @@ impl AnchorGate {
         }
     }
 
+    /// The held clock — for the test harnesses; the live path consumes
+    /// `push`'s return.
+    #[cfg(test)]
     pub fn current(&self) -> Option<LiveBeat> {
         self.live
     }

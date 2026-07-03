@@ -43,6 +43,8 @@ use std::time::Duration;
 use lsdj_engine::DeckHandle;
 use tauri::ipc::{Channel, InvokeResponseBody};
 
+use crate::analysis::live::AnalysisFeed;
+
 /// Per-deck analysis taps: a webview [`Channel`] each deck's realtime PCM is teed
 /// to (gap 1). The TS beat/loudness/band analysis (ADR-0017: stays in TypeScript)
 /// no longer receives model PCM over a WebSocket in the native shell, so the
@@ -219,12 +221,13 @@ struct ReaderParts {
 /// stops the reader, closes the socket, and kills the child.
 pub struct Sidecar {
     deck_id: String,
-    /// This deck's index, and the analysis-tap registry — kept so `restart` can
-    /// reconstruct the PCM tee closure for the respawned reader (the tap is
-    /// reconstructed per spawn from the stable `taps` + `deck_idx`, so it is NOT
-    /// reclaimed via `ReaderExit`).
+    /// This deck's index, the analysis-tap registry, and the beat-analysis feed
+    /// — kept so `restart` can reconstruct the PCM tee closure for the respawned
+    /// reader (the tee is reconstructed per spawn from the stable handles +
+    /// `deck_idx`, so it is NOT reclaimed via `ReaderExit`).
     deck_idx: usize,
     taps: PcmTaps,
+    feed: AnalysisFeed,
     /// The control-writer half of the socket; `None` until the sidecar connects,
     /// and after a teardown. Behind a `Mutex` so IPC callers serialise writes.
     control: Arc<Mutex<Option<TcpStream>>>,
@@ -246,11 +249,21 @@ fn bind_and_launch(deck_id: &str, model: &str) -> io::Result<(TcpListener, Child
     Ok((listener, child))
 }
 
-/// The PCM tee closure handed to a reader thread: forward each deck PCM frame to
-/// its analysis subscriber (gap 1). Reconstructed per (re)spawn from the stable
-/// `taps` + `deck_idx`, so it never needs reclaiming across a model switch.
-fn pcm_tee(taps: PcmTaps, deck_idx: usize) -> impl FnMut(&[u8]) + Send + 'static {
-    move |bytes: &[u8]| taps.send(deck_idx, bytes)
+/// The PCM tee closure handed to a reader thread: forward each deck PCM frame
+/// to its webview subscriber (gap 1 — loudness + the live band scroller) AND
+/// into the shell's beat-analysis feed (ADR-0025). Reconstructed per (re)spawn
+/// from the stable `taps`/`feed` + `deck_idx`, so it never needs reclaiming
+/// across a model switch. Both sends are non-blocking (the reader must never
+/// stall behind a consumer).
+fn pcm_tee(
+    taps: PcmTaps,
+    feed: AnalysisFeed,
+    deck_idx: usize,
+) -> impl FnMut(&[u8]) + Send + 'static {
+    move |bytes: &[u8]| {
+        taps.send(deck_idx, bytes);
+        feed.pcm_bytes(deck_idx, bytes);
+    }
 }
 
 /// Start the accept+read thread for an already-launched `child`, moving the deck
@@ -338,6 +351,7 @@ impl Sidecar {
         deck_handle: DeckHandle,
         on_status: impl FnMut(String) + Send + 'static,
         taps: PcmTaps,
+        feed: AnalysisFeed,
     ) -> io::Result<Sidecar> {
         let (listener, child) = bind_and_launch(deck_id, model)?;
         let parts = start_reader(
@@ -346,12 +360,13 @@ impl Sidecar {
             child,
             deck_handle,
             Box::new(on_status),
-            pcm_tee(taps.clone(), deck_idx),
+            pcm_tee(taps.clone(), feed.clone(), deck_idx),
         );
         Ok(Sidecar {
             deck_id: deck_id.to_string(),
             deck_idx,
             taps,
+            feed,
             control: parts.control,
             child: parts.child,
             stop: parts.stop,
@@ -415,7 +430,7 @@ impl Sidecar {
             child,
             exit.handle,
             on_status,
-            pcm_tee(self.taps.clone(), self.deck_idx),
+            pcm_tee(self.taps.clone(), self.feed.clone(), self.deck_idx),
         );
         self.control = parts.control;
         self.child = parts.child;
@@ -765,8 +780,9 @@ while s.recv(4096):
         };
 
         let taps = PcmTaps::new(2);
-        let mut sidecar =
-            Sidecar::spawn("a", 0, "model_a", handle, sink, taps).expect("spawn fake sidecar");
+        let feed = AnalysisFeed::disconnected(2);
+        let mut sidecar = Sidecar::spawn("a", 0, "model_a", handle, sink, taps, feed)
+            .expect("spawn fake sidecar");
 
         // Wait for a `ready` status carrying `model` — distinct from the
         // `model_loading` status restart also emits (which is not a `ready`).

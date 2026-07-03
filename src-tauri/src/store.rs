@@ -167,6 +167,44 @@ pub struct NoteSteeringSnap {
     pub mode: NoteModeSnap,
 }
 
+/// A beat anchor the phase consumers can trust (M20/ADR-0025): the
+/// pushed-frame index of a recent beat and the gated tempo it belongs to.
+/// Published as a pair — a clock, not two independent readings — so a
+/// consumer can never mix an anchor with a fresher tempo.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveBeatSnap {
+    pub anchor_frame: f64,
+    pub bpm: f64,
+}
+
+/// A deck's live beat analysis (ADR-0025), written by the shell's analysis
+/// thread at most ~once per second: the honesty-gated readout (`None` =
+/// blank, the feature), the latest estimate confidence, the phase clock, and
+/// the stream origin in engine context frames (captured at reset — the
+/// mapping from the anchor's pushed-frame domain onto engine time). A
+/// MEASUREMENT, not a controller value: its mutation records without
+/// forwarding anything.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisSnap {
+    pub bpm: Option<f64>,
+    pub confidence: f64,
+    pub live_beat: Option<LiveBeatSnap>,
+    pub origin_frames: f64,
+}
+
+impl Default for AnalysisSnap {
+    fn default() -> Self {
+        AnalysisSnap {
+            bpm: None,
+            confidence: 0.0,
+            live_beat: None,
+            origin_frames: 0.0,
+        }
+    }
+}
+
 /// One deck's state in the store: the mixer channel plus the realtime-deck
 /// read-backs the store mirrors (model / playing). Not `Copy` — `model` is a
 /// `String`.
@@ -214,6 +252,9 @@ pub struct DeckSnap {
     /// Drum conditioning (ADR-0023): `None` = the model decides, `false` =
     /// suppress drums, `true` = force them. Cleared like `notes`.
     pub drums: Option<bool>,
+    /// The deck's live beat analysis (ADR-0025) — a shell-written measurement,
+    /// blank until the honesty gate acquires.
+    pub analysis: AnalysisSnap,
 }
 
 impl Default for DeckSnap {
@@ -243,6 +284,7 @@ impl Default for DeckSnap {
             cursor: PadPointSnap { x: 0.5, y: 0.5 },
             notes: None,
             drums: None,
+            analysis: AnalysisSnap::default(),
         }
     }
 }
@@ -429,6 +471,15 @@ impl InterfaceState {
             d.drums = drums;
         }
     }
+
+    /// Record a deck's live beat analysis (ADR-0025) — a measurement the
+    /// shell's analysis thread writes; nothing forwards to the engine here
+    /// (the thread drives the echo clock through the [`Host`] itself).
+    pub fn set_analysis(&mut self, deck: usize, analysis: AnalysisSnap) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.analysis = analysis;
+        }
+    }
 }
 
 /// The shell-level store: the locked [`InterfaceState`] plus the [`AppHandle`] used
@@ -587,6 +638,13 @@ impl InterfaceStore {
     pub fn set_deck_drums(&self, deck: usize, drums: Option<bool>) {
         self.mutate(move |s| s.set_drums(deck, drums));
     }
+
+    /// Record a deck's live beat analysis (ADR-0025) — written by the shell's
+    /// analysis thread at the estimate cadence; the no-change suppression in
+    /// [`InterfaceStore::mutate`] keeps a held (or blank) reading silent.
+    pub fn set_analysis(&self, deck: usize, analysis: AnalysisSnap) {
+        self.mutate(move |s| s.set_analysis(deck, analysis));
+    }
 }
 
 #[cfg(test)]
@@ -639,6 +697,36 @@ mod tests {
         state.set_drums(0, None);
         assert_eq!(state.decks[0].notes, None);
         assert_eq!(state.decks[0].drums, None);
+    }
+
+    #[test]
+    fn analysis_is_blank_by_default_and_mirrored_per_deck() {
+        let mut state = InterfaceState::default();
+        assert_eq!(state.decks[0].analysis, AnalysisSnap::default());
+        assert_eq!(state.decks[0].analysis.bpm, None);
+        state.set_analysis(
+            0,
+            AnalysisSnap {
+                bpm: Some(128.0),
+                confidence: 0.62,
+                live_beat: Some(LiveBeatSnap {
+                    anchor_frame: 96_000.0,
+                    bpm: 128.0,
+                }),
+                origin_frames: 48_000.0,
+            },
+        );
+        assert_eq!(state.decks[0].analysis.bpm, Some(128.0));
+        assert_eq!(
+            state.decks[0].analysis.live_beat,
+            Some(LiveBeatSnap {
+                anchor_frame: 96_000.0,
+                bpm: 128.0
+            })
+        );
+        // The other deck is untouched, and an out-of-range deck is a no-op.
+        assert_eq!(state.decks[1].analysis, AnalysisSnap::default());
+        state.set_analysis(9, AnalysisSnap::default());
     }
 
     #[test]
