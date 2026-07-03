@@ -18,9 +18,10 @@
 
 use crate::store::{DeckSnap, FxKindSnap, InterfaceState};
 
+use super::notes::pad_pitches;
 use super::translate::{
-    CHANNEL_CUE_NOTE, LOOP_NOTE_BASE, NOTE_ON_STATUS, PAD_COUNT, PAD_FX_NOTE_BASE, PAD_STATUS,
-    TRANSPORT_CUE_NOTE,
+    CHANNEL_CUE_NOTE, KEYBOARD_NOTE_BASE, LOOP_NOTE_BASE, NOTE_ON_STATUS, PAD_COUNT,
+    PAD_FX_NOTE_BASE, PAD_STATUS, TRANSPORT_CUE_NOTE,
 };
 
 const PAD_LED_BRIGHT: u8 = 0x7f;
@@ -76,6 +77,36 @@ pub fn cue_pads(deck: usize, filled: &[bool]) -> Vec<[u8; 3]> {
         .collect()
 }
 
+/// The KEYBOARD performance bank (issue #48): armed = every pad sits dim
+/// (the bank reads as live at a glance), a pad whose triad is fully held
+/// burns bright; disarmed = dark. Pitches→pads reverses through the deck's
+/// key/scale — a keyboard-sourced hold that happens to complete a pad's
+/// triad lights that pad too, which is honest (the deck IS playing it).
+pub fn keyboard_pads(deck: usize, snap: &DeckSnap) -> Vec<[u8; 3]> {
+    let perf = &snap.performance;
+    let held: Vec<u8> = snap
+        .notes
+        .as_ref()
+        .map_or(Vec::new(), |steering| steering.pitches.clone());
+    (0..PAD_COUNT as usize)
+        .map(|pad| {
+            let velocity = if !perf.armed {
+                0x00
+            } else {
+                let triad = pad_pitches(perf.key, perf.scale, pad);
+                let all_held =
+                    !triad.is_empty() && triad.iter().all(|pitch| held.contains(pitch));
+                if all_held {
+                    PAD_LED_BRIGHT
+                } else {
+                    PAD_LED_DIM
+                }
+            };
+            [PAD_STATUS[deck], KEYBOARD_NOTE_BASE + pad as u8, velocity]
+        })
+        .collect()
+}
+
 /// Channel (headphone) CUE button LED for a deck.
 pub fn channel_cue(deck: usize, on: bool) -> Vec<[u8; 3]> {
     vec![echo(NOTE_ON_STATUS[deck], CHANNEL_CUE_NOTE, on)]
@@ -114,6 +145,7 @@ pub fn deck_frame(deck: usize, snap: &DeckSnap, loop_filled: &[bool]) -> Vec<Vec
         hot_cue_bank,
         fx_pads(deck, snap.fx.kind.map(fx_index)),
         loop_pads(deck, loop_filled),
+        keyboard_pads(deck, snap),
         channel_cue(deck, snap.cue),
         transport_cue(deck, snap.primed),
     ]
@@ -173,6 +205,36 @@ mod tests {
         assert_eq!(msgs[7], [0x97, 0x37, 0x00]); // past the given slots = dark
         let msgs = cue_pads(1, &[false, true]);
         assert_eq!(msgs[1], [0x99, 0x01, 0x7f]);
+    }
+
+    #[test]
+    fn keyboard_pads_read_armed_dim_and_held_bright() {
+        use crate::store::{NoteModeSnap, NoteSteeringSnap};
+
+        // Disarmed: the whole bank is dark.
+        let mut snap = deck_snap();
+        let dark = keyboard_pads(0, &snap);
+        assert_eq!(dark.len(), 8);
+        assert!(dark.iter().all(|m| m[2] == 0x00));
+        assert_eq!(dark[0][..2], [0x97, 0x40]);
+        assert_eq!(dark[7][..2], [0x97, 0x47]);
+
+        // Armed with nothing held: every pad sits dim — the bank reads live.
+        snap.performance.armed = true;
+        let idle = keyboard_pads(1, &snap);
+        assert!(idle.iter().all(|m| m[2] == 0x20));
+        assert_eq!(idle[0][..2], [0x99, 0x40]);
+
+        // Holding pad 0's triad (C-E-G in C major) burns that pad bright;
+        // a pad whose triad is only partially covered stays dim.
+        snap.notes = Some(NoteSteeringSnap {
+            pitches: vec![60, 64, 67],
+            mode: NoteModeSnap::Chord,
+        });
+        let held = keyboard_pads(0, &snap);
+        assert_eq!(held[0][2], 0x7f);
+        assert_eq!(held[1][2], 0x20); // D-F-A not held
+        assert_eq!(held[2][2], 0x20); // E-G-B needs B too
     }
 
     #[test]

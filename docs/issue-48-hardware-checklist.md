@@ -11,10 +11,10 @@ everything only ears can judge (steering latency, snap-to-scale, onset feel).
 
 ## Setup
 
-- [ ] Native app via `just tauri-dev`, models installed, DDJ-FLX4 on USB
+- [x] Native app via `just tauri-dev`, models installed, DDJ-FLX4 on USB
       before launch. The statusbar binds it within ~1 s of launch with no
       connect gesture (the Web MIDI permission flow is gone).
-- [ ] Deck A playing a steadily rhythmic style (e.g. "driving techno, four
+- [x] Deck A playing a steadily rhythmic style (e.g. "driving techno, four
       on the floor"), ~20 s to settle so the beat gate acquires (the BPM
       stat shows) — onset quantise needs the gated clock.
 - [ ] Optionally: an external MIDI keyboard on USB, and a DDJ-400 for the
@@ -22,13 +22,13 @@ everything only ears can judge (steering latency, snap-to-scale, onset feel).
 
 ## Transport and binding (the ADR-0005 flows, now native)
 
-- [ ] Hot-plug: unplug the FLX4 mid-session → statusbar drops to "No
+- [x] Hot-plug: unplug the FLX4 mid-session → statusbar drops to "No
       supported controller found" within ~2 s; replug → rebinds within ~2 s
       and the knobs/faders re-sync (the position-query flood — watch the
       monitor fill on rebind).
-- [ ] The monitor shows raw bytes for every gesture (the arbiter still
+- [x] The monitor shows raw bytes for every gesture (the arbiter still
       works); a fader ride streams entries, a pad press shows its note.
-- [ ] With both Pioneers connected the picker appears; choosing the DDJ-400
+- [x] With both Pioneers connected the picker appears; choosing the DDJ-400
       rebinds to it (its own position SysEx fires) and back.
 
 ## Control-surface re-verification (every mapped control, per deck where applicable)
