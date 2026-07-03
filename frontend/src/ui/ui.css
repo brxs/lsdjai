@@ -691,6 +691,21 @@
   white-space: nowrap;
 }
 
+/* Overlay slot: covers like the performance door slide INSIDE the square
+   surface (clipped here), above the net and dots. The wrapper is inert so an
+   empty margin never blocks pad drags; its content re-enables hits itself. */
+.ui-xypad__overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.ui-xypad__overlay > * {
+  pointer-events: auto;
+}
+
 .ui-xypad__cursor {
   position: absolute;
   transform: translate(-50%, -50%);

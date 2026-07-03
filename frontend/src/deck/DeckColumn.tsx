@@ -864,22 +864,22 @@ export function DeckColumn({
           </Button>
         </div>
 
-        {/* The pad stage: the 2D prompt pad plus the performance door that
-            slides over it (issue #48) — deck A from the left, deck B from
-            the right. The door open = the deck armed for note steering. */}
-        <div className="deck__pad-stage">
-          <XYPad
-            label={t('deck.style.pad')}
-            targets={padTargets}
-            cursor={cursor}
-            disabled={!operable || targets.length === 0}
-            onChange={handleCursor}
-            onTargetMove={handleTargetMove}
-            selectedIds={selected}
-            onCursorActivate={handleCursorActivate}
-          />
+        {/* The 2D prompt pad, carrying the performance door in its overlay
+            slot (issue #48): the door slides across the pad surface only —
+            deck A from the left, deck B from the right — leaving the pad
+            label clear. */}
+        <XYPad
+          label={t('deck.style.pad')}
+          targets={padTargets}
+          cursor={cursor}
+          disabled={!operable || targets.length === 0}
+          onChange={handleCursor}
+          onTargetMove={handleTargetMove}
+          selectedIds={selected}
+          onCursorActivate={handleCursorActivate}
+        >
           <PerformanceDrawer deckId={deckId} deckIndex={deckId === 'a' ? 0 : 1} />
-        </div>
+        </XYPad>
 
         {targets.length > 0 && (
           <ul className="deck__targets">

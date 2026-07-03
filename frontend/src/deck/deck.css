@@ -144,16 +144,13 @@
    Door open = the deck armed for note steering; the covered pad is the
    signal that pads/keys now play notes, not prompt edits. */
 
-.deck__pad-stage {
-  position: relative;
-  overflow: hidden;
-}
-
 /* The door: ONE rigid assembly — [content | rail] for deck A, mirrored for
-   deck B — sliding as a whole like a machine gate. Closed, only the rail
-   peeks out at the pad edge (the "KEYS" tab); open, the same rail sits at
-   the opposite edge as the push-back chevron. No pasted-on chrome: the rail
-   IS the door's leading edge, its LED is the steering tell. */
+   deck B — sliding as a whole like a machine gate, inside the XYPad's
+   overlay slot so it covers the square pad surface only (the pad label
+   stays clear). Closed, only the rail peeks out at the pad edge (the
+   "STEER" tab); open, the same rail sits at the opposite edge as the
+   push-back chevron. No pasted-on chrome: the rail IS the door's leading
+   edge, its LED is the steering tell. */
 .deck__perform-door {
   --perform-rail: 1.6rem;
   position: absolute;
