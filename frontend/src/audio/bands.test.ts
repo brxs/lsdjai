@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   BAND_HOP_FRAMES,
+  bandSourceFromArrays,
   createBandScroller,
-  trackBands,
   type BandWindowTarget,
 } from './bands'
 
@@ -29,17 +29,6 @@ function tone(hz: number, seconds: number): Float32Array {
   return out
 }
 
-function deinterleave(samples: Float32Array): [Float32Array, Float32Array] {
-  const frames = samples.length / 2
-  const left = new Float32Array(frames)
-  const right = new Float32Array(frames)
-  for (let i = 0; i < frames; i++) {
-    left[i] = samples[2 * i]
-    right[i] = samples[2 * i + 1]
-  }
-  return [left, right]
-}
-
 function dominantBand(out: BandWindowTarget, hop: number) {
   const bands = { low: out.low[hop], mid: out.mid[hop], high: out.high[hop] }
   return (Object.keys(bands) as (keyof typeof bands)[]).reduce((a, b) =>
@@ -47,42 +36,28 @@ function dominantBand(out: BandWindowTarget, hop: number) {
   )
 }
 
-describe('trackBands', () => {
-  it('puts a bass tone in the low band and a bright tone in the high band', () => {
-    const [lowLeft, lowRight] = deinterleave(tone(60, 1))
-    const lowSource = trackBands(lowLeft, lowRight, SAMPLE_RATE)
-    const lowOut = target(8)
-    lowSource.copyWindow(20, lowOut)
-    expect(dominantBand(lowOut, 0)).toBe('low')
+// The offline band pass moved shell-side with the track load (ADR-0030,
+// `analysis/bands.rs` carries its band-separation suite); what stays here is
+// the window contract over the shipped arrays and the live scroller.
 
-    const [hiLeft, hiRight] = deinterleave(tone(10_000, 1))
-    const hiSource = trackBands(hiLeft, hiRight, SAMPLE_RATE)
-    const hiOut = target(8)
-    hiSource.copyWindow(20, hiOut)
-    expect(dominantBand(hiOut, 0)).toBe('high')
-  })
-
-  it('puts a 1 kHz tone in the mid band', () => {
-    const [left, right] = deinterleave(tone(1_000, 1))
-    const source = trackBands(left, right, SAMPLE_RATE)
+describe('bandSourceFromArrays', () => {
+  it('serves the shipped lanes and zeroes outside the data', () => {
+    const hops = 6
+    const low = Float32Array.from({ length: hops }, (_, i) => i + 1)
+    const source = bandSourceFromArrays(low, new Float32Array(hops), new Float32Array(hops))
+    expect(source.baseHop).toBe(0)
+    expect(source.endHop).toBe(hops)
     const out = target(4)
-    source.copyWindow(30, out)
-    expect(dominantBand(out, 0)).toBe('mid')
-  })
-
-  it('zeroes outside the data', () => {
-    const [left, right] = deinterleave(tone(60, 0.5))
-    const source = trackBands(left, right, SAMPLE_RATE)
-    const out = target(4)
-    source.copyWindow(source.endHop - 2, out)
-    expect(out.low[0]).toBeGreaterThan(0)
+    source.copyWindow(hops - 2, out)
+    expect(out.low[0]).toBe(hops - 1)
+    expect(out.low[1]).toBe(hops)
     expect(out.low[2]).toBe(0)
     expect(out.low[3]).toBe(0)
   })
 })
 
 describe('createBandScroller', () => {
-  it('matches the offline pass on the same audio', () => {
+  it('separates a bass tone into the low band, fed in uneven chunks', () => {
     const samples = tone(60, 2)
     const scroller = createBandScroller(SAMPLE_RATE)
     // Feed in uneven chunks: hop accumulation must not care.
@@ -93,18 +68,18 @@ describe('createBandScroller', () => {
       offset = end
       if (offset >= samples.length) break
     }
-    const [left, right] = deinterleave(samples)
-    const offline = trackBands(left, right, SAMPLE_RATE)
-
-    const fromHop = 50
     const live = target(16)
-    const reference = target(16)
-    scroller.source().copyWindow(fromHop, live)
-    offline.copyWindow(fromHop, reference)
-    for (let i = 0; i < 16; i++) {
-      expect(live.low[i]).toBeCloseTo(reference.low[i], 5)
-      expect(live.high[i]).toBeCloseTo(reference.high[i], 5)
-    }
+    scroller.source().copyWindow(50, live)
+    expect(dominantBand(live, 0)).toBe('low')
+    expect(live.low[0]).toBeGreaterThan(0)
+  })
+
+  it('separates a bright tone into the high band', () => {
+    const scroller = createBandScroller(SAMPLE_RATE)
+    scroller.push(tone(10_000, 1))
+    const live = target(8)
+    scroller.source().copyWindow(20, live)
+    expect(dominantBand(live, 0)).toBe('high')
   })
 
   it('keeps absolute hop indexing across the ring wrap', () => {

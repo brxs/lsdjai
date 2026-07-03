@@ -2,12 +2,10 @@ import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 
 import {
   BAND_HOP_FRAMES,
+  bandSourceFromArrays,
   createBandScroller,
-  trackBands,
   type BandSource,
 } from '../audio/bands'
-import { createBeatGate, createBeatTracker, trackBpm } from '../audio/beat'
-import { trackBeatgrid, type Beatgrid } from '../audio/beatgrid'
 import { EQ_FLAT, type EqBand } from '../audio/eq'
 import { fxRestPosition, type FxKind } from '../audio/fx'
 import {
@@ -55,7 +53,14 @@ import {
   type TrackLoop,
 } from '../audio/track'
 import { loadDeckSettings, updateDeckSettings } from '../persistence'
-import { SAMPLE_RATE, type DeckChannel, type DeckId } from '../audio/types'
+import {
+  SAMPLE_RATE,
+  type Beatgrid,
+  type DeckChannel,
+  type DeckId,
+  type TrackSource,
+} from '../audio/types'
+import { TRACK_OVERVIEW_BUCKETS } from '../ui/TrackOverview'
 import {
   deckReducer,
   initialDeckState,
@@ -231,7 +236,7 @@ export type DeckControls = {
    * loading decides the mode. */
   mode: DeckMode
   track: TrackState | null
-  loadTrack: (wav: ArrayBuffer, title: string) => Promise<boolean>
+  loadTrack: (source: TrackSource, title: string) => Promise<boolean>
   leavePlayback: () => void
   /** Jump the track playhead (overview click / FLX4); playback-mode
    * only, a no-op on the live stream. */
@@ -370,45 +375,37 @@ export function useDeck(deckId: DeckId): DeckControls {
     contextTime: number
     receivedAt: number
   } | null>(null)
-  const anchorCandidateRef = useRef<{ anchorFrame: number } | null>(null)
-  const anchorMissesRef = useRef(0)
   const liveBeatRef = useRef<{ anchorFrame: number; bpm: number } | null>(null)
-  // The played-frame origin for the live beat clock. On the Web path the worklet's
-  // playedFrames reset WITH the stream, sharing the pushed-frame origin with the
-  // tracker's anchorFrame (origin 0). The native engine reports a GLOBAL,
-  // never-reset render count, so the beat-clock math (anchorFrame − playedFrames)
-  // would mix two domains and lie (ADR-0014). We capture the native render count
-  // at each stream reset and subtract it, making playedFrames per-stream again;
-  // 0 on the Web path leaves it untouched.
-  const playedFramesOriginRef = useRef(0)
-  // Tracker + gate per deck (M14), and the loudness tracker behind
-  // auto-gain (M17) — all reset on stream discontinuities so an
-  // estimate never spans two unrelated streams (the reset rule the
-  // capture history follows too, ADR-0009). The trim VALUE holds
-  // across resets; only the measurement starts over.
-  const [beat] = useState(() => ({
-    tracker: createBeatTracker(SAMPLE_RATE),
-    gate: createBeatGate(),
-  }))
+  // The gated readout, mirrored for the synchronous consumers (freeze/loop
+  // quantise read it at press time). Fed by the store projection below.
+  const bpmRef = useRef<number | null>(null)
+  // The played-frame origin for the live beat clock: the engine context-frame
+  // count at the stream's reset, captured SHELL-SIDE atomically with the
+  // tracker reset (ADR-0025) and published with the analysis. Subtracting it
+  // maps the engine's global render count back into the tracker's
+  // pushed-frames-since-reset domain (ADR-0014).
+  const analysisOriginRef = useRef(0)
+  // The loudness tracker behind auto-gain (M17) — reset on stream
+  // discontinuities so a measurement never spans two unrelated streams (the
+  // reset rule the capture history follows too, ADR-0009); the beat tracker
+  // that shared this rule lives shell-side now (ADR-0025) and resets over
+  // `resetAnalysis`. The trim VALUE holds across resets.
   const [loudness] = useState(() => createLoudnessTracker(SAMPLE_RATE))
   // Band envelopes for the zoom view (M22): the live wire feeds a
-  // rolling scroller; a loaded track gets one offline pass.
+  // rolling scroller; a loaded track's arrive from the shell at load.
   const [bandScroller] = useState(() => createBandScroller(SAMPLE_RATE))
   const trackBandsRef = useRef<BandSource | null>(null)
   const resetStreamMeasurements = useCallback(() => {
-    beat.tracker.reset()
-    beat.gate.reset()
+    // Shell-side: tracker + gates + origin reset atomically in stream order;
+    // the blank publishes back over the store. Blank the local mirrors now so
+    // the readout can't flash a dead stream's number while that round-trips.
+    channelRef.current?.resetAnalysis()
     loudness.reset()
-    channelRef.current?.setBeatPeriod(null)
     setBpm(null)
-    anchorCandidateRef.current = null
-    anchorMissesRef.current = 0
+    bpmRef.current = null
     liveBeatRef.current = null
     bandScroller.reset()
-    // Re-anchor the played-frame origin to "now" so the freshly-reset tracker
-    // (anchorFrame 0) and the engine's global render count share a zero.
-    playedFramesOriginRef.current = (engine.getContextTime() ?? 0) * SAMPLE_RATE
-  }, [beat, loudness, bandScroller, engine])
+  }, [loudness, bandScroller])
   const [trim, setTrimState] = useState<TrimState>(
     () => loadDeckSettings(deckId).trim ?? { mode: 'auto', db: 0 },
   )
@@ -669,7 +666,7 @@ export function useDeck(deckId: DeckId): DeckControls {
   // populate for an agent-started deck too. `playPendingRef` is play()/prime()'s
   // in-flight guard, armed ONLY for an intent that starts the transport (stopped
   // → playing): a re-play/re-prime on a playing deck is a store no-op the dedupe
-  // never echoes, so arming there would wedge the guard until unrelated churn.
+  // never echoes, so arming there would wedge the guard until STOP.
   // `playingRef` mirrors the projected transport for those callbacks (they keep
   // stable deps on purpose).
   const playPendingRef = useRef(false)
@@ -680,10 +677,15 @@ export function useDeck(deckId: DeckId): DeckControls {
   useEffect(() => {
     const storePlaying = storeState?.decks[deckIndex]?.playing
     if (storePlaying === undefined) return
-    // ANY snapshot re-arms the transport intents — before the equality return:
-    // store mutations are serialized, so a snapshot arriving after a tap already
-    // reflects that tap's write, even one the value-change dedupe kept silent.
-    playPendingRef.current = false
+    // Only a snapshot with the transport RUNNING re-arms the intents — before
+    // the equality return, since the value-change dedupe can keep the write
+    // itself silent. The guard arms only on stopped → playing intents, so a
+    // running snapshot is its round-trip landing. A stopped snapshot must not
+    // clear it: the tap's own analysis blank (the shell publishes on reset,
+    // ADR-0025) lands before deck_play writes the transport, and clearing on
+    // it would wave a second tap through mid-flight. stop() stays the
+    // recovery valve for a write that never lands.
+    if (storePlaying) playPendingRef.current = false
     if (storePlaying === state.playing) return
     if (storePlaying) void ensureChannel().catch(() => {})
     dispatch({ type: 'playing_changed', playing: storePlaying })
@@ -710,9 +712,10 @@ export function useDeck(deckId: DeckId): DeckControls {
     })
     const unsubscribePcm = subscribeDeckPcm(deckId, (samples) => {
       // A parked deck (playback mode) drops stragglers so a late chunk cannot
-      // pollute the track's clock.
+      // pollute the track's clock. Beat analysis reads the same wire
+      // shell-side (ADR-0025); this tap feeds the live visuals that stayed
+      // in TypeScript (loudness, the band scroller).
       if (modeRef.current === 'playback') return
-      beat.tracker.push(samples)
       loudness.push(samples)
       bandScroller.push(samples)
     })
@@ -748,63 +751,29 @@ export function useDeck(deckId: DeckId): DeckControls {
       channelRef.current = null
       channelPromiseRef.current = null
     }
-  }, [deckId, beat, loudness, bandScroller, resetStreamMeasurements, clearConditioning])
+  }, [deckId, loudness, bandScroller, resetStreamMeasurements, clearConditioning])
 
-  // One estimate per second through the honesty gate (M14); the state
-  // setter is a no-op re-render-wise while the gated value holds. The
-  // channel follows so the synced dub echo has its clock. Auto-gain
-  // (M17) rides the same tick: a slow glide toward the loudness
-  // target, held when the tracker has nothing trustworthy.
+  // Project the shell's live beat analysis (ADR-0025): the honesty-gated
+  // readout and the anchor-agreed phase clock arrive over the store at the
+  // estimate cadence (~1/s while streaming), already gated — the webview just
+  // mirrors them. A playback deck ignores the live values (its clock is the
+  // track's grid, ADR-0013), but the stream origin is domain state either way.
+  useEffect(() => {
+    const analysis = storeState?.decks[deckIndex]?.analysis
+    if (!analysis) return
+    analysisOriginRef.current = analysis.originFrames
+    if (modeRef.current === 'playback') return
+    setBpm(analysis.bpm)
+    bpmRef.current = analysis.bpm
+    liveBeatRef.current = analysis.liveBeat
+  }, [storeState, deckIndex])
+
+  // Auto-gain (M17) rides a once-a-second tick: a slow glide toward the
+  // loudness target, held when the meter has nothing trustworthy. (The beat
+  // estimate that shared this tick lives shell-side now, ADR-0025.)
   useEffect(() => {
     const timer = setInterval(() => {
-      // A playback deck holds its load-time analysis: the stream
-      // trackers are empty and a tick would only blank the track's
-      // clock (ADR-0013).
       if (modeRef.current === 'playback') return
-      const estimate = beat.tracker.estimate()
-      const displayed = beat.gate.push(estimate)
-      setBpm(displayed)
-      channelRef.current?.setBeatPeriod(
-        displayed === null ? null : 60 / displayed,
-      )
-      // Live beat anchor (M20): exposed only while the gate shows AND
-      // consecutive anchors agree modulo the period. Generative music
-      // breathes, so a single miss — an incoherent fold or one
-      // contradicting anchor — rides out on the held clock (the
-      // gate's grace pattern, M14), which stays valid modulo the
-      // period while the tempo holds; the second consecutive miss
-      // drops the meter, and a blank gate drops it instantly.
-      const miss = () => {
-        anchorMissesRef.current += 1
-        if (anchorMissesRef.current > 1) liveBeatRef.current = null
-      }
-      if (displayed === null) {
-        anchorCandidateRef.current = null
-        anchorMissesRef.current = 0
-        liveBeatRef.current = null
-      } else if (estimate?.anchorFrame === undefined) {
-        anchorCandidateRef.current = null
-        miss()
-      } else {
-        const periodFrames = (60 / displayed) * SAMPLE_RATE
-        const previous = anchorCandidateRef.current
-        anchorCandidateRef.current = { anchorFrame: estimate.anchorFrame }
-        if (previous) {
-          const gap =
-            (((estimate.anchorFrame - previous.anchorFrame) % periodFrames) +
-              periodFrames) %
-            periodFrames
-          if (Math.min(gap, periodFrames - gap) <= periodFrames * 0.15) {
-            anchorMissesRef.current = 0
-            liveBeatRef.current = {
-              anchorFrame: estimate.anchorFrame,
-              bpm: displayed,
-            }
-          } else {
-            miss()
-          }
-        }
-      }
       if (trimRef.current.mode === 'auto') {
         const db = trimDbFor(loudness.rms())
         if (db !== null && Math.abs(db - trimRef.current.db) > 0.1) {
@@ -813,7 +782,7 @@ export function useDeck(deckId: DeckId): DeckControls {
       }
     }, 1_000)
     return () => clearInterval(timer)
-  }, [beat, loudness, applyTrim])
+  }, [loudness, applyTrim])
 
   const send = useCallback(
     (command: DeckCommand) => {
@@ -1063,7 +1032,7 @@ export function useDeck(deckId: DeckId): DeckControls {
   }, [storeState, deckIndex, send])
 
   const loadTrack = useCallback(
-    async (wav: ArrayBuffer, title: string) => {
+    async (source: TrackSource, title: string) => {
       let channel: DeckChannel
       try {
         channel = await ensureChannel()
@@ -1084,42 +1053,35 @@ export function useDeck(deckId: DeckId): DeckControls {
         modeRef.current === 'playback'
           ? (channel.getTrackStatus()?.playing ?? false)
           : state.playing && !primedRef.current
-      const decoded = await channel.loadTrack(wav)
-      if (!decoded) return false
+      // The shell reads, decodes, and runs the offline passes (ADR-0030):
+      // the same honesty bar as the stream, the refined grid BPM and the
+      // coarse verdict already collapsed to one number (M20). Only numbers
+      // and summaries come back.
+      const loaded = await channel.loadTrack(source, TRACK_OVERVIEW_BUCKETS)
+      if (!loaded) return false
       // Park whatever was running — the live stream's worker idles
       // warm, a previous track pauses — exactly like STOP (ADR-0013).
       stop()
-      // The decoded buffer clears the same honesty bar as the stream,
-      // offline — and grows a grid where it can (M20): the refined
-      // grid BPM and the coarse verdict collapse to one number.
-      const coarseTempo = trackBpm(decoded.left, decoded.right, decoded.sampleRate)
-      const grid = trackBeatgrid(
-        decoded.left,
-        decoded.right,
-        decoded.sampleRate,
-        coarseTempo,
-      )
-      const trackTempo = grid?.bpm ?? coarseTempo
-      // One debug line per load: "why no ticks?" answers itself in
-      // the console (the beatgrid pass logs its refusal numbers too).
-      console.debug('[beatgrid] verdict', deckId, grid, 'coarse', coarseTempo)
-      trackBandsRef.current = trackBands(
-        decoded.left,
-        decoded.right,
-        decoded.sampleRate,
+      const { bpm: trackTempo, grid } = loaded
+      // One debug line per load: "why no ticks?" answers itself in the
+      // console (the shell logs the beatgrid's refusal numbers to stderr).
+      console.debug('[beatgrid] verdict', deckId, grid, 'bpm', trackTempo)
+      trackBandsRef.current = bandSourceFromArrays(
+        loaded.bands.low,
+        loaded.bands.mid,
+        loaded.bands.high,
       )
       trackMetaRef.current = { bpm: trackTempo, grid }
       trackRateRef.current = 1
       trackCuesRef.current = Array<number | null>(HOT_CUE_COUNT).fill(null)
       cuesSyncedRef.current = false
       pendingLoopInRef.current = null
-      channel.setBeatPeriod(trackTempo === null ? null : 60 / trackTempo)
       setMode('playback')
       if (wasPlaying) channel.playTrack()
       setTrack({
         loadId: ++trackLoadRef.current,
         title,
-        duration: decoded.duration,
+        duration: loaded.duration,
         position: 0,
         playing: wasPlaying,
         ended: false,
@@ -1172,11 +1134,9 @@ export function useDeck(deckId: DeckId): DeckControls {
     if (modeRef.current !== 'playback') return
     const clamped = clampRate(rate)
     trackRateRef.current = clamped
+    // The synced echo's clock follows varispeed shell-side: the rate command
+    // recomputes 60 / (bpm × rate) from the load-time analysis (ADR-0030).
     channelRef.current?.setTrackRate(clamped)
-    // The synced echo's musical clock follows varispeed (the M14
-    // consumer rule applied to the new tempo authority).
-    const bpm = trackMetaRef.current?.bpm ?? null
-    channelRef.current?.setBeatPeriod(bpm === null ? null : 60 / (bpm * clamped))
     setTrack((current) => current && { ...current, rate: clamped })
   }, [])
 
@@ -1352,11 +1312,12 @@ export function useDeck(deckId: DeckId): DeckControls {
     const contextNow = engine.getContextTime()
     if (contextNow === null) return null
     // The played index in the pushed-frame domain — the scroller's
-    // and the beat anchor's clock (M20). On native, subtract the per-stream
-    // origin so this shares the tracker's reset-to-0 frame domain.
+    // and the beat anchor's clock (M20). Subtract the per-stream origin the
+    // shell captured at reset (ADR-0025) so this shares the tracker's
+    // reset-to-0 frame domain.
     const playedFrames =
       stats.playedFrames -
-      playedFramesOriginRef.current +
+      analysisOriginRef.current +
       (contextNow - stats.contextTime) * SAMPLE_RATE
     const clock = liveBeatRef.current
     return {
@@ -1384,12 +1345,13 @@ export function useDeck(deckId: DeckId): DeckControls {
     if (performance.now() - stats.receivedAt > STATS_FRESH_MS) return null
     return {
       periodSeconds: 60 / clock.bpm,
-      // Subtract the native per-stream origin so anchorFrame (pushed, resets) and
-      // playedFrames (native: global render count) share a frame domain; their
-      // difference is the buffer lead, as on the Web path (origin 0).
+      // Subtract the per-stream origin (captured shell-side at reset,
+      // ADR-0025) so anchorFrame (pushed, resets) and playedFrames (native:
+      // global render count) share a frame domain; their difference is the
+      // buffer lead.
       beatAtContext:
         stats.contextTime +
-        (clock.anchorFrame - (stats.playedFrames - playedFramesOriginRef.current)) /
+        (clock.anchorFrame - (stats.playedFrames - analysisOriginRef.current)) /
           SAMPLE_RATE,
     }
   }, [])
@@ -1538,8 +1500,8 @@ export function useDeck(deckId: DeckId): DeckControls {
       // One gesture: capture the just-played tail AND freeze onto it.
       // The press is refused (no state change) when too little has
       // played to loop (ADR-0009). A gated tempo snaps the length to
-      // whole beats (M14).
-      const gatedBpm = beat.gate.current()
+      // whole beats (M14) — the shell's readout, mirrored at press time.
+      const gatedBpm = bpmRef.current
       const seconds =
         gatedBpm === null
           ? current.seconds
@@ -1579,7 +1541,7 @@ export function useDeck(deckId: DeckId): DeckControls {
           .catch(() => {})
       })
     },
-    [setLoop, beat, deckId],
+    [setLoop, deckId],
   )
 
   const clearLoopPad = useCallback(
@@ -1616,7 +1578,7 @@ export function useDeck(deckId: DeckId): DeckControls {
       // quality floor (more bars beat broken audio). Other engines
       // take the picker's length as asked — the floor is an sm-music
       // fact, and Magenta ignores tempo text by design (ADR-0004).
-      const gatedBpm = !oneShot && engine === 'music' ? beat.gate.current() : null
+      const gatedBpm = !oneShot && engine === 'music' ? bpmRef.current : null
       const seconds =
         !oneShot && engine === 'music'
           ? generatedLoopSeconds(current.seconds, gatedBpm)
@@ -1714,7 +1676,7 @@ export function useDeck(deckId: DeckId): DeckControls {
         }
       })()
     },
-    [setLoop, beat, ensureChannel],
+    [setLoop, ensureChannel],
   )
 
   /** Load a saved sample's WAV into the first empty loop slot (ADR-0022): the

@@ -61,36 +61,9 @@ export function filterCurve(amount: number): {
   return { type: 'highpass', frequency: logSweep(30, 6_000, drive) }
 }
 
-/** Dub echo: the knob rides feedback and wet together; time and the
- * darkening loop filter stay put so the tail keeps its character. */
-export const DUB_ECHO_SECONDS = 0.35
-export const DUB_ECHO_TONE_HZ = 2_500
-
-/** Musical delay lengths for the synced echo (fractions of a beat). */
-const ECHO_BEAT_FRACTIONS = [0.25, 0.375, 0.5, 0.75, 1]
-
-/** With a confident beat period the echo snaps to the musical fraction
- * nearest its free-running character (M14); without one it stays at
- * DUB_ECHO_SECONDS. Level-tolerant by construction: fractions of a
- * half- or double-time reading are still beat fractions. */
-export function echoDelaySeconds(beatPeriodSeconds: number | null): number {
-  if (beatPeriodSeconds === null || beatPeriodSeconds <= 0) {
-    return DUB_ECHO_SECONDS
-  }
-  let best = DUB_ECHO_SECONDS
-  let bestDistance = Infinity
-  for (const fraction of ECHO_BEAT_FRACTIONS) {
-    const seconds = fraction * beatPeriodSeconds
-    if (seconds > 1) continue // the DelayNode's ceiling
-    const distance = Math.abs(seconds - DUB_ECHO_SECONDS)
-    if (distance < bestDistance) {
-      bestDistance = distance
-      best = seconds
-    }
-  }
-  return best
-}
-
+/** Dub echo: the knob rides feedback and wet together. The delay time — the
+ * free-running 0.35 s character, its darkening tone, and the beat-fraction
+ * snap the gated tempo drives — lives engine-side (`fx.rs`, ADR-0025). */
 export function dubEchoCurve(amount: number): { wet: number; feedback: number } {
   const clamped = clamp01(amount)
   return {

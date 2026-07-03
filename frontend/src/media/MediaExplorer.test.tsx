@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { DeckId } from '../audio/types'
+import type { DeckId, TrackSource } from '../audio/types'
 import { createControlBus, type ControlBus } from '../control/bus'
 import { ControlBusProvider } from '../control/ControlBusProvider'
 import type { StylePreset } from '../presets'
@@ -10,7 +10,7 @@ import { MEDIA_DEFAULT_HEIGHT } from './mediaTray'
 
 type Handlers = {
   onLoadPreset?: (deck: DeckId, preset: StylePreset) => void
-  onLoadTrack?: (deck: DeckId, wav: ArrayBuffer, title: string) => Promise<boolean>
+  onLoadTrack?: (deck: DeckId, source: TrackSource, title: string) => Promise<boolean>
   onLoadSample?: (
     deck: DeckId,
     wav: ArrayBuffer,
@@ -155,9 +155,11 @@ describe('MediaExplorer', () => {
     await act(async () => {})
     // The short id rides along to the deck, so two takes of the same
     // prompt stay tellable apart.
+    // An in-memory take (not yet on disk) ships its WAV container bytes once
+    // (ADR-0030); a persisted take would load by library reference instead.
     expect(onLoadTrack).toHaveBeenCalledWith(
       'b',
-      expect.any(ArrayBuffer),
+      { kind: 'bytes', wav: expect.any(ArrayBuffer) },
       'late night dub techno #1',
     )
     // The row names the model that produced the take (the same label
@@ -242,7 +244,7 @@ describe('MediaExplorer', () => {
     })
     expect(onLoadTrack).toHaveBeenCalledWith(
       'a',
-      expect.any(ArrayBuffer),
+      { kind: 'bytes', wav: expect.any(ArrayBuffer) },
       'first #1',
     )
   })
@@ -483,15 +485,13 @@ describe('MediaExplorer', () => {
     ).toBe(true)
   })
 
-  it('loads a restored take by reading its bytes from disk', async () => {
-    const wav = new ArrayBuffer(8)
+  it('loads a restored take by library reference — no bytes round-trip', async () => {
     const calls: { cmd: string; args: unknown }[] = []
     const invoke = vi.fn(async (cmd: string, args?: unknown) => {
       calls.push({ cmd, args })
       if (cmd === 'list_generated_songs') {
         return [{ file: 'keeper #1.wav', title: 'keeper', prompt: 'keeper', model: 'track' }]
       }
-      if (cmd === 'read_generated_song') return wav
       return undefined
     })
     vi.stubGlobal('__TAURI__', { core: { invoke } })
@@ -504,10 +504,14 @@ describe('MediaExplorer', () => {
     await act(async () => {
       fireEvent.click(loadButton)
     })
-    // A restored take carries no in-memory bytes, so the scoped read fetches them.
-    const readCall = calls.find((c) => c.cmd === 'read_generated_song')
-    expect(readCall?.args).toEqual({ name: 'keeper #1.wav' })
-    expect(onLoadTrack).toHaveBeenCalledWith('a', expect.any(ArrayBuffer), 'keeper #1')
+    // A persisted take names its library file; the shell reads and decodes it
+    // (ADR-0030) — the explorer never fetches the bytes.
+    expect(calls.find((c) => c.cmd === 'read_generated_song')).toBeUndefined()
+    expect(onLoadTrack).toHaveBeenCalledWith(
+      'a',
+      { kind: 'song', name: 'keeper #1.wav' },
+      'keeper #1',
+    )
   })
 
   it('deletes a take via ✕, moving the file to the Trash and pruning the registry', async () => {
@@ -686,14 +690,11 @@ describe('MediaExplorer', () => {
   })
 
   it('uses the native picker + Rust commands under Tauri', async () => {
-    const wav = new ArrayBuffer(8)
-    // Record (cmd, args) so the read's scoped {dir, name} can be asserted.
     const calls: { cmd: string; args: unknown }[] = []
     const invoke = vi.fn(async (cmd: string, args?: unknown) => {
       calls.push({ cmd, args })
       if (cmd === 'plugin:dialog|open') return '/Users/dj/DJ Sets'
       if (cmd === 'list_audio_files') return ['a-side.mp3', 'b-side.wav']
-      if (cmd === 'read_audio_file') return wav
       return undefined
     })
     // Presence of `__TAURI__` is what isTauri() keys on; its core.invoke is the bridge.
@@ -712,10 +713,40 @@ describe('MediaExplorer', () => {
         screen.getByRole('button', { name: 'Load a-side.mp3 to deck A' }),
       )
     })
-    // Read is scoped: the command gets the chosen dir + the plain name, not a path.
-    const readCall = calls.find((c) => c.cmd === 'read_audio_file')
-    expect(readCall?.args).toEqual({ dir: '/Users/dj/DJ Sets', name: 'a-side.mp3' })
-    expect(onLoadTrack).toHaveBeenCalledWith('a', wav, 'a-side.mp3')
+    // The load is BY REFERENCE (ADR-0030): the chosen dir + the plain name —
+    // the shell re-derives the scoped path, reads, and decodes; the explorer
+    // fetches no bytes.
+    expect(calls.find((c) => c.cmd === 'read_audio_file')).toBeUndefined()
+    expect(onLoadTrack).toHaveBeenCalledWith(
+      'a',
+      { kind: 'folder', dir: '/Users/dj/DJ Sets', name: 'a-side.mp3' },
+      'a-side.mp3',
+    )
+  })
+
+  it('a refused folder load shows the shell reason, not the generic message', async () => {
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'plugin:dialog|open') return '/Users/dj/DJ Sets'
+      if (cmd === 'list_audio_files') return ['chained.ogg']
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    // A shell refusal rejects with its reason — a string, the Tauri command
+    // error shape (ADR-0030: an explicit load error, never a silent one).
+    const onLoadTrack = vi.fn(async () => true)
+    onLoadTrack.mockRejectedValue('unsupported audio codec: opus')
+    renderExplorer({ onLoadTrack })
+    fireEvent.click(screen.getByRole('tab', { name: 'Folder' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Choose folder' }))
+    })
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Load chained.ogg to deck A' }),
+      )
+    })
+    expect(screen.getByText('unsupported audio codec: opus')).toBeInTheDocument()
+    expect(screen.queryByText('chained.ogg could not be decoded')).toBeNull()
   })
 
   it('dismissing the native picker lists nothing and shows no error', async () => {

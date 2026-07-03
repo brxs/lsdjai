@@ -11,6 +11,35 @@ import type { TrackLoop } from './track'
 
 export type DeckId = 'a' | 'b'
 
+/** Where a deck track loads from (ADR-0030): a scoped reference the shell
+ * resolves, reads, decodes, and analyses — decoded PCM never crosses the IPC
+ * boundary. The in-memory compose take is the one bytes case (a WAV container
+ * that may not be on disk yet). */
+export type TrackSource =
+  | { kind: 'folder'; dir: string; name: string }
+  | { kind: 'song'; name: string }
+  | { kind: 'bytes'; wav: ArrayBuffer }
+
+/** The offline beatgrid verdict (M20, ADR-0014) — computed shell-side at load
+ * (ADR-0030): tempo plus where beat 0 falls, in seconds from the track start.
+ * Null when the track refused a grid (no grid beats a wrong grid). */
+export type Beatgrid = {
+  bpm: number
+  firstBeatSeconds: number
+}
+
+/** What a track load returns (ADR-0030): the shell's offline analysis —
+ * duration, the honesty-gated tempo (grid-refined when a grid exists), the
+ * grid, the band profile for the zoom strip, and the overview peaks at the
+ * requested resolution. */
+export type LoadedTrack = {
+  duration: number
+  bpm: number | null
+  grid: Beatgrid | null
+  bands: { low: Float32Array; mid: Float32Array; high: Float32Array }
+  peaks: { min: Float32Array; max: Float32Array } | null
+}
+
 /** Metadata persisted with a generated sample / freeze capture (ADR-0022) — the
  * Rust `samples::NewSample`. `prompt`/`model` are null for a freeze (no prompt; the
  * model column reads "freeze"); `oneShot` is the loop-vs-one-shot verdict reload
@@ -34,9 +63,10 @@ export type DeckChannel = {
   /** Knob position for the active effect; inside the effect's dead zone
    * the insert is bit-transparently bypassed (ADR-0008). */
   setFxAmount: (amount: number) => void
-  /** Detected beat period (M14), null while the gate refuses — graphs
-   * with a musical clock (the synced dub echo) follow it. */
-  setBeatPeriod: (seconds: number | null) => void
+  /** Stream discontinuity (play / prime / stop / mode switch): reset the
+   * shell's live beat analysis for this deck (ADR-0025 — estimates never
+   * span streams). Sidecar-origin discontinuities reset shell-side. */
+  resetAnalysis: () => void
   /** Off-air mutes the channel's master feed only — generation, meters,
    * and the cue tap stay live. The primed-deck state (M10). */
   setOnAir: (on: boolean) => void
@@ -80,16 +110,13 @@ export type DeckChannel = {
   /** Persist a generated pad's WAV (already in hand) to the generated-samples
    * library. Same binary frame as the songs save. Auto-save: fire-and-forget. */
   saveGeneratedSample: (wav: ArrayBuffer, meta: SampleMeta) => Promise<void>
-  /** Playback mode (M19, ADR-0013): decode a whole track into the
-   * channel. Resolves to its duration plus live views of the decoded
-   * channels (for the offline BPM pass — no second decode), or null
-   * when the body doesn't decode. Replaces any previous track. */
-  loadTrack: (wav: ArrayBuffer) => Promise<{
-    duration: number
-    sampleRate: number
-    left: Float32Array
-    right: Float32Array
-  } | null>
+  /** Playback mode (M19, ADR-0013/0030): load a track by scoped reference —
+   * the shell reads, decodes, resamples, and runs the offline analyses; the
+   * webview gets back numbers and summaries, never PCM. `peaksBuckets` is
+   * the overview resolution to prefetch so `getTrackPeaks` stays
+   * synchronous. A refusal (unsupported codec, oversize) REJECTS with the
+   * shell's reason — an explicit load error. Replaces any previous track. */
+  loadTrack: (source: TrackSource, peaksBuckets: number) => Promise<LoadedTrack | null>
   /** Start (or resume) the track; from the ended state it restarts at
    * the top. False with no track loaded. */
   playTrack: () => boolean
