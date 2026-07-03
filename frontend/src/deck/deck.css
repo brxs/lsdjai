@@ -144,6 +144,18 @@
    Door open = the deck armed for note steering; the covered pad is the
    signal that pads/keys now play notes, not prompt edits. */
 
+/* Pin the pad square to the deck's OUTER edge — the side its door parks on
+   (A left, B right). The square caps at 19rem and would otherwise centre in
+   the wider panel, leaving an invisible black-on-black margin that made the
+   parked STEER rail look like it floated off the pad's edge. */
+.deck--a .ui-xypad__surface {
+  margin-inline: 0 auto;
+}
+
+.deck--b .ui-xypad__surface {
+  margin-inline: auto 0;
+}
+
 /* The door: ONE rigid assembly — [content | rail] for deck A, mirrored for
    deck B — sliding as a whole like a machine gate, inside the XYPad's
    overlay slot so it covers the square pad surface only (the pad label
