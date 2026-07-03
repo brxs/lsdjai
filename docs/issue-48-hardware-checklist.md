@@ -71,15 +71,14 @@ before the port (and the monitor shows the documented bytes).
 
 ## The KEYBOARD bank (interpolated bytes — measure them)
 
-- [ ] Press SHIFT + HOT CUE mode on deck A: the monitor shows the selector
-      (expected `0x90 0x69 0x7F`) and the deck's performance door slides
-      open. **If the byte differs, record it and fix
-      `KEYBOARD_MODE_NOTE` in `src-tauri/src/midi/translate.rs`.**
+- [x] Press SHIFT + HOT CUE mode on deck A: the selector (`0x90 0x69`)
+      arms the deck — **confirmed 2026-07-03: the performance door slides
+      open from the hardware.**
 - [x] In KEYBOARD mode, pads 1–8 send notes `0x40`–`0x47` with press AND
-      release visible in the monitor. **Measured 2026-07-03: they arrive on
-      the SHIFT pad layer — `0x98` (deck A) / `0x9A` (deck B), not the
-      `0x97`/`0x99` first interpolated; the map and translator now carry
-      the measured bytes.**
+      release visible in the monitor. **Measured 2026-07-03: `0x97`/`0x99`
+      plain, moving to the shift pad layer (`0x98`/`0x9A`) while SHIFT is
+      held — the translator accepts both layers as the same pad so playing
+      never needs SHIFT and a mid-hold SHIFT can't stick a note.**
 - [ ] Switching to any other pad bank closes the door (disarms).
 
 ## Playing the deck (the issue #48 acceptance criteria, by ear)

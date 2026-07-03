@@ -128,9 +128,10 @@ pub const PAD_COUNT: u8 = 8;
 pub const PAD_FX_NOTE_BASE: u8 = 0x10;
 /// SAMPLER bank base: the freeze-pad loop slots (ADR-0009).
 pub const LOOP_NOTE_BASE: u8 = 0x30;
-/// KEYBOARD bank base (issue #48): the performance-note pads. Note base per
-/// the 0x10-per-bank scheme; the pads arrive on the SHIFT pad statuses —
-/// both MEASURED on the device (2026-07-03, docs/midi-ddj-flx4.md).
+/// KEYBOARD bank base (issue #48): the performance-note pads. Measured on
+/// the device (2026-07-03, docs/midi-ddj-flx4.md): plain pads on
+/// `0x97`/`0x99` at this base, and on the shift pad layer while SHIFT is
+/// held — the translator accepts both (see the extraction in `translate`).
 pub const KEYBOARD_NOTE_BASE: u8 = 0x40;
 /// The loop-slot count the SAMPLER bank drives (mirrors `LOOP_SLOT_COUNT`).
 const LOOP_SLOT_COUNT: u8 = lsdj_engine::LOOP_SLOT_COUNT as u8;
@@ -307,13 +308,16 @@ impl Flx4Translator {
         }
 
         // KEYBOARD bank (issue #48): both edges matter — extracted before the
-        // release drop. MEASURED on the device (2026-07-03): KEYBOARD is a
-        // shift-layer pad mode and its pads ride the SHIFT pad statuses
-        // (`0x98`/`0x9A`), not the plain pad channels the 0x10-per-bank
-        // scheme suggested — the same firmware habit as the SAMPLER-clear
-        // chord. The bank stays self-identifying by note range, so no
-        // pad-mode tracking is needed for input.
-        if let Some(deck) = deck_of(SHIFT_PAD_STATUS, status) {
+        // release drop. Measured on the device (2026-07-03): plain pads ride
+        // `0x97`/`0x99` per the bank scheme, and held SHIFT moves them onto
+        // the shift pad layer (`0x98`/`0x9A`) like every other bank. BOTH
+        // layers map to the same pad: playing never needs SHIFT, and a SHIFT
+        // grabbed mid-hold (for another gesture) cannot eat a pad release
+        // and stick a note. The bank stays self-identifying by note range,
+        // so no pad-mode tracking is needed for input.
+        if let Some(deck) =
+            deck_of(PAD_STATUS, status).or_else(|| deck_of(SHIFT_PAD_STATUS, status))
+        {
             if (KEYBOARD_NOTE_BASE..KEYBOARD_NOTE_BASE + PAD_COUNT).contains(&number) {
                 return Translated::PerformancePad {
                     deck,
@@ -919,10 +923,16 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_bank_pads_report_both_edges_on_the_shift_layer() {
-        // Measured on the device (2026-07-03): deck A sends `98 40-47`,
-        // deck B `9A 40-47` — the shift pad layer, notes per the bank scheme.
-        for (status, deck) in [(0x98, DeckId::A), (0x9a, DeckId::B)] {
+    fn keyboard_bank_pads_report_both_edges_on_both_layers() {
+        // Measured on the device (2026-07-03): plain pads on `97`/`99`,
+        // and on the shift pad layer (`98`/`9A`) while SHIFT is held —
+        // both map to the SAME pad, playing never requires SHIFT.
+        for (status, deck) in [
+            (0x97, DeckId::A),
+            (0x99, DeckId::B),
+            (0x98, DeckId::A),
+            (0x9a, DeckId::B),
+        ] {
             let mut t = translator();
             for pad in 0..8u8 {
                 assert_eq!(
@@ -938,12 +948,20 @@ mod tests {
     }
 
     #[test]
-    fn the_plain_pad_layer_at_the_keyboard_range_stays_unmapped() {
-        // The interpolation that shipped first put the bank here; the device
-        // said otherwise — these bytes must translate to nothing.
+    fn a_shift_grab_mid_hold_cannot_stick_a_note() {
+        // Press on the plain layer, SHIFT goes down, release arrives on the
+        // shift layer: both edges must resolve to the same pad or the hold
+        // never clears.
         let mut t = translator();
-        assert_eq!(t.translate(&[0x97, 0x40, PRESS]), Translated::None);
-        assert_eq!(t.translate(&[0x99, 0x47, PRESS]), Translated::None);
+        assert_eq!(
+            t.translate(&[0x97, 0x42, PRESS]),
+            Translated::PerformancePad { deck: DeckId::A, pad: 2, down: true }
+        );
+        t.translate(&[0x90, 0x3f, PRESS]); // SHIFT down mid-hold
+        assert_eq!(
+            t.translate(&[0x98, 0x42, RELEASE]),
+            Translated::PerformancePad { deck: DeckId::A, pad: 2, down: false }
+        );
     }
 
     #[test]
