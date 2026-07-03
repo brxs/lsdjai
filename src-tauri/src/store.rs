@@ -281,6 +281,14 @@ pub struct DeckSnap {
     /// The realtime deck's 2D style-pad targets (prompt + position) — the UI source
     /// the deck blends into the worker prompt. Mirrored up by `DeckColumn`.
     pub style_targets: Vec<StyleTargetSnap>,
+    /// Whether the LAST style write (targets/cursor/selection) came from an
+    /// EXTERNAL controller (MCP) rather than the webview's own mirror. The
+    /// projection adopts style state only when this is true: its own mirror
+    /// is in flight between edit and echo, and a mid-flight snapshot (an
+    /// analysis tick, an auto-trim write) still carries the pre-edit style —
+    /// adopting one reverted a just-added prompt on a playing deck. Origin,
+    /// not timing, is the only race-free gate.
+    pub style_external: bool,
     /// Which style targets are selected into the active blend (the net mask,
     /// one bool per target) — mirrored up by the webview so the pad LEDs can
     /// burn selected targets bright and dim the rest (ADR-0031: LEDs read the
@@ -329,6 +337,7 @@ impl Default for DeckSnap {
             transport: None,
             loop_labels: Vec::new(),
             style_targets: Vec::new(),
+            style_external: false,
             style_selected: Vec::new(),
             cursor: PadPointSnap { x: 0.5, y: 0.5 },
             primed: false,
@@ -486,19 +495,22 @@ impl InterfaceState {
 
     /// Replace the style pad wholesale — targets, cursor, AND the selection
     /// mask in ONE mutation, so no emitted snapshot can ever pair fresh
-    /// targets with a stale mask (or vice versa); the projection's adoption
-    /// gate depends on that atomicity.
+    /// targets with a stale mask (or vice versa). `external` records the
+    /// writer (MCP vs the webview mirror) — the projection's adoption gate
+    /// keys on it (see the `style_external` field).
     pub fn set_style(
         &mut self,
         deck: usize,
         targets: Vec<StyleTargetSnap>,
         cursor: PadPointSnap,
         selected: Vec<bool>,
+        external: bool,
     ) {
         if let Some(d) = self.deck_mut(deck) {
             d.style_targets = targets;
             d.cursor = cursor;
             d.style_selected = selected;
+            d.style_external = external;
         }
     }
 
@@ -514,9 +526,11 @@ impl InterfaceState {
     }
 
     /// Set just the style-pad cursor (the blend point), leaving the targets.
+    /// An MCP-only path, so it marks the style state externally written.
     pub fn set_cursor(&mut self, deck: usize, cursor: PadPointSnap) {
         if let Some(d) = self.deck_mut(deck) {
             d.cursor = cursor;
+            d.style_external = true;
         }
     }
 
@@ -708,15 +722,17 @@ impl InterfaceStore {
 
     /// Mirror the realtime deck's 2D style-pad state (targets + cursor + the net
     /// selection mask, one atomic write — see [`InterfaceState::set_style`]).
-    /// `DeckColumn` writes it up on change.
+    /// `DeckColumn` writes it up on change; MCP writes pass `external = true`
+    /// so the projection knows to adopt them (see `style_external`).
     pub fn set_deck_style(
         &self,
         deck: usize,
         targets: Vec<StyleTargetSnap>,
         cursor: PadPointSnap,
         selected: Vec<bool>,
+        external: bool,
     ) {
-        self.mutate(move |s| s.set_style(deck, targets, cursor, selected));
+        self.mutate(move |s| s.set_style(deck, targets, cursor, selected, external));
     }
 
     /// Set one hot-cue pad's point (MCP `set_hot_cue` / `clear_hot_cue`). The webview
@@ -888,6 +904,7 @@ mod tests {
             }],
             PadPointSnap { x: 0.3, y: 0.4 },
             vec![true],
+            false,
         );
         assert_eq!(state.decks[0].style_targets.len(), 1);
         assert_eq!(state.decks[0].style_targets[0].text, "dub");
@@ -898,9 +915,44 @@ mod tests {
         assert_eq!(state.decks[1].cursor, PadPointSnap { x: 0.5, y: 0.5 });
         // The mask replaces WITH the targets — never a stale pairing (the
         // projection's adoption gate depends on the atomicity).
-        state.set_style(0, Vec::new(), PadPointSnap { x: 0.5, y: 0.5 }, Vec::new());
+        state.set_style(
+            0,
+            Vec::new(),
+            PadPointSnap { x: 0.5, y: 0.5 },
+            Vec::new(),
+            false,
+        );
         assert!(state.decks[0].style_targets.is_empty());
         assert!(state.decks[0].style_selected.is_empty());
+    }
+
+    #[test]
+    fn style_writes_record_their_writer_for_the_adoption_gate() {
+        let mut state = InterfaceState::default();
+        // The boot default reads as a webview write — a projection must
+        // never adopt the empty default over its persisted layout.
+        assert!(!state.decks[0].style_external);
+        // An external (MCP) write flips the flag; the webview mirror
+        // reclaims it on the next local edit.
+        state.set_style(
+            0,
+            vec![StyleTargetSnap { x: 0.5, y: 0.5, text: "dub".to_string() }],
+            PadPointSnap { x: 0.5, y: 0.5 },
+            Vec::new(),
+            true,
+        );
+        assert!(state.decks[0].style_external);
+        state.set_style(
+            0,
+            vec![StyleTargetSnap { x: 0.5, y: 0.5, text: "dub".to_string() }],
+            PadPointSnap { x: 0.5, y: 0.5 },
+            Vec::new(),
+            false,
+        );
+        assert!(!state.decks[0].style_external);
+        // The MCP cursor-only path is external style state too.
+        state.set_cursor(0, PadPointSnap { x: 0.2, y: 0.2 });
+        assert!(state.decks[0].style_external);
     }
 
     #[test]
@@ -1005,6 +1057,7 @@ mod tests {
             }],
             PadPointSnap { x: 0.5, y: 0.5 },
             Vec::new(),
+            false,
         );
         state.set_cursor(0, PadPointSnap { x: 0.7, y: 0.3 });
         assert_eq!(state.decks[0].cursor, PadPointSnap { x: 0.7, y: 0.3 });

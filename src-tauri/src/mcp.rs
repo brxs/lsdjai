@@ -567,10 +567,11 @@ impl McpHandler {
         }
         let count = targets.len();
         // An external arrangement replaces the pad wholesale; the net
-        // selection mask is webview-owned and starts empty (no net).
+        // selection mask is webview-owned and starts empty (no net). Marked
+        // external so the projection adopts it (style_external).
         self.app
             .state::<InterfaceStore>()
-            .set_deck_style(deck, targets, cursor, Vec::new());
+            .set_deck_style(deck, targets, cursor, Vec::new(), true);
         format!("deck {deck} style set ({count} target(s))")
     }
 
@@ -704,6 +705,7 @@ impl McpHandler {
             }],
             center,
             Vec::new(),
+            true,
         );
         format!("deck {deck} prompt set to \"{prompt}\"")
     }

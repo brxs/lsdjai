@@ -292,6 +292,12 @@ export type DeckSnap = {
   /** The realtime deck's 2D style-pad targets (prompt + position), mirrored from
    * DeckColumn (sampled-target embedding ids stay out). */
   styleTargets: { x: number; y: number; text: string }[]
+  /** Whether the LAST style write came from an external controller (MCP)
+   * rather than this webview's mirror. The adoption gate keys on it: only
+   * external writes are adopted, so a snapshot emitted by another store
+   * writer while our own mirror is in flight (still carrying pre-edit
+   * style) can never revert a local edit. */
+  styleExternal: boolean
   /** Which style targets are in the active blend (the net mask, one bool per
    * target; empty = no mask) — mirrored up for the native pad LEDs (ADR-0031). */
   styleSelected: boolean[]
@@ -481,15 +487,6 @@ export function setDeckStyle(
   coalesceMirror(`set_deck_style:${deck}`, () => {
     void invoke('set_deck_style', { deck, targets, cursor, selected }).catch(() => {})
   })
-}
-
-/** Whether a deck's style mirror is still waiting for its animation-frame
- * flush. The adoption gate skips snapshots that land in that window: they
- * predate the local edit by construction, and adopting one would revert it
- * (the store writers that can emit mid-window — analysis ticks, transport —
- * carry stale style state, not external style intent). */
-export function hasPendingStyleMirror(deck: number): boolean {
-  return mirrorPending.has(`set_deck_style:${deck}`)
 }
 
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }

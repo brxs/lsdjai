@@ -132,6 +132,7 @@ function storeDeck(): DeckSnap {
     transport: null,
     loopLabels: [],
     styleTargets: [],
+    styleExternal: false,
     styleSelected: [],
     cursor: { x: 0.5, y: 0.5 },
     primed: false,

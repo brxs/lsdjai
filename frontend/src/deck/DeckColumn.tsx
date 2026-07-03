@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import type { DeckId } from '../audio/types'
 import { FX_KINDS, fxRestPosition, type FxKind } from '../audio/fx'
 import { LOOP_LENGTH_OPTIONS, LOOP_SLOT_COUNT } from '../audio/loops'
-import { hasPendingStyleMirror, setDeckStyle } from '../audio/nativeEngine'
+import { setDeckStyle } from '../audio/nativeEngine'
 import { useInterfaceStore } from '../audio/interfaceStore'
 import { useControlBus } from '../control/busContext'
 import { PerformanceDrawer } from './PerformanceDrawer'
@@ -377,27 +377,25 @@ export function DeckColumn({
     )
   }, [deckId, targets, cursor, selected])
 
-  // Adopt EXTERNAL style changes from the store (an MCP set_style / set_style_cursor)
-  // into the pad AND push the new blend to the worker — the read side the mirror above
-  // pairs with (ADR-0020, Phase 2). Our own pushes echo back value-equal (sample ids
-  // aside) and just arm the gate; a genuine external change replaces the targets/cursor
-  // and re-sends the blend. Gated until the store reflects this deck's own pushed
-  // arrangement, so the persisted layout isn't clobbered by the empty boot default.
-  const styleSyncedRef = useRef(false)
+  // Adopt EXTERNAL style changes from the store (an MCP set_style /
+  // set_style_cursor / set_prompt) into the pad AND push the new blend to the
+  // worker — the read side the mirror above pairs with (ADR-0020, Phase 2).
+  // The gate is the WRITER, not timing: `styleExternal` flips only on real
+  // agent writes. Between a local edit and its echo, emissions from OTHER
+  // store writers (analysis ticks, auto-trim) still carry the pre-edit style
+  // under `styleExternal: false` — adopting one reverted a just-added prompt
+  // on a playing deck (twice: first pre-atomic-mirror, then through the
+  // in-flight window a pending-flag guard could not close). Keying on the
+  // writer skips every such stale carrier by construction; the boot-default
+  // empty store is a webview write too, so the persisted layout survives.
   useEffect(() => {
     const snap = storeState?.decks[deckId === 'a' ? 0 : 1]
-    if (!snap) return
-    // A snapshot arriving while our own mirror awaits its animation-frame
-    // flush predates the local edit by construction (analysis ticks and
-    // transport writes emit mid-window with stale style state) — adopting it
-    // would revert the edit. Skip; our flush lands next frame, the echo
-    // matches, and the gate re-arms.
-    if (hasPendingStyleMirror(deckId === 'a' ? 0 : 1)) return
+    if (!snap || !snap.styleExternal) return
     const localTargets = targetsRef.current
     const localCursor = cursorRef.current
     // x/y are f32 in the store, so an f64->f32 round-trip can perturb the last digits;
     // compare with an epsilon well below a meaningful pad move (~1e-6) but above f32
-    // noise, or our own echo would never look equal and the gate would never arm.
+    // noise, or our own post-adoption mirror echo would read as a fresh change.
     const near = (a: number, b: number) => Math.abs(a - b) < 1e-6
     const sameTargets =
       snap.styleTargets.length === localTargets.length &&
@@ -406,11 +404,7 @@ export function DeckColumn({
         return t && near(s.x, t.x) && near(s.y, t.y) && s.text === t.text
       })
     const sameCursor = near(snap.cursor.x, localCursor.x) && near(snap.cursor.y, localCursor.y)
-    if (sameTargets && sameCursor) {
-      styleSyncedRef.current = true
-      return
-    }
-    if (!styleSyncedRef.current) return
+    if (sameTargets && sameCursor) return
     const nextTargets = snap.styleTargets.map((s) => ({ x: s.x, y: s.y, text: s.text }))
     const nextCursor = { x: snap.cursor.x, y: snap.cursor.y }
     setTargets(nextTargets)

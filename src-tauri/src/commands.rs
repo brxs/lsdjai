@@ -1419,7 +1419,9 @@ pub fn set_deck_style(
     selected: Vec<bool>,
 ) {
     if valid_deck(deck) {
-        store.set_deck_style(deck, targets, cursor, selected);
+        // The webview's own mirror: NOT an external write — the projection
+        // must never adopt its own (possibly in-flight-stale) style state.
+        store.set_deck_style(deck, targets, cursor, selected, false);
     }
 }
 

@@ -7,7 +7,8 @@ import type { FxKind } from '../audio/fx'
 import { createControlBus, type ControlBus } from '../control/bus'
 import { ControlBusProvider } from '../control/ControlBusProvider'
 import { loadDeckSettings, updateDeckSettings } from '../persistence'
-import { setDeckStyle } from '../audio/nativeEngine'
+import { setDeckStyle, type DeckSnap, type InterfaceState } from '../audio/nativeEngine'
+import * as interfaceStore from '../audio/interfaceStore'
 import { DeckColumn } from './DeckColumn'
 
 // The style mirror is observed, not run: the net selection now rides the
@@ -18,7 +19,30 @@ vi.mock('../audio/nativeEngine', async (importOriginal) => {
   return {
     ...original,
     setDeckStyle: vi.fn(),
-    hasPendingStyleMirror: () => false,
+  }
+})
+// The store projection, driveable per test (null = pre-hydration, the app's
+// no-Tauri default): __setInterfaceStore pushes a snapshot into every
+// mounted consumer, like a store://changed event would.
+vi.mock('../audio/interfaceStore', async (importOriginal) => {
+  const { useSyncExternalStore } = await import('react')
+  const original = await importOriginal<typeof import('../audio/interfaceStore')>()
+  let current: unknown = null
+  const listeners = new Set<() => void>()
+  return {
+    ...original,
+    useInterfaceStore: () =>
+      useSyncExternalStore(
+        (listener) => {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+        () => current,
+      ),
+    __setInterfaceStore: (next: unknown) => {
+      current = next
+      for (const listener of listeners) listener()
+    },
   }
 })
 import { initialDeckState, type DeckState } from './deckState'
@@ -766,6 +790,71 @@ describe('DeckColumn', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove funk' }))
     // funk is gone; the stale selection is pruned, techno stays unselected.
     expect(vi.mocked(setDeckStyle).mock.calls.at(-1)?.[3]).toEqual([false])
+  })
+
+  it('a stale webview-writer snapshot never reverts a local add; external writes adopt', () => {
+    const setStore = (
+      interfaceStore as unknown as {
+        __setInterfaceStore: (next: InterfaceState | null) => void
+      }
+    ).__setInterfaceStore
+    const deckSnap = (over: Partial<DeckSnap>): DeckSnap => ({
+      volume: 1,
+      eq: { low: 0.5, mid: 0.5, high: 0.5 },
+      trimDb: 0,
+      cue: false,
+      onAir: true,
+      fx: { kind: null, amount: 0 },
+      model: null,
+      playing: true,
+      cues: [],
+      track: null,
+      transport: null,
+      loopLabels: [],
+      styleTargets: [],
+      styleExternal: false,
+      styleSelected: [],
+      cursor: { x: 0.5, y: 0.5 },
+      primed: false,
+      performance: { armed: false, key: 0, scale: 'major', mode: 'chord' },
+      notes: null,
+      drums: null,
+      analysis: { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 },
+      ...over,
+    })
+    const storeWith = (over: Partial<DeckSnap>): InterfaceState => ({
+      decks: [deckSnap(over), deckSnap({})],
+      crossfade: 0.5,
+      cueMix: 0.5,
+    })
+
+    try {
+      renderPanel({ connection: 'open' })
+      addTarget('funk')
+      expect(screen.getAllByText('funk').length).toBeGreaterThan(0)
+
+      // The playing-deck race: another store writer (an analysis tick, an
+      // auto-trim write) broadcasts while our style mirror is still in
+      // flight — the snapshot carries the PRE-edit targets under
+      // styleExternal: false. Adopting it reverted the add, twice: this
+      // pins the writer gate that closes the whole class.
+      act(() => setStore(storeWith({ styleTargets: [], styleExternal: false })))
+      expect(screen.getAllByText('funk').length).toBeGreaterThan(0)
+
+      // A genuine external (MCP) write IS adopted, replacing the pad.
+      act(() =>
+        setStore(
+          storeWith({
+            styleTargets: [{ x: 0.5, y: 0.5, text: 'agent groove' }],
+            styleExternal: true,
+          }),
+        ),
+      )
+      expect(screen.getAllByText('agent groove').length).toBeGreaterThan(0)
+      expect(screen.queryAllByText('funk')).toHaveLength(0)
+    } finally {
+      setStore(null)
+    }
   })
 
   // Deck A is the shifted deck, so its jogs steer its cursor in 2D.

@@ -1,11 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { SAMPLE_RATE } from './types'
-import {
-  createNativeEngine,
-  hasPendingStyleMirror,
-  setDeckStyle,
-} from './nativeEngine'
+import { createNativeEngine, setDeckStyle } from './nativeEngine'
 
 // A controllable __TAURI__ global: records every invoke and serves a test
 // snapshot for `engine_snapshot`. rAF is stubbed so the poller can be flushed
@@ -407,15 +403,6 @@ describe('the deck style mirror', () => {
       cursor,
       selected: [true],
     })
-  })
-
-  it('reports the pending window per deck until the flush lands', () => {
-    expect(hasPendingStyleMirror(0)).toBe(false)
-    setDeckStyle(0, [target], cursor, [false])
-    expect(hasPendingStyleMirror(0)).toBe(true)
-    expect(hasPendingStyleMirror(1)).toBe(false)
-    flushRaf()
-    expect(hasPendingStyleMirror(0)).toBe(false)
   })
 
   it('coalesces rapid writes to the latest value in the frame', () => {
