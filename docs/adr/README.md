@@ -54,4 +54,4 @@ scaffolds the file from the template.
 | [0027](0027-headphone-preview-for-library-items.md) | Headphone preview ("audition") for library items | Accepted |
 | [0028](0028-sa3-lora-via-the-mlx-path.md) | Stable Audio 3 LoRA finetunes via the MLX path | Accepted |
 | [0029](0029-output-resampling-for-non-48k-devices.md) | Output resampling for devices with no 48000/f32 config | Accepted |
-| [0030](0030-track-decode-and-offline-track-analysis-in-the-rust-shell.md) | Track decode and offline track analysis in the Rust shell | Proposed |
+| [0030](0030-track-decode-and-offline-track-analysis-in-the-rust-shell.md) | Track decode and offline track analysis in the Rust shell | Accepted |
