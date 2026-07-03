@@ -1,6 +1,6 @@
 # 0031. Native MIDI in the Rust core, superseding Web MIDI
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-07-03)
 - **Date:** 2026-07-03
 - **Deciders:** Daniel Peter
 
