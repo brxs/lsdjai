@@ -252,6 +252,16 @@ def run_deck_worker(
                     {"event": "error", "error": "generation failed; deck stopped"},
                 )
             )
+            # A worker that stops ITSELF must end the transport upstream too:
+            # the error above feeds the UI banner, and this structured event
+            # feeds the shell's transport relay. Without it the store kept
+            # claiming `playing` after a generation failure, so the next
+            # deck_play round-tripped as a value-equal no-op — no snapshot,
+            # a wedged in-flight guard, and a play button that swallowed
+            # presses until a stop (found on the device).
+            out_queue.put(
+                ("status", {"event": "stopped", "reason": "generation failed"})
+            )
             continue
         elapsed = time.monotonic() - started
         out_queue.put(("audio", pcm))

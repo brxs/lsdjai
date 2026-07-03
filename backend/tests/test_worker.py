@@ -281,6 +281,10 @@ def test_generation_failure_stops_deck_but_worker_survives(deck):
     deck.engine.fail_generate = True
     deck.send(type="play")
     assert "generation failed" in deck.next_event("error")["error"]
+    # The self-stop is a TRANSPORT event, not just an error: the shell relay
+    # must drop the store's `playing` or the next play round-trips as a
+    # no-op and the UI's in-flight guard wedges (found on the device).
+    assert deck.next_event("stopped")["reason"] == "generation failed"
 
     # The failure auto-stopped the deck; play must work again once the
     # engine recovers.
