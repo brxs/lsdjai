@@ -285,6 +285,24 @@ struct Match {
     driver: &'static Driver,
 }
 
+/// Pick the active controller: an explicit selection while it is present,
+/// else the first match by REGISTRY order — deterministic regardless of OS
+/// enumeration order. Compares drivers by id, never by address: `DRIVERS` is
+/// a `const`, and a const materializes a fresh copy at each use site, so
+/// pointer identity across call sites is meaningless (the bug that left a
+/// matched FLX4 permanently unbound — it was in the picker list but never
+/// chosen).
+fn pick_active<'m>(matched: &'m [Match], selected: Option<&str>) -> Option<&'m Match> {
+    matched
+        .iter()
+        .find(|m| Some(m.name.as_str()) == selected)
+        .or_else(|| {
+            drivers::DRIVERS
+                .iter()
+                .find_map(|driver| matched.iter().find(|m| m.driver.id == driver.id))
+        })
+}
+
 /// The scanner: enumerate → bind the picked/first controller → attach
 /// non-controller inputs as keyboard-note sources → publish status; repeat
 /// every second (or immediately on a device pick). ONE long-lived client
@@ -329,18 +347,8 @@ fn scan_once(
         }
     }
 
-    // Honour an explicit selection while it is present, else the first match
-    // by registry order — deterministic regardless of OS enumeration order.
     let selected = shared.selected.lock().unwrap_or_else(|p| p.into_inner()).clone();
-    let active = matched
-        .iter()
-        .find(|m| Some(&m.name) == selected.as_ref())
-        .or_else(|| {
-            drivers::DRIVERS
-                .iter()
-                .find_map(|d| matched.iter().find(|m| std::ptr::eq(m.driver, d)))
-        })
-        .map(|m| (m.name.clone(), m.driver));
+    let active = pick_active(&matched, selected.as_deref()).map(|m| (m.name.clone(), m.driver));
 
     // Rebind only when the active device actually changed: the translator
     // state (14-bit MSB cache, SHIFT) must survive a steady-state rescan,
@@ -514,4 +522,54 @@ pub fn midi_monitor(state: tauri::State<'_, MidiService>) -> Vec<MonitorEntryDto
 #[tauri::command]
 pub fn midi_select(state: tauri::State<'_, MidiService>, name: String) {
     state.select(name);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn matched(name: &str) -> Match {
+        Match {
+            name: name.to_string(),
+            driver: driver_for_name(name).expect("a controller name"),
+        }
+    }
+
+    /// The regression for the bug the FLX4 hit on the device: a matched
+    /// controller must actually be PICKED. The old code compared drivers by
+    /// address, and `DRIVERS` being a const means every use site gets its
+    /// own copy — the pointers never matched and nothing ever bound.
+    #[test]
+    fn a_single_matched_controller_is_picked() {
+        let ports = [matched("DDJ-FLX4")];
+        let active = pick_active(&ports, None).expect("the FLX4 binds");
+        assert_eq!(active.driver.id, "flx4");
+        assert_eq!(active.name, "DDJ-FLX4");
+    }
+
+    #[test]
+    fn registry_order_beats_enumeration_order() {
+        // The OS lists the DDJ-400 first; the registry prefers the FLX4.
+        let ports = [matched("DDJ-400"), matched("DDJ-FLX4 MIDI 1")];
+        let active = pick_active(&ports, None).expect("a controller binds");
+        assert_eq!(active.driver.id, "flx4");
+    }
+
+    #[test]
+    fn an_explicit_selection_wins_while_present_and_falls_back_when_gone() {
+        let ports = [matched("DDJ-FLX4"), matched("DDJ-400")];
+        let active = pick_active(&ports, Some("DDJ-400")).expect("the pick binds");
+        assert_eq!(active.driver.id, "ddj400");
+        // The picked device unplugged: fall back to registry order, not to
+        // nothing.
+        let remaining = [matched("DDJ-FLX4")];
+        let active = pick_active(&remaining, Some("DDJ-400")).expect("fallback binds");
+        assert_eq!(active.driver.id, "flx4");
+    }
+
+    #[test]
+    fn no_matches_means_no_active_controller() {
+        assert!(pick_active(&[], None).is_none());
+        assert!(pick_active(&[], Some("DDJ-FLX4")).is_none());
+    }
 }
