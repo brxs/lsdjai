@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { INITIAL_CROSSFADE, INITIAL_CUE_MIX, type DeckId } from './audio/types'
+import {
+  INITIAL_CROSSFADE,
+  INITIAL_CUE_MIX,
+  type DeckId,
+  type TrackSource,
+} from './audio/types'
 import { uploadStyleSample } from './audio/styleSample'
 import {
   invoke,
@@ -535,8 +540,8 @@ function App() {
   // Track items flip the deck to playback; the way back lives on the deck
   // itself ("Back to live", ADR-0013: loading decides the mode).
   const handleLoadTrack = useCallback(
-    (deck: DeckId, wav: ArrayBuffer, title: string) =>
-      (deck === 'a' ? deckA : deckB).loadTrack(wav, title),
+    (deck: DeckId, source: TrackSource, title: string) =>
+      (deck === 'a' ? deckA : deckB).loadTrack(source, title),
     [deckA, deckB],
   )
   // Load a saved sample into a deck's loop-slot bank (ADR-0022) — the Samples-tab
@@ -554,9 +559,10 @@ function App() {
   )
   const handleStopPreview = useCallback(() => engine.auditionStop(), [engine])
 
-  // An MCP agent's load_track / load_sample (Rust emits the event): read the library
-  // WAV and run the deck's load flow — the same path the Media Explorer takes, so the
-  // deck reflects the load (playback mode + overview + cues, or the pad slot).
+  // An MCP agent's load_track / load_sample (Rust emits the event): run the deck's
+  // load flow — the same path the Media Explorer takes, so the deck reflects the
+  // load (playback mode + overview + cues, or the pad slot). A track loads by
+  // library reference (the shell decodes, ADR-0030); a sample still reads bytes.
   // The MCP load subscriptions must register ONCE. The handlers churn (a fresh
   // useDeck object every render), and listenTo's async listen/unlisten would race
   // into duplicate live listeners on every re-subscribe — one load_sample then runs
@@ -569,8 +575,8 @@ function App() {
   useEffect(() => {
     const toDeck = (n: number): DeckId => (n === 0 ? 'a' : 'b')
     const unTrack = subscribeLoadTrack(({ deck, file, title }) => {
-      void invoke<ArrayBuffer>('read_generated_song', { name: file })
-        .then((wav) => loadLatestRef.current.handleLoadTrack(toDeck(deck), wav, title))
+      void loadLatestRef.current
+        .handleLoadTrack(toDeck(deck), { kind: 'song', name: file }, title)
         .catch(() => {})
     })
     const unSample = subscribeLoadSample(({ deck, file, oneShot, label }) => {

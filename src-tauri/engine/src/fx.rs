@@ -120,10 +120,42 @@ fn filter_curve(amount: f32) -> (FilterMode, f32) {
     }
 }
 
-/// `DUB_ECHO_SECONDS` / `DUB_ECHO_TONE_HZ` (`fx.ts`). Free-running (beat-sync is a
-/// future `set_beat_period`, out of scope this slice).
+/// `DUB_ECHO_SECONDS` / `DUB_ECHO_TONE_HZ` (`fx.ts`). Free-running until a
+/// confident beat period arrives over `set_beat_period` (M14/ADR-0025).
 const DUB_ECHO_SECONDS: f32 = 0.35;
 const DUB_ECHO_TONE_HZ: f32 = 2_500.0;
+/// The delay ring's preallocated ceiling — the Web Audio `DelayNode` maximum
+/// `echoDelaySeconds` snapped under (its `> 1` candidate guard), so a beat
+/// retune can never need more and never allocates.
+const DUB_ECHO_MAX_SECONDS: f32 = 1.0;
+/// Musical delay lengths for the synced echo (fractions of a beat) —
+/// `ECHO_BEAT_FRACTIONS` in `fx.ts`.
+const ECHO_BEAT_FRACTIONS: [f32; 5] = [0.25, 0.375, 0.5, 0.75, 1.0];
+
+/// With a confident beat period the echo snaps to the musical fraction
+/// nearest its free-running character (M14); without one it stays at
+/// `DUB_ECHO_SECONDS`. Level-tolerant by construction: fractions of a half-
+/// or double-time reading are still beat fractions. (`echoDelaySeconds`,
+/// `fx.ts`.)
+fn echo_delay_seconds(beat_period_seconds: Option<f32>) -> f32 {
+    let Some(period) = beat_period_seconds.filter(|p| *p > 0.0) else {
+        return DUB_ECHO_SECONDS;
+    };
+    let mut best = DUB_ECHO_SECONDS;
+    let mut best_distance = f32::INFINITY;
+    for fraction in ECHO_BEAT_FRACTIONS {
+        let seconds = fraction * period;
+        if seconds > DUB_ECHO_MAX_SECONDS {
+            continue; // the DelayNode's ceiling
+        }
+        let distance = (seconds - DUB_ECHO_SECONDS).abs();
+        if distance < best_distance {
+            best_distance = distance;
+            best = seconds;
+        }
+    }
+    best
+}
 /// The in-loop tone is a Web Audio lowpass at its default Q (1 dB → 1.122 linear).
 const DUB_ECHO_TONE_Q: f32 = FILTER_Q;
 
@@ -178,31 +210,48 @@ const SPACE_DAMPING: f32 = 0.5;
 /// the delay tap (scaled by `wet`), and the delay input is `x + feedback *
 /// tone(delay_out)` where `tone` is an in-loop lowpass at 2500 Hz.
 struct DelayLine {
+    /// Preallocated at [`DUB_ECHO_MAX_SECONDS`]; only the first `frames` are live.
     buffer: Vec<f32>,
+    /// The effective ring length `D` — retuned by `set_delay_frames` (beat sync)
+    /// without touching the allocation.
+    frames: usize,
     pos: usize,
     /// The in-loop darkening lowpass (one stateful biquad per channel).
     tone: Box<dyn AudioUnit>,
 }
 
 impl DelayLine {
-    /// Allocate the `D`-frame ring (off the RT path). `D` is fixed at the
-    /// free-running 0.35 s; `set_beat_period` (future) would reallocate.
+    /// Allocate the ring at the `DelayNode` ceiling (off the RT path) so a beat
+    /// retune never reallocates; `D` starts at the free-running 0.35 s.
     fn new(sample_rate: f32) -> Self {
+        let capacity = (DUB_ECHO_MAX_SECONDS * sample_rate).round() as usize;
         let frames = (DUB_ECHO_SECONDS * sample_rate).round() as usize;
         let mut tone = lowpass_hz(DUB_ECHO_TONE_HZ, DUB_ECHO_TONE_Q);
         tone.set_sample_rate(sample_rate as f64);
         tone.reset();
         DelayLine {
-            buffer: vec![0.0; frames],
+            buffer: vec![0.0; capacity],
+            frames,
             pos: 0,
             tone: Box::new(tone),
+        }
+    }
+
+    /// Retune the effective ring length `D` in place — arithmetic only, no
+    /// allocation, so it is safe anywhere off the audio callback. The ring's
+    /// content is kept (a `DelayNode` `delayTime` move does the same); the tap
+    /// jump on a re-lock is the accepted artefact.
+    fn set_delay_frames(&mut self, frames: usize) {
+        self.frames = frames.clamp(1, self.buffer.len());
+        if self.pos >= self.frames {
+            self.pos = 0;
         }
     }
 
     /// The ring length in frames (`D`); the impulse-spacing the echo test asserts.
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.buffer.len()
+        self.frames
     }
 
     /// Tick one sample. Returns the **pre-wet** delay tap (the caller scales by
@@ -217,7 +266,7 @@ impl DelayLine {
         self.tone.tick(&t_in, &mut t_out);
         self.buffer[self.pos] = x + feedback * t_out[0];
         self.pos += 1;
-        if self.pos == self.buffer.len() {
+        if self.pos >= self.frames {
             self.pos = 0;
         }
         out
@@ -463,6 +512,10 @@ pub(crate) struct FxInsert {
     kind: FxKind,
     amount: f32,
     active: bool,
+    /// The deck's gated beat period (ADR-0025), or `None` while the gate is
+    /// blank — DECK state, not effect state: it survives kind switches and
+    /// retunes the dub echo whenever one is built or the period moves.
+    beat_period: Option<f32>,
     effect: Effect,
 }
 
@@ -477,6 +530,7 @@ impl FxInsert {
             kind,
             amount,
             active: kind.is_active(amount),
+            beat_period: None,
             effect: Effect::build(kind, amount, sample_rate),
         }
     }
@@ -490,6 +544,27 @@ impl FxInsert {
         self.amount = kind.rest_position();
         self.active = kind.is_active(self.amount);
         self.effect = Effect::build(kind, self.amount, self.sample_rate);
+        // A freshly-built dub echo starts free-running; re-apply the deck's clock.
+        self.retune_echo();
+    }
+
+    /// The synced dub echo's musical clock (M14/ADR-0025): a confident beat
+    /// period snaps the delay to the beat fraction nearest its free-running
+    /// character; `None` (gate blank) reverts to free-running. `&mut self`
+    /// like every control op, so it can never overlap `process`; arithmetic
+    /// only — no allocation.
+    pub(crate) fn set_beat_period(&mut self, period_seconds: Option<f32>) {
+        self.beat_period = period_seconds;
+        self.retune_echo();
+    }
+
+    fn retune_echo(&mut self) {
+        if let Effect::DubEcho { lines, .. } = &mut self.effect {
+            let frames = (echo_delay_seconds(self.beat_period) * self.sample_rate).round() as usize;
+            for line in lines {
+                line.set_delay_frames(frames);
+            }
+        }
     }
 
     /// Set the knob amount in `[0, 1]`, reconfiguring the effect's parameters OFF
@@ -726,6 +801,64 @@ mod tests {
     fn delay_ring_is_16800_frames() {
         let line = DelayLine::new(48_000.0);
         assert_eq!(line.len(), 16_800);
+    }
+
+    /// `echoDelaySeconds` (fx.ts): the snap picks the beat fraction nearest the
+    /// free-running 0.35 s, skips candidates over the 1 s ceiling, and falls
+    /// back to free-running with no (or a degenerate) period.
+    #[test]
+    fn echo_delay_snaps_to_the_nearest_beat_fraction() {
+        assert_eq!(echo_delay_seconds(None), DUB_ECHO_SECONDS);
+        assert_eq!(echo_delay_seconds(Some(0.0)), DUB_ECHO_SECONDS);
+        assert_eq!(echo_delay_seconds(Some(-1.0)), DUB_ECHO_SECONDS);
+        // 128 bpm → 0.46875 s period; 0.75 of a beat (0.3516 s) sits nearest.
+        let period = 60.0 / 128.0;
+        assert!((echo_delay_seconds(Some(period)) - 0.75 * period).abs() < 1e-6);
+        // 60 bpm → 1.0 s period; the whole-beat candidate is exactly the
+        // ceiling (admitted), but 0.375 of a beat is nearer the character.
+        assert!((echo_delay_seconds(Some(1.0)) - 0.375).abs() < 1e-6);
+        // A period whose every fraction exceeds the ceiling free-runs.
+        assert_eq!(echo_delay_seconds(Some(10.0)), DUB_ECHO_SECONDS);
+    }
+
+    /// `set_beat_period` retunes the live dub echo's ring in place: the echo
+    /// spacing follows the snapped delay, and a blank gate reverts it — with
+    /// the allocation untouched (the beat path never allocates).
+    #[test]
+    fn set_beat_period_retunes_the_echo_ring() {
+        let mut fx = rested(FxKind::DubEcho);
+        let period = 60.0f32 / 128.0;
+        fx.set_beat_period(Some(period));
+        let snapped = (0.75 * period * SR).round() as usize;
+        if let Effect::DubEcho { lines, .. } = &fx.effect {
+            assert_eq!(lines[0].len(), snapped);
+            assert_eq!(lines[1].len(), snapped);
+            assert_eq!(lines[0].buffer.len(), (DUB_ECHO_MAX_SECONDS * SR) as usize);
+        } else {
+            panic!("dub echo selected");
+        }
+        fx.set_beat_period(None);
+        if let Effect::DubEcho { lines, .. } = &fx.effect {
+            assert_eq!(lines[0].len(), 16_800);
+        } else {
+            panic!("dub echo selected");
+        }
+    }
+
+    /// The beat period is DECK state: set before the echo is selected, it
+    /// applies the moment `set_kind` builds one.
+    #[test]
+    fn beat_period_survives_a_kind_switch() {
+        let mut fx = FxInsert::new(SR);
+        let period = 60.0f32 / 128.0;
+        fx.set_beat_period(Some(period));
+        fx.set_kind(FxKind::DubEcho);
+        let snapped = (0.75 * period * SR).round() as usize;
+        if let Effect::DubEcho { lines, .. } = &fx.effect {
+            assert_eq!(lines[0].len(), snapped);
+        } else {
+            panic!("dub echo selected");
+        }
     }
 
     const SR: f32 = 48_000.0;

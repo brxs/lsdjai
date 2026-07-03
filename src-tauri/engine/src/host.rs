@@ -324,6 +324,9 @@ enum Command {
     SetFx(usize, FxKind),
     SetFxAmount(usize, f32),
     ClearFx(usize),
+    /// The deck's gated beat period in seconds (ADR-0025), `None` while the
+    /// honesty gate is blank — the synced dub echo's clock.
+    SetBeatPeriod(usize, Option<f32>),
     SetTrim(usize, f32),
     SetOnAir(usize, bool),
     /// Play/stop the live Realtime deck stream (gate the ring drain). `deck_stop`
@@ -680,6 +683,12 @@ impl Host {
         self.send(Command::ClearFx(deck));
     }
 
+    /// Set a deck's gated beat period (ADR-0025) — the synced dub echo snaps
+    /// to it; `None` (gate blank) reverts the echo to free-running.
+    pub fn set_beat_period(&self, deck: usize, period_seconds: Option<f32>) {
+        self.send(Command::SetBeatPeriod(deck, period_seconds));
+    }
+
     pub fn set_trim(&self, deck: usize, db: f32) {
         self.send(Command::SetTrim(deck, db));
     }
@@ -1008,6 +1017,7 @@ impl RenderLoop {
             Command::SetVolume(d, g) => self.engine.set_volume(d, g),
             Command::SetFx(d, kind) => self.engine.set_fx(d, kind),
             Command::SetFxAmount(d, a) => self.engine.set_fx_amount(d, a),
+            Command::SetBeatPeriod(d, p) => self.engine.set_beat_period(d, p),
             Command::ClearFx(d) => self.engine.clear_fx(d),
             Command::SetTrim(d, db) => self.engine.set_trim(d, db),
             Command::SetOnAir(d, on) => self.engine.set_on_air(d, on),

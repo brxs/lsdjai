@@ -37,7 +37,9 @@ use lsdj_engine::host::Host;
 use lsdj_engine::DeckHandle;
 use tauri::Manager;
 
+mod analysis;
 mod commands;
+mod decode;
 mod generation;
 mod library;
 mod mcp;
@@ -153,12 +155,14 @@ fn start_sidecars(
     app: &tauri::AppHandle,
     handles: [DeckHandle; lsdj_engine::DECK_COUNT],
     taps: &sidecar::PcmTaps,
+    feed: &analysis::live::AnalysisFeed,
 ) -> (sidecar::Sidecars, Vec<DeckHandle>) {
     const DECK_IDS: [&str; lsdj_engine::DECK_COUNT] = ["a", "b"];
     let mut decks = Vec::new();
     for (idx, handle) in handles.into_iter().enumerate() {
         let app = app.clone();
         let deck_id = DECK_IDS[idx];
+        let status_feed = feed.clone();
         match sidecar::Sidecar::spawn(
             deck_id,
             idx,
@@ -175,10 +179,18 @@ fn start_sidecars(
                     if let Some(store) = app.try_state::<store::InterfaceStore>() {
                         store.set_playing(idx, false);
                     }
+                    // The stream is discontinuous: reset the deck's beat analysis
+                    // shell-side (ADR-0025 — estimates never span streams), with
+                    // the engine-frame origin captured now. No webview round-trip.
+                    let origin = app
+                        .try_state::<Host>()
+                        .map_or(0.0, |host| host.health().context_frames as f64);
+                    status_feed.reset(idx, origin);
                 }
                 let _ = app.emit("sidecar://status", SidecarStatus { deck: idx, json });
             },
             taps.clone(),
+            feed.clone(),
         ) {
             Ok(sidecar) => decks.push(Some(sidecar)),
             Err(e) => {
@@ -433,8 +445,13 @@ pub fn run() {
             // The per-deck analysis PCM taps (gap 1): the sidecars tee model PCM
             // into these, the webview subscribes via subscribe_deck_pcm.
             let taps = sidecar::PcmTaps::new(lsdj_engine::DECK_COUNT);
+            // The shell's beat-analysis threads (ADR-0025): the same tee feeds
+            // them; they publish the gated value into the store and the echo
+            // clock into the engine. Spawned before the sidecars so the tee
+            // closures capture live senders from the first PCM frame.
+            let analysis_feed = analysis::live::spawn(app.handle().clone());
             let (sidecars, idle_handles) =
-                start_sidecars(&app.handle().clone(), deck_handles, &taps);
+                start_sidecars(&app.handle().clone(), deck_handles, &taps, &analysis_feed);
             // The sa3/Magenta generation server (gap 2): the gen-only FastAPI on a
             // loopback port the webview fetches; started with the app.
             let generation_server = generation::GenerationServer::start();
@@ -477,6 +494,8 @@ pub fn run() {
             app.manage(audio_state);
             app.manage(sidecars);
             app.manage(taps);
+            app.manage(analysis_feed);
+            app.manage(analysis::track::TrackAnalysis::new(lsdj_engine::DECK_COUNT));
             app.manage(generation_server);
             // The native MCP server (ADR-0020 Phase 2): an external agent as a
             // co-DJ. Always on, loopback-only, token-guarded; its tools mutate the
@@ -521,7 +540,9 @@ pub fn run() {
             commands::delete_generated_sample,
             commands::open_samples_folder,
             commands::save_loop_slot,
-            commands::load_track,
+            commands::load_track_file,
+            commands::load_track_bytes,
+            commands::track_bands,
             commands::unload_track,
             commands::play_track,
             commands::pause_track,
@@ -562,6 +583,7 @@ pub fn run() {
             commands::deck_embed_sample,
             commands::subscribe_deck_pcm,
             commands::unsubscribe_deck_pcm,
+            commands::analysis_reset,
             models::model_status,
             models::install_model,
             models::update_model,

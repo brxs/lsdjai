@@ -16,15 +16,17 @@
  * # What moved, what stayed
  *
  * - Model PCM no longer flows through the UI: the sidecar feeds the engine
- *   directly (part 4), so `postPcm` is a no-op here. Until part 4 the WebSocket
- *   feed in `useDeck` still drives the TS beat/loudness analysis (ADR-0017).
- * - `getTrackPeaks` is computed in TS from the decoded channels this adapter
- *   keeps per deck (sync + exact at any bucket count) — no IPC for the overview.
+ *   directly (part 4), so `postPcm` is a no-op here. The PCM tap re-feeds the
+ *   TS loudness/band-scroller visuals; beat analysis lives in the shell
+ *   (ADR-0025), read back through the interface store.
+ * - Tracks load by scoped reference (ADR-0030): the shell decodes + analyses;
+ *   `loadTrack` returns numbers and summaries. `getTrackPeaks` serves the
+ *   overview envelope prefetched from `track_peaks` at load (sync getter, one
+ *   IPC per load); the synced dub echo's clock is driven entirely shell-side.
  * - Cue routing is native: the engine derives the headphone feed and routes it
  *   to the output device's channels 3/4, so the webview only sends the live
- *   controls (`setCue`/`setCueMix`). `setBeatPeriod` (synced dub echo) is a
- *   documented follow-up; `nudgeTrackPhase` (the jog-while-playing platter bend)
- *   is wired to the engine's `nudge_track_phase` rate bend. */
+ *   controls (`setCue`/`setCueMix`); `nudgeTrackPhase` (the jog-while-playing
+ *   platter bend) is wired to the engine's `nudge_track_phase` rate bend. */
 
 import type { EqBand } from './eq'
 import {
@@ -32,6 +34,7 @@ import {
   type AudioEngine,
   type DeckChannel,
   type DeckId,
+  type LoadedTrack,
   type OutputDevice,
   type StatsHandler,
 } from './types'
@@ -297,6 +300,18 @@ export type DeckSnap = {
   /** Drum conditioning (ADR-0023): null = the model decides, false = suppress
    * drums, true = force them. Cleared like `notes`. */
   drums: boolean | null
+  /** The deck's live beat analysis (ADR-0025), written by the shell's analysis
+   * thread at most ~once per second. `bpm` is the honesty-gated readout (null =
+   * blank, the feature); `liveBeat` the phase clock (anchor in pushed frames
+   * since the stream reset, paired with its tempo); `originFrames` the engine
+   * context-frame origin captured at that reset — the mapping from the anchor's
+   * pushed-frame domain onto engine time. */
+  analysis: {
+    bpm: number | null
+    confidence: number
+    liveBeat: { anchorFrame: number; bpm: number } | null
+    originFrames: number
+  }
 }
 
 /** The authoritative interface state the webview projects (mirrors Rust
@@ -321,7 +336,9 @@ export function subscribeStoreChanged(onChange: (state: InterfaceState) => void)
 }
 
 /** An MCP agent's `load_track` (Rust emits `mcp://load-track`). The webview owns the
- * decode + beatgrid analysis, so it reads the WAV and runs the deck's load flow. */
+ * load-state orchestration (deck mode is React state until ADR-0020's store owns
+ * it), so it runs the deck's load flow by reference — the shell decodes and
+ * analyses (ADR-0030); no bytes round-trip. */
 export function subscribeLoadTrack(
   onLoad: (payload: { deck: number; file: string; title: string }) => void,
 ): () => void {
@@ -501,6 +518,16 @@ function framePayload(prefix: number[], pcm: Float32Array): Uint8Array {
   return out
 }
 
+/** Like `framePayload`, but the body is raw container bytes (a WAV file), not
+ * PCM — the `load_track_bytes` frame (ADR-0030's in-memory take path). */
+function framePayloadBytes(prefix: number[], bytes: ArrayBuffer): Uint8Array {
+  const out = new Uint8Array(prefix.length * 4 + bytes.byteLength)
+  const view = new DataView(out.buffer)
+  prefix.forEach((value, i) => view.setUint32(i * 4, value >>> 0, true))
+  out.set(new Uint8Array(bytes), prefix.length * 4)
+  return out
+}
+
 /** Frame a save payload for the songs/samples libraries: `[u32 LE meta-JSON
  * byte-length][meta JSON utf-8][WAV bytes]`. A JSON args map would be MBs of text for
  * a multi-MB WAV, so the bytes ride a single binary-IPC arg. Shared by every
@@ -522,44 +549,30 @@ async function decodeTo48k(wav: ArrayBuffer): Promise<AudioBuffer> {
   return ctx.decodeAudioData(wav.slice(0))
 }
 
-/** Compute a min/max envelope at `buckets` resolution from a decoded channel
- * (mono mix of L/R) — the waveform overview, computed in TS so `getTrackPeaks`
- * stays synchronous (ADR-0017: visuals stay in TS). */
-function envelope(
-  left: Float32Array,
-  right: Float32Array,
-  buckets: number,
-): { min: Float32Array; max: Float32Array } {
-  const min = new Float32Array(buckets)
-  const max = new Float32Array(buckets)
-  const frames = Math.min(left.length, right.length)
-  const per = Math.max(1, Math.floor(frames / buckets))
-  for (let b = 0; b < buckets; b++) {
-    const start = b * per
-    const end = b === buckets - 1 ? frames : Math.min(frames, start + per)
-    let lo = 0
-    let hi = 0
-    for (let i = start; i < end; i++) {
-      const s = (left[i] + right[i]) * 0.5
-      if (s < lo) lo = s
-      if (s > hi) hi = s
-    }
-    min[b] = lo
-    max[b] = hi
-  }
-  return { min, max }
+/** Parse the `track_bands` binary frame — `[u32 LE hop count][low f32
+ * LE…][mid…][high…]` — into the three band lanes the zoom strip reads. */
+function parseBandsFrame(
+  bytes: ArrayBuffer,
+): { low: Float32Array; mid: Float32Array; high: Float32Array } | null {
+  if (bytes.byteLength < 4) return null
+  const hops = new DataView(bytes).getUint32(0, true)
+  if (bytes.byteLength < 4 + hops * 3 * 4) return null
+  const lane = (index: number) =>
+    new Float32Array(bytes.slice(4 + index * hops * 4, 4 + (index + 1) * hops * 4))
+  return { low: lane(0), mid: lane(1), high: lane(2) }
 }
 
-/** Per-deck decoded channels the adapter retains for `getTrackPeaks`; cleared on
- * unload. (The playback buffer itself lives in Rust; this is the overview copy.) */
-type DecodedTrack = { left: Float32Array; right: Float32Array }
+/** The overview peaks prefetched at load (`track_peaks`, one IPC per load) so
+ * `getTrackPeaks` stays synchronous; cleared on unload. Keyed by the bucket
+ * count it was fetched at — a different ask is an honest null. */
+type CachedPeaks = { buckets: number; min: Float32Array; max: Float32Array }
 
 export function createNativeEngine(): AudioEngine {
   // The latest snapshot the poller cached; the synchronous getters serve from it.
   let snapshot: EngineSnapshotDto | null = null
   // Per-deck stats handlers registered in createDeckChannel, fed from the poller.
   const statsHandlers: (StatsHandler | null)[] = [null, null]
-  const decoded: (DecodedTrack | null)[] = [null, null]
+  const peaks: (CachedPeaks | null)[] = [null, null]
   let polling = false
   let lastStatsAt = 0
   const STATS_INTERVAL_MS = 100 // ~10 Hz, matching the worklet's stat cadence
@@ -717,8 +730,9 @@ export function createNativeEngine(): AudioEngine {
         kind === null ? send('clear_fx', { deck }) : send('set_fx', { deck, kind: FX_ARG[kind] }),
       setFxAmount: (amount) =>
         coalesce(`set_fx_amount:${deck}`, 'set_fx_amount', { deck, amount }),
-      // Synced dub echo (M14) is a documented parity follow-up.
-      setBeatPeriod: () => {},
+      // Fire-and-forget: the shell captures the frame origin and resets its
+      // tracker+gates atomically in stream order (ADR-0025).
+      resetAnalysis: () => send('analysis_reset', { deck }),
       setOnAir: (on) => send('set_on_air', { deck, on }),
       setTrim: (db) => coalesce(`set_trim:${deck}`, 'set_trim', { deck, db }),
       captureLoop: async (slot, seconds) => {
@@ -764,14 +778,47 @@ export function createNativeEngine(): AudioEngine {
       saveGeneratedSample: async (wav, meta) => {
         await invoke('save_generated_sample', encodeMetaFrame(meta, wav))
       },
-      loadTrack: async (wav) => {
-        const buf = await decodeTo48k(wav)
-        const left = buf.getChannelData(0).slice()
-        const right = (buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)).slice()
-        const pcm = interleaveChannels(left, right)
-        await invoke('load_track', framePayload([deck], pcm))
-        decoded[deck] = { left, right }
-        return { duration: buf.duration, sampleRate: SAMPLE_RATE, left, right }
+      loadTrack: async (source, peaksBuckets) => {
+        // The shell resolves + decodes + analyses (ADR-0030); a refusal (bad
+        // file, unsupported codec, oversize) rejects with the shell's reason,
+        // which rides the rejection up to the load UI — an explicit load
+        // error, never a silent "didn't decode".
+        const loaded: { duration: number; bpm: number | null; grid: LoadedTrack['grid'] } =
+          source.kind === 'bytes'
+            ? await invoke('load_track_bytes', framePayloadBytes([deck], source.wav))
+            : await invoke('load_track_file', {
+                deck,
+                source:
+                  source.kind === 'folder'
+                    ? { kind: 'folder', dir: source.dir, name: source.name }
+                    : { kind: 'song', name: source.name },
+              })
+        // The summaries the strip and overview read, fetched once and cached
+        // (the raw PCM never crosses). A bands/peaks failure degrades those
+        // views, not the load.
+        const bands = await invoke<ArrayBuffer>('track_bands', { deck })
+          .then(parseBandsFrame)
+          .catch(() => null)
+        const fetched = await invoke<{ min: number[]; max: number[] } | null>('track_peaks', {
+          deck,
+          buckets: peaksBuckets,
+        }).catch(() => null)
+        peaks[deck] = fetched
+          ? {
+              buckets: peaksBuckets,
+              min: Float32Array.from(fetched.min),
+              max: Float32Array.from(fetched.max),
+            }
+          : null
+        return {
+          ...loaded,
+          bands: bands ?? {
+            low: new Float32Array(0),
+            mid: new Float32Array(0),
+            high: new Float32Array(0),
+          },
+          peaks: peaks[deck],
+        }
       },
       // The engine ignores the boolean here (useDeck does too); report the cached
       // loaded state for interface compliance.
@@ -796,19 +843,19 @@ export function createNativeEngine(): AudioEngine {
       // frames like every other transport command.
       nudgeTrackPhase: (seconds) => send('nudge_track_phase', { deck, frames: seconds * SAMPLE_RATE }),
       getTrackPeaks: (buckets) => {
-        const track = decoded[deck]
-        if (!track || buckets <= 0) return null
-        return envelope(track.left, track.right, buckets)
+        const cached = peaks[deck]
+        if (!cached || cached.buckets !== buckets) return null
+        return { min: cached.min, max: cached.max }
       },
       unloadTrack: () => {
-        decoded[deck] = null
+        peaks[deck] = null
         send('unload_track', { deck })
       },
       getLevel: () => snapshot?.health.deckLevels[deck] ?? 0,
       dispose: () => {
         // Ship any queued writes so the last swept value isn't lost on teardown.
         flushPending()
-        decoded[deck] = null
+        peaks[deck] = null
         statsHandlers[deck] = null
       },
     }

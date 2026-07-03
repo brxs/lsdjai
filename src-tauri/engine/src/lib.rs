@@ -311,6 +311,18 @@ impl Engine {
         self.graph.set_fx_amount(deck_index, amount);
     }
 
+    /// Set a deck's gated beat period in seconds (ADR-0025), or `None` while the
+    /// honesty gate is blank: the synced dub echo snaps its delay to the beat
+    /// fraction nearest its free-running character and reverts on blank
+    /// (`echoDelaySeconds`, M14). Non-RT control; arithmetic only, no allocation.
+    ///
+    /// # Panics
+    /// Panics if `deck_index >= DECK_COUNT` (a caller programming error).
+    pub fn set_beat_period(&mut self, deck_index: usize, period_seconds: Option<f32>) {
+        assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
+        self.graph.set_beat_period(deck_index, period_seconds);
+    }
+
     /// Remove a deck's Color FX (no effect selected) — the insert is skipped, a
     /// pure dry passthrough, until the next [`Engine::set_fx`]. Mirrors
     /// `setFx(null)` in the Web Audio engine. Non-RT.

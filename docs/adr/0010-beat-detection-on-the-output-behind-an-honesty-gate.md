@@ -1,6 +1,6 @@
 # 0010. Beat detection on the output, behind an honesty gate
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0025](0025-beat-detection-in-the-rust-audio-engine.md) (2026-07-03) — the *where* axis only (detection now runs in the Rust shell, its corpus gate green); the honesty gate, the metrical-level tolerance, and the stream-reset rules carry forward unchanged
 - **Date:** 2026-06-11
 - **Deciders:** Daniel Peter
 

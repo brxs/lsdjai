@@ -67,33 +67,16 @@ function windowCopier(
   }
 }
 
-/** Offline band pass over a decoded track — computed once at load. */
-export function trackBands(
-  left: Float32Array,
-  right: Float32Array,
-  sampleRate: number,
+/** A `BandSource` over a loaded track's band lanes. The offline pass itself
+ * runs shell-side at load (ADR-0030, `analysis/bands.rs` — the port of the
+ * `trackBands` that lived here); the arrays ship once and the zoom strip
+ * reads them through the same window contract as the live scroller. */
+export function bandSourceFromArrays(
+  low: Float32Array,
+  mid: Float32Array,
+  high: Float32Array,
 ): BandSource {
-  const hops = Math.floor(left.length / BAND_HOP_FRAMES)
-  const low = new Float32Array(hops)
-  const mid = new Float32Array(hops)
-  const high = new Float32Array(hops)
-  const kernel = bandKernel(sampleRate)
-  const state: FilterState = { low: 0, high: 0 }
-  for (let hop = 0; hop < hops; hop++) {
-    let lowSum = 0
-    let midSum = 0
-    let highSum = 0
-    const start = hop * BAND_HOP_FRAMES
-    for (let i = start; i < start + BAND_HOP_FRAMES; i++) {
-      const energies = kernel(state, (left[i] + right[i]) / 2)
-      lowSum += energies.low
-      midSum += energies.mid
-      highSum += energies.high
-    }
-    low[hop] = Math.sqrt(lowSum / BAND_HOP_FRAMES)
-    mid[hop] = Math.sqrt(midSum / BAND_HOP_FRAMES)
-    high[hop] = Math.sqrt(highSum / BAND_HOP_FRAMES)
-  }
+  const hops = Math.min(low.length, mid.length, high.length)
   return {
     baseHop: 0,
     endHop: hops,

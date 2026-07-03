@@ -32,6 +32,8 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 
+use crate::analysis::live::AnalysisFeed;
+use crate::analysis::track::{DeckTrack, TrackAnalysis};
 use crate::library;
 use crate::samples::{NewSample, SampleEntry, SampleLibrary};
 use crate::sidecar::{PcmTaps, Sidecars};
@@ -511,6 +513,13 @@ pub fn list_audio_files(dir: String) -> Result<Vec<String>, String> {
 /// Returns the bytes as binary (a track is many MB — `ipc::Response`).
 #[tauri::command]
 pub async fn read_audio_file(dir: String, name: String) -> Result<tauri::ipc::Response, String> {
+    read_scoped_audio(&dir, &name).map(tauri::ipc::Response::new)
+}
+
+/// The scoped folder read behind [`read_audio_file`] and the shell-side track
+/// load ([`load_track_file`], ADR-0030): `name` must be a plain filename
+/// resolving to a regular audio file directly inside `dir`.
+fn read_scoped_audio(dir: &str, name: &str) -> Result<Vec<u8>, String> {
     // `name` must be a single ordinary path component — never a path, "..", or
     // absolute — so it cannot point outside `dir`.
     let mut comps = std::path::Path::new(&name).components();
@@ -523,9 +532,9 @@ pub async fn read_audio_file(dir: String, name: String) -> Result<tauri::ipc::Re
     // Canonicalise both sides and require the resolved file is a DIRECT CHILD of the
     // resolved chosen folder — this rejects `..` and any symlink whose target
     // escapes the folder.
-    let base = std::fs::canonicalize(&dir).map_err(|e| format!("cannot resolve folder: {e}"))?;
+    let base = std::fs::canonicalize(dir).map_err(|e| format!("cannot resolve folder: {e}"))?;
     let target =
-        std::fs::canonicalize(base.join(&name)).map_err(|e| format!("cannot resolve file: {e}"))?;
+        std::fs::canonicalize(base.join(name)).map_err(|e| format!("cannot resolve file: {e}"))?;
     if target.parent() != Some(base.as_path()) {
         return Err("file is outside the chosen folder".to_string());
     }
@@ -539,8 +548,7 @@ pub async fn read_audio_file(dir: String, name: String) -> Result<tauri::ipc::Re
     if meta.len() > MAX_AUDIO_BYTES {
         return Err("file is too large".to_string());
     }
-    let bytes = std::fs::read(&target).map_err(|e| format!("cannot read file: {e}"))?;
-    Ok(tauri::ipc::Response::new(bytes))
+    std::fs::read(&target).map_err(|e| format!("cannot read file: {e}"))
 }
 
 /// The generated-songs take list, reconciled against the folder (the [`SongLibrary`]
@@ -736,30 +744,175 @@ fn encode_wav_f32(samples: &[f32]) -> Vec<u8> {
     wav
 }
 
-/// Load a decoded track onto a deck, switching it to Playback. The payload is a
-/// little-endian `u32` deck index followed by interleaved-stereo f32 @ 48 kHz
-/// (the webview decodes + resamples a WAV and ships the bytes). Sent over Tauri's
-/// binary IPC as a single `Vec<u8>` arg — a JSON number array would be megabytes
-/// of text for a full track.
+/// Where a deck track loads from (ADR-0030): the same scoped references the
+/// webview already lists and fetches bytes with — never a raw path. The shell
+/// resolves, reads, decodes, and analyses; decoded PCM never crosses the IPC
+/// boundary in either direction.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TrackSource {
+    /// A file directly inside the folder the user picked in the native dialog
+    /// (the [`read_audio_file`] scoping rules).
+    Folder { dir: String, name: String },
+    /// A generated song in the library (its registry filename).
+    Song { name: String },
+}
+
+/// What a track load returns: the numbers the webview's deck state needs.
+/// The band profile ships separately ([`track_bands`], fetched once and
+/// cached), the peaks via the existing [`track_peaks`].
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadedTrackDto {
+    pub duration: f64,
+    /// The offline honesty-gated tempo (grid-refined when a grid exists).
+    pub bpm: Option<f64>,
+    pub grid: Option<crate::analysis::grid::Beatgrid>,
+}
+
+/// The CPU-heavy half of a load (ADR-0030): decode + resample to 48 kHz, run
+/// the offline analyses (coarse tempo → beatgrid → bands), and lay the buffer
+/// out in the engine wire format. Touches no engine or analysis state, so it
+/// runs on a blocking thread — seconds of work for a long track must not sit
+/// on the async-command runtime and starve other IPC.
+struct AnalyzedTrack {
+    interleaved: Vec<f32>,
+    duration: f64,
+    bpm: Option<f64>,
+    grid: Option<crate::analysis::grid::Beatgrid>,
+    bands: crate::analysis::bands::TrackBands,
+}
+
+fn analyze_track(bytes: Vec<u8>, extension: Option<&str>) -> Result<AnalyzedTrack, String> {
+    let decoded = crate::decode::decode_to_48k(bytes, extension)?;
+    let coarse = crate::analysis::beat::track_bpm(&decoded.left, &decoded.right, SAMPLE_RATE as f64);
+    let grid =
+        crate::analysis::grid::track_beatgrid(&decoded.left, &decoded.right, SAMPLE_RATE as f64, coarse);
+    let bands = crate::analysis::bands::track_bands(&decoded.left, &decoded.right, SAMPLE_RATE as f64);
+    // The refined grid BPM and the coarse verdict collapse to one number (M20).
+    let bpm = grid.map(|g| g.bpm).or(coarse);
+    Ok(AnalyzedTrack {
+        interleaved: decoded.interleaved(),
+        duration: decoded.duration_seconds(),
+        bpm,
+        grid,
+        bands,
+    })
+}
+
+/// The install half: hand the analysed buffer to the engine and set the
+/// deck's echo clock from the track tempo. The LIVE analysis is reset first
+/// and **waited on** — its blank hand-off must land before the track period
+/// below, or a stale blank from the analysis thread could stomp the
+/// freshly-set clock (the ownership hand-off, ADR-0025).
+fn install_track(
+    host: &Host,
+    feed: &AnalysisFeed,
+    tracks: &TrackAnalysis,
+    deck: usize,
+    analyzed: AnalyzedTrack,
+) -> LoadedTrackDto {
+    feed.reset_blocking(deck, host.health().context_frames as f64);
+    host.load_track(deck, analyzed.interleaved);
+    host.set_beat_period(deck, analyzed.bpm.map(|b| (60.0 / b) as f32));
+    tracks.set(
+        deck,
+        DeckTrack {
+            bpm: analyzed.bpm,
+            bands: analyzed.bands,
+        },
+    );
+    LoadedTrackDto {
+        duration: analyzed.duration,
+        bpm: analyzed.bpm,
+        grid: analyzed.grid,
+    }
+}
+
+/// Load a track onto a deck by scoped reference (ADR-0030): the shell reads,
+/// decodes (symphonia), resamples, analyses, and installs — the webview gets
+/// back `{duration, bpm, grid}` and fetches bands/peaks once. The decode +
+/// analyses run on a `spawn_blocking` thread: seconds of CPU for a long
+/// track, which must block neither the main thread nor the async runtime.
 #[tauri::command]
-pub fn load_track(
+pub async fn load_track_file(
     state: tauri::State<'_, Host>,
+    feed: tauri::State<'_, AnalysisFeed>,
+    tracks: tauri::State<'_, TrackAnalysis>,
+    songs: tauri::State<'_, SongLibrary>,
+    deck: usize,
+    source: TrackSource,
+) -> Result<LoadedTrackDto, String> {
+    if !valid_deck(deck) {
+        return Err("invalid deck".to_string());
+    }
+    let (bytes, name) = match source {
+        TrackSource::Folder { dir, name } => (read_scoped_audio(&dir, &name)?, name),
+        TrackSource::Song { name } => (songs.read(&name)?, name),
+    };
+    let extension = std::path::Path::new(&name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase);
+    let analyzed =
+        tauri::async_runtime::spawn_blocking(move || analyze_track(bytes, extension.as_deref()))
+            .await
+            .map_err(|e| format!("track analysis failed: {e}"))??;
+    Ok(install_track(&state, &feed, &tracks, deck, analyzed))
+}
+
+/// Load an in-memory take onto a deck (the freshly composed WAV that may not
+/// be on disk yet, ADR-0030's bytes variant). The payload is a little-endian
+/// `u32` deck index followed by the CONTAINER bytes (a WAV, not decoded PCM)
+/// — they cross once, and nothing crosses back.
+#[tauri::command]
+pub async fn load_track_bytes(
+    state: tauri::State<'_, Host>,
+    feed: tauri::State<'_, AnalysisFeed>,
+    tracks: tauri::State<'_, TrackAnalysis>,
     request: tauri::ipc::Request<'_>,
-) -> Result<(), String> {
+) -> Result<LoadedTrackDto, String> {
     let payload = raw_payload(&request)?;
     let Some(deck) = read_u32_le(payload, 0).map(|d| d as usize) else {
-        return Err("load_track payload too short".to_string());
+        return Err("load_track_bytes payload too short".to_string());
     };
-    if valid_deck(deck) {
-        state.load_track(deck, pcm_from_le_bytes(&payload[4..]));
+    if !valid_deck(deck) {
+        return Err("invalid deck".to_string());
     }
-    Ok(())
+    let bytes = payload[4..].to_vec();
+    let analyzed = tauri::async_runtime::spawn_blocking(move || analyze_track(bytes, None))
+        .await
+        .map_err(|e| format!("track analysis failed: {e}"))??;
+    Ok(install_track(&state, &feed, &tracks, deck, analyzed))
+}
+
+/// The loaded track's band profile as binary: `[u32 LE hop count][low f32
+/// LE…][mid…][high…]` (hop = 512 frames). Fetched once per load and cached
+/// webview-side — the `track_peaks` pattern; an `Err` with no track loaded
+/// (`ipc::Response` cannot ride an `Option`).
+#[tauri::command]
+pub fn track_bands(
+    tracks: tauri::State<'_, TrackAnalysis>,
+    deck: usize,
+) -> Result<tauri::ipc::Response, String> {
+    tracks
+        .bands_payload(deck)
+        .map(tauri::ipc::Response::new)
+        .ok_or_else(|| "no track loaded".to_string())
 }
 
 #[tauri::command]
-pub fn unload_track(state: tauri::State<'_, Host>, deck: usize) {
+pub fn unload_track(
+    state: tauri::State<'_, Host>,
+    tracks: tauri::State<'_, TrackAnalysis>,
+    deck: usize,
+) {
     if valid_deck(deck) {
         state.unload_track(deck);
+        tracks.clear(deck);
+        // The track's echo clock leaves with it; the deck free-runs until the
+        // live gate re-acquires (which then owns the period again).
+        state.set_beat_period(deck, None);
     }
 }
 
@@ -785,9 +938,19 @@ pub fn seek_track(state: tauri::State<'_, Host>, deck: usize, frames: f64) {
 }
 
 #[tauri::command]
-pub fn set_track_rate(state: tauri::State<'_, Host>, deck: usize, rate: f64) {
+pub fn set_track_rate(
+    state: tauri::State<'_, Host>,
+    tracks: tauri::State<'_, TrackAnalysis>,
+    deck: usize,
+    rate: f64,
+) {
     if valid_deck(deck) {
         state.set_track_rate(deck, rate);
+        // The synced echo's musical clock follows varispeed (the M14 consumer
+        // rule applied to the new tempo authority); untouched with no track.
+        if let Some(period) = tracks.beat_period_at_rate(deck, rate) {
+            state.set_beat_period(deck, period);
+        }
     }
 }
 
@@ -1128,6 +1291,23 @@ pub fn subscribe_deck_pcm(
 pub fn unsubscribe_deck_pcm(taps: tauri::State<'_, PcmTaps>, deck: usize) {
     if valid_deck(deck) {
         taps.set(deck, None);
+    }
+}
+
+/// Reset a deck's live beat analysis (ADR-0025: estimates never span streams).
+/// The webview invokes this on the transport discontinuities it drives (play /
+/// prime / stop / mode switch); sidecar-origin discontinuities (model switch,
+/// worker death) reset shell-side without it. The engine-frame origin is
+/// captured here and rides the reset message, so tracker, gates, and origin
+/// re-anchor atomically in stream order.
+#[tauri::command]
+pub fn analysis_reset(
+    state: tauri::State<'_, Host>,
+    feed: tauri::State<'_, AnalysisFeed>,
+    deck: usize,
+) {
+    if valid_deck(deck) {
+        feed.reset(deck, state.health().context_frames as f64);
     }
 }
 

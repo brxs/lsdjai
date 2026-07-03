@@ -5,7 +5,7 @@ import type {
 } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import type { DeckId } from '../audio/types'
+import type { DeckId, TrackSource } from '../audio/types'
 import { LOOP_CROSSFADE_SECONDS } from '../audio/loops'
 import {
   encodeMetaFrame,
@@ -242,8 +242,9 @@ type MediaExplorerProps = {
   onDeletePreset: (name: string) => void
   onImportPresets: (presets: StylePreset[]) => void
   /** Load a decoded-to-be track onto a deck — flips it to playback
-   * mode (ADR-0013). Resolves false when the audio doesn't decode. */
-  onLoadTrack: (deck: DeckId, wav: ArrayBuffer, title: string) => Promise<boolean>
+   * mode (ADR-0013). A shell refusal rejects with its reason (ADR-0030);
+   * false only when the deck channel couldn't come up. */
+  onLoadTrack: (deck: DeckId, source: TrackSource, title: string) => Promise<boolean>
   /** Load a saved sample into a deck loop slot (ADR-0022) — the first free
    * slot, as a loop or one-shot per the sample, layering over whatever the deck
    * plays (live or a track). Resolves false when every slot is full or the body
@@ -420,17 +421,19 @@ export function MediaExplorer({
     if (previewingId != null) stopPreview()
     setGenerateError(null)
     try {
-      // In memory for a take composed this session; otherwise read the bytes back
-      // from disk (scoped to the songs folder by the Rust shell).
+      // A persisted take loads by library reference — the shell reads and
+      // decodes it (ADR-0030); only a take composed this session and not yet
+      // on disk ships its WAV bytes (once, as a container — never PCM).
       const label = trackLabel(track)
-      let wav = track.wav
-      if (!wav) {
-        if (!track.file) throw new Error(t('media.undecodable', { title: label }))
-        wav = await invoke<ArrayBuffer>('read_generated_song', { name: track.file })
+      let source: TrackSource
+      if (track.file) {
+        source = { kind: 'song', name: track.file }
+      } else if (track.wav) {
+        source = { kind: 'bytes', wav: track.wav.slice(0) }
+      } else {
+        throw new Error(t('media.undecodable', { title: label }))
       }
-      // decodeAudioData detaches the buffer it is given — hand over a copy so the
-      // take can be loaded again (or onto the other deck).
-      const loaded = await onLoadTrack(deck, wav.slice(0), label)
+      const loaded = await onLoadTrack(deck, source, label)
       if (!loaded) setGenerateError(t('media.undecodable', { title: label }))
     } catch (error) {
       // The click is fire-and-forget (`void loadGeneratedTrack`), so a rejected
@@ -465,14 +468,16 @@ export function MediaExplorer({
   }
 
   async function loadFolderFile(deck: DeckId, file: FolderFile) {
+    if (folderPath === null) return
     setFolderError(null)
     try {
-      // The Rust command reads the bytes, scoped to the chosen folder.
-      const wav = await invoke<ArrayBuffer>('read_audio_file', {
-        dir: folderPath,
-        name: file.name,
-      })
-      const loaded = await onLoadTrack(deck, wav, file.name)
+      // By reference: the shell re-derives the path (scoped to the chosen
+      // folder), reads, and decodes (ADR-0030). No bytes cross to load.
+      const loaded = await onLoadTrack(
+        deck,
+        { kind: 'folder', dir: folderPath, name: file.name },
+        file.name,
+      )
       if (!loaded) setFolderError(t('media.undecodable', { title: file.name }))
     } catch (error) {
       setFolderError(error instanceof Error ? error.message : String(error))

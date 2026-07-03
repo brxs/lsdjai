@@ -33,6 +33,7 @@ const deck = (): DeckSnap => ({
   cursor: { x: 0.5, y: 0.5 },
   notes: null,
   drums: null,
+  analysis: { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 },
 })
 
 const sample = (over: Partial<InterfaceState> = {}): InterfaceState => ({

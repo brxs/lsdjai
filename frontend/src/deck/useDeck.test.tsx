@@ -11,32 +11,15 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { AudioEngineProvider } from '../audio/AudioEngineProvider'
-import * as beatModule from '../audio/beat'
 import { updateDeckSettings } from '../persistence'
-import { clickTrack } from '../test/clickTrack'
-import type { AudioEngine, DeckChannel } from '../audio/types'
+import type {
+  AudioEngine,
+  DeckChannel,
+  LoadedTrack,
+  TrackSource,
+} from '../audio/types'
 import type { DeckSnap, InterfaceState } from '../audio/nativeEngine'
 import { useDeck } from './useDeck'
-
-/** Wrap useDeck's beat tracker so a test can watch what reaches the live
- * analysis: spy on the factory, return the real tracker, and record every
- * `push`. The deck feeds the tracker only on the live (non-parked) PCM path,
- * so this is the direct observable for the parked-straggler guard. Install
- * before rendering the deck — the tracker is built at mount. */
-function spyOnTrackerPush() {
-  const realCreate = beatModule.createBeatTracker
-  const push = vi.fn()
-  vi.spyOn(beatModule, 'createBeatTracker').mockImplementation((sampleRate) => {
-    const tracker = realCreate(sampleRate)
-    const realPush = tracker.push
-    tracker.push = (samples) => {
-      push(samples)
-      realPush(samples)
-    }
-    return tracker
-  })
-  return push
-}
 
 /** The captured native transport: the latest `sidecar://status` callback, the
  * latest PCM `Channel` instance, and the `core.invoke` spy recording every
@@ -52,13 +35,24 @@ const native: {
    * `playing` (ADR-0020), so the mock must too — deck_play/deck_stop write it and
    * echo `store://changed`, and every fired snapshot carries the current value. */
   storePlaying: boolean
-} = { invoke: vi.fn(), statusCb: null, storeCb: null, pcmChannel: null, storePlaying: false }
+  /** The harness store's live beat analysis for deck 'a' (ADR-0025): the Rust
+   * store holds the last published value, so every snapshot carries it. */
+  storeAnalysis: DeckSnap['analysis']
+} = {
+  invoke: vi.fn(),
+  statusCb: null,
+  storeCb: null,
+  pcmChannel: null,
+  storePlaying: false,
+  storeAnalysis: { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 },
+}
 
 function installNativeTauri() {
   native.statusCb = null
   native.storeCb = null
   native.pcmChannel = null
   native.storePlaying = false
+  native.storeAnalysis = { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 }
   native.invoke = vi.fn((cmd: string) => {
     // The Rust deck_play/deck_stop commands write the store's transport and the
     // store echoes a snapshot — with the real dedupe (a no-change mutation emits
@@ -141,21 +135,66 @@ function storeDeck(): DeckSnap {
     cursor: { x: 0.5, y: 0.5 },
     notes: null,
     drums: null,
+    analysis: { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 },
   }
 }
 
 /** Fire a `store://changed` event with deck 'a' (index 0) carrying `mix`. Deck 0's
- * transport rides the harness store: a `playing` in `mix` moves it, and every
- * snapshot carries the current value — like the real full-snapshot events, so
- * unrelated churn never claims a playing deck stopped. */
+ * transport and analysis ride the harness store: a `playing`/`analysis` in `mix`
+ * moves them, and every snapshot carries the current values — like the real
+ * full-snapshot events, so unrelated churn never claims a playing deck stopped
+ * (or blanks a held readout). */
 function fireStore(mix: Partial<DeckSnap>) {
   if (mix.playing !== undefined) native.storePlaying = mix.playing
+  if (mix.analysis !== undefined) native.storeAnalysis = mix.analysis
   const payload: InterfaceState = {
-    decks: [{ ...storeDeck(), playing: native.storePlaying, ...mix }, storeDeck()],
+    decks: [
+      {
+        ...storeDeck(),
+        playing: native.storePlaying,
+        analysis: native.storeAnalysis,
+        ...mix,
+      },
+      storeDeck(),
+    ],
     crossfade: 0.5,
     cueMix: 0.5,
   }
   native.storeCb?.({ payload })
+}
+
+/** Publish a deck-0 live beat analysis the way the shell's analysis thread
+ * does (ADR-0025): a store snapshot carrying the gated set. */
+function fireAnalysis(analysis: Partial<DeckSnap['analysis']>) {
+  fireStore({
+    analysis: {
+      bpm: null,
+      confidence: 0,
+      liveBeat: null,
+      originFrames: 0,
+      ...analysis,
+    },
+  })
+}
+
+/** The load reference the tests pass — the shell mock never reads it. */
+const TEST_SOURCE: TrackSource = { kind: 'song', name: 'test-pressing.wav' }
+
+/** A shell load verdict (ADR-0030). The default is honest silence: no tempo,
+ * no grid, empty summaries — "silence in, honesty out" (M14). */
+function loadedTrackDto(over: Partial<LoadedTrack> = {}): LoadedTrack {
+  return {
+    duration: 120,
+    bpm: null,
+    grid: null,
+    bands: {
+      low: new Float32Array(0),
+      mid: new Float32Array(0),
+      high: new Float32Array(0),
+    },
+    peaks: null,
+    ...over,
+  }
 }
 
 function makeFakeEngine(overrides: Partial<AudioEngine> = {}) {
@@ -171,7 +210,13 @@ function makeFakeEngine(overrides: Partial<AudioEngine> = {}) {
     setCue: vi.fn(),
     setFx: vi.fn(),
     setFxAmount: vi.fn(),
-    setBeatPeriod: vi.fn(),
+    // The shell blanks the published analysis on reset AND publishes the
+    // blank snapshot (ADR-0025); mirror both, so a stale snapshot racing the
+    // reset loses to the blank that follows — exactly the real convergence.
+    resetAnalysis: vi.fn(() => {
+      native.storeAnalysis = { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 }
+      fireStore({})
+    }),
     setTrim: vi.fn(),
     setOnAir: vi.fn(),
     captureLoop: vi.fn(async () => true),
@@ -184,12 +229,7 @@ function makeFakeEngine(overrides: Partial<AudioEngine> = {}) {
     saveLoopSlot: vi.fn(async () => {}),
     saveGeneratedSample: vi.fn(async () => {}),
     stopLayer: vi.fn(),
-    loadTrack: vi.fn(async () => ({
-      duration: 120,
-      sampleRate: 48_000,
-      left: new Float32Array(0),
-      right: new Float32Array(0),
-    })),
+    loadTrack: vi.fn(async () => loadedTrackDto()),
     playTrack: vi.fn(() => true),
     pauseTrack: vi.fn(),
     seekTrack: vi.fn(),
@@ -459,64 +499,54 @@ describe('useDeck connection', () => {
   })
 })
 
-describe('useDeck beat readout', () => {
-  function streamClicks(bpm: number, seconds: number) {
-    const samples = clickTrack(bpm, seconds, 48_000)
-    const chunk = 1920 * 2 // the 40 ms wire chunk
-    act(() => {
-      for (let i = 0; i < samples.length; i += chunk) {
-        feedPcm(samples.slice(i, i + chunk).buffer)
-      }
-    })
-  }
+describe('useDeck beat readout (ADR-0025: the shell measures, the store carries)', () => {
+  // The estimator, honesty gate, and anchor agreement live in the Rust shell
+  // now (their behaviour is covered by `src-tauri/src/analysis/beat.rs` and
+  // the corpus regression); the deck PROJECTS the published gated set. These
+  // tests exercise that projection and the reset round-trip.
 
-  it('surfaces a gated BPM from the deck stream and drops it on stop', async () => {
-    const { engine } = makeFakeEngine()
-    const { result } = renderDeck(engine)
-    act(() => socket(0).serverOpen())
-    await act(() => result.current.play())
-
-    streamClicks(128, 16)
-    // Three 1 Hz gate ticks: strict acquisition needs three agreeing
-    // confident estimates.
-    act(() => void vi.advanceTimersByTime(3_000))
-    expect(result.current.bpm).not.toBeNull()
-    expect(Math.abs(result.current.bpm! - 128) / 128).toBeLessThan(0.02)
-
-    act(() => result.current.stop())
-    expect(result.current.bpm).toBeNull()
-  })
-
-  it('shows nothing for a beatless stream', async () => {
-    const { engine } = makeFakeEngine()
-    const { result } = renderDeck(engine)
-    act(() => socket(0).serverOpen())
-    await act(() => result.current.play())
-
-    const silence = new Float32Array(16 * 48_000 * 2)
-    const chunk = 1920 * 2
-    act(() => {
-      for (let i = 0; i < silence.length; i += chunk) {
-        feedPcm(silence.slice(i, i + chunk).buffer)
-      }
-    })
-    act(() => void vi.advanceTimersByTime(5_000))
-    expect(result.current.bpm).toBeNull()
-  })
-
-  it('hands the beat period to the channel and clears it with the gate', async () => {
+  it('mirrors the store-published gated BPM and blanks locally on stop', async () => {
     const { engine, channel } = makeFakeEngine()
     const { result } = renderDeck(engine)
     act(() => socket(0).serverOpen())
     await act(() => result.current.play())
 
-    streamClicks(128, 16)
-    act(() => void vi.advanceTimersByTime(3_000))
-    const bpm = result.current.bpm!
-    expect(channel.setBeatPeriod).toHaveBeenLastCalledWith(60 / bpm)
+    act(() => fireAnalysis({ bpm: 128, confidence: 0.62 }))
+    expect(result.current.bpm).toBe(128)
 
+    // Stop resets the shell's analysis (estimates never span streams) and
+    // blanks the local mirror at once — the readout must not flash the dead
+    // stream's number while the store round-trips.
     act(() => result.current.stop())
-    expect(channel.setBeatPeriod).toHaveBeenLastCalledWith(null)
+    expect(channel.resetAnalysis).toHaveBeenCalled()
+    expect(result.current.bpm).toBeNull()
+  })
+
+  it('a blank published set reads as a blank readout', async () => {
+    const { engine } = makeFakeEngine()
+    const { result } = renderDeck(engine)
+    act(() => socket(0).serverOpen())
+    await act(() => result.current.play())
+
+    act(() => fireAnalysis({ bpm: null, confidence: 0.2 }))
+    expect(result.current.bpm).toBeNull()
+  })
+
+  it('ignores live analysis while a track is loaded (ADR-0013)', async () => {
+    const { engine, channel } = makeFakeEngine()
+    vi.mocked(channel.loadTrack).mockResolvedValue(
+      loadedTrackDto({ duration: 24, bpm: 120 }),
+    )
+    const { result } = renderDeck(engine)
+    act(() => socket(0).serverOpen())
+    await act(async () => {
+      await result.current.loadTrack(TEST_SOURCE, 'Gridded')
+    })
+    // A straggler publish for the parked stream must not disturb the
+    // track's clock (its tempo is the load-time analysis).
+    act(() => fireAnalysis({ bpm: 133 }))
+    expect(result.current.bpm).toBeNull()
+    expect(result.current.track!.bpm).toBe(120)
   })
 
   it('quantises a capture to whole beats when the gate is confident', async () => {
@@ -525,30 +555,26 @@ describe('useDeck beat readout', () => {
     act(() => socket(0).serverOpen())
     await act(() => result.current.play())
 
-    streamClicks(128, 16)
-    act(() => void vi.advanceTimersByTime(3_000))
+    act(() => fireAnalysis({ bpm: 128, confidence: 0.62 }))
     const bpm = result.current.bpm!
 
     await act(async () => result.current.toggleLoopPad(0))
     const seconds = vi.mocked(channel.captureLoop).mock.calls.at(-1)![1]
     const beats = (seconds * bpm) / 60
     expect(Math.abs(beats - Math.round(beats))).toBeLessThan(1e-6)
-    expect(seconds).not.toBe(4) // 4 s is off-grid at ~128 bpm
+    expect(seconds).not.toBe(4) // 4 s is off-grid at 128 bpm
   })
 
   it('forgets the stream across a model switch', async () => {
-    const { engine } = makeFakeEngine()
+    const { engine, channel } = makeFakeEngine()
     const { result } = renderDeck(engine)
     act(() => socket(0).serverOpen())
     await act(() => result.current.play())
-    streamClicks(128, 16)
-    act(() => void vi.advanceTimersByTime(3_000))
+    act(() => fireAnalysis({ bpm: 128, confidence: 0.62 }))
     expect(result.current.bpm).not.toBeNull()
 
     act(() => socket(0).serverEvent({ event: 'model_loading', model: 'mrt2_base' }))
-    expect(result.current.bpm).toBeNull()
-    // The next tick has no accumulated audio: still nothing.
-    act(() => void vi.advanceTimersByTime(1_000))
+    expect(channel.resetAnalysis).toHaveBeenCalled()
     expect(result.current.bpm).toBeNull()
   })
 })
@@ -769,16 +795,6 @@ describe('useDeck generated pads', () => {
     return rendered
   }
 
-  function streamClicks(bpm: number, seconds: number) {
-    const samples = clickTrack(bpm, seconds, 48_000)
-    const chunk = 1920 * 2 // the 40 ms wire chunk
-    act(() => {
-      for (let i = 0; i < samples.length; i += chunk) {
-        feedPcm(samples.slice(i, i + chunk).buffer)
-      }
-    })
-  }
-
   function stubFetchOk() {
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -927,8 +943,7 @@ describe('useDeck generated pads', () => {
     const fetchMock = stubFetchOk()
     const { engine } = makeFakeEngine()
     const { result } = await playingDeck(engine)
-    streamClicks(128, 16)
-    act(() => void vi.advanceTimersByTime(3_000))
+    act(() => fireAnalysis({ bpm: 128, confidence: 0.62 }))
     const bpm = result.current.bpm!
 
     act(() => result.current.generateToPad('deep house groove', 'music', false))
@@ -947,8 +962,8 @@ describe('useDeck generated pads', () => {
     const fetchMock = stubFetchOk()
     const { engine, channel } = makeFakeEngine()
     const { result } = await playingDeck(engine)
-    streamClicks(128, 16)
-    act(() => void vi.advanceTimersByTime(3_000))
+    // A locked tempo is live, yet the Magenta request carries no BPM stamp.
+    act(() => fireAnalysis({ bpm: 128, confidence: 0.62 }))
 
     act(() => result.current.generateToPad('dub chords', 'magenta', false))
     await act(async () => {})
@@ -1107,10 +1122,7 @@ describe('useDeck playback mode (M19)', () => {
     act(() => socket(0).serverOpen())
     let loaded = false
     await act(async () => {
-      loaded = await rendered.result.current.loadTrack(
-        new ArrayBuffer(8),
-        'Test Pressing',
-      )
+      loaded = await rendered.result.current.loadTrack(TEST_SOURCE, 'Test Pressing')
     })
     expect(loaded).toBe(true)
     return { ...rendered, channel }
@@ -1118,7 +1130,7 @@ describe('useDeck playback mode (M19)', () => {
 
   it('loadTrack parks the stream and enters playback with the offline verdict', async () => {
     const { result, channel } = await loadedDeck()
-    expect(channel.loadTrack).toHaveBeenCalled()
+    expect(channel.loadTrack).toHaveBeenCalledWith(TEST_SOURCE, expect.any(Number))
     // The worker parks warm: a stop went over IPC (ADR-0013).
     expect(native.invoke).toHaveBeenCalledWith('deck_stop', { deck: 0 })
     expect(result.current.mode).toBe('playback')
@@ -1128,9 +1140,26 @@ describe('useDeck playback mode (M19)', () => {
       position: 0,
       playing: false,
       ended: false,
-      bpm: null, // silence in, honesty out (M14)
+      bpm: null, // silence in, honesty out (M14) — the shell's verdict
     })
-    expect(channel.setBeatPeriod).toHaveBeenLastCalledWith(null)
+  })
+
+  it('a shell load refusal propagates its reason and leaves the deck live', async () => {
+    const { engine, channel } = makeFakeEngine()
+    const { result } = renderDeck(engine)
+    act(() => socket(0).serverOpen())
+    // The shell's rejected invoke carries the reason as a string (the Tauri
+    // command error shape); nothing on the way up may swallow it (ADR-0030).
+    vi.mocked(channel.loadTrack).mockRejectedValue('file is too large')
+    await act(async () => {
+      await expect(
+        result.current.loadTrack(TEST_SOURCE, 'Oversize'),
+      ).rejects.toBe('file is too large')
+    })
+    // The refused load changed nothing: the deck stays live, nothing parked.
+    expect(result.current.mode).toBe('realtime')
+    expect(result.current.track).toBeNull()
+    expect(native.invoke).not.toHaveBeenCalledWith('deck_stop', { deck: 0 })
   })
 
   it('PLAY and STOP drive the track, not the worker', async () => {
@@ -1167,37 +1196,28 @@ describe('useDeck playback mode (M19)', () => {
     expect(channel.captureSample).not.toHaveBeenCalled()
   })
 
-  it('drops a straggler PCM chunk while parked — the analysis never sees it', async () => {
-    // A parked (playback) deck must NOT feed a late model chunk into the beat
-    // tracker, or the straggler would pollute the track's clock. The guard in
-    // useDeck's PCM callback (`if mode === 'playback' return`) is the only thing
-    // stopping it — `result.current.bpm` is double-gated by the per-tick
-    // playback guard and so cannot observe this, but the tracker push can.
-    const trackerPush = spyOnTrackerPush()
+  it('drops a straggler PCM chunk while parked — the live meters never see it', async () => {
+    // A parked (playback) deck must NOT feed a late model chunk into the live
+    // visuals (the beat tracker moved shell-side, ADR-0025, and parks with the
+    // sidecar; the loudness meter behind auto-gain is what the PCM-callback
+    // guard still protects). Observable through auto-trim: a loud straggler
+    // on a parked deck must leave the trim untouched, where the same feed on
+    // a live deck moves it (the auto-gain suite's positive case).
     const { engine, channel } = makeFakeEngine()
     const rendered = renderDeck(engine)
     act(() => socket(0).serverOpen())
     await act(async () => {
-      await rendered.result.current.loadTrack(new ArrayBuffer(8), 'Test Pressing')
+      await rendered.result.current.loadTrack(TEST_SOURCE, 'Test Pressing')
     })
     expect(channel.loadTrack).toHaveBeenCalled()
+    const trimBefore = rendered.result.current.trim.db
 
-    act(() => feedPcm(new ArrayBuffer(16)))
-    expect(trackerPush).not.toHaveBeenCalled()
-  })
-
-  it('a live (non-parked) deck DOES feed fed PCM into the analysis', async () => {
-    // The positive counterpart: the same feed on a realtime, playing deck
-    // reaches the beat tracker, so the parked test above guards a real,
-    // exercised path rather than asserting on dead code.
-    const trackerPush = spyOnTrackerPush()
-    const { engine } = makeFakeEngine()
-    const { result } = renderDeck(engine)
-    act(() => socket(0).serverOpen())
-    await act(() => result.current.play())
-
-    act(() => feedPcm(new ArrayBuffer(16)))
-    expect(trackerPush).toHaveBeenCalled()
+    const loud = new Float32Array(1920 * 2).fill(0.9)
+    act(() => {
+      for (let i = 0; i < 50; i++) feedPcm(loud.slice().buffer)
+    })
+    act(() => void vi.advanceTimersByTime(2_000))
+    expect(rendered.result.current.trim.db).toBe(trimBefore)
   })
 
   it('follows the channel playhead while a track is loaded', async () => {
@@ -1237,7 +1257,7 @@ describe('useDeck playback mode (M19)', () => {
     expect(result.current.state.playing).toBe(true) // rolling, but off air
 
     await act(async () => {
-      await result.current.loadTrack(new ArrayBuffer(8), 'Headphone Special')
+      await result.current.loadTrack(TEST_SOURCE, 'Headphone Special')
     })
     expect(channel.playTrack).not.toHaveBeenCalled()
     expect(result.current.track).toMatchObject({ playing: false })
@@ -1251,7 +1271,7 @@ describe('useDeck playback mode (M19)', () => {
     expect(result.current.state.playing).toBe(true)
 
     await act(async () => {
-      await result.current.loadTrack(new ArrayBuffer(8), 'Hot Swap')
+      await result.current.loadTrack(TEST_SOURCE, 'Hot Swap')
     })
     expect(channel.playTrack).toHaveBeenCalled()
     expect(result.current.track).toMatchObject({
@@ -1296,17 +1316,12 @@ describe('useDeck playback mode (M19)', () => {
 })
 
 describe('useDeck beat clocks (M20)', () => {
-  function clickChannels(bpm: number, seconds: number) {
-    const samples = clickTrack(bpm, seconds, 48_000)
-    const frames = samples.length / 2
-    const left = new Float32Array(frames)
-    const right = new Float32Array(frames)
-    for (let i = 0; i < frames; i++) {
-      left[i] = samples[2 * i]
-      right[i] = samples[2 * i + 1]
-    }
-    return { left, right, samples }
-  }
+  // The gate's grace/breathing and the anchor agreement live shell-side now
+  // (ADR-0025) — `analysis/beat.rs` carries those behaviours. What stays
+  // webview-owned is the CLOCK: mapping the published anchor (pushed frames
+  // since reset) through the published origin onto engine time, and blanking
+  // on stale stats.
+  const PERIOD_FRAMES = (60 / 128) * 48_000 // 22 500
 
   it('exposes the live beat clock at the speakers once gated and continuous', async () => {
     const { engine, captured } = makeFakeEngine()
@@ -1314,16 +1329,17 @@ describe('useDeck beat clocks (M20)', () => {
     act(() => socket(0).serverOpen())
     await act(() => result.current.play())
 
-    // Stream a steady click track one wire-second at a time, phase
-    // continuous, with the estimator ticking between chunks.
-    const { samples } = clickChannels(128, 14)
-    const frameStride = 48_000 * 2
-    for (let second = 0; second < 14; second++) {
-      const chunk = samples.slice(second * frameStride, (second + 1) * frameStride)
-      act(() => feedPcm(chunk.buffer))
-      act(() => void vi.advanceTimersByTime(1_000))
-    }
-    expect(result.current.bpm).not.toBeNull()
+    // The shell publishes the gated set: tempo, and an anchor on the beat
+    // lattice (a whole number of periods from the stream start).
+    act(() =>
+      fireAnalysis({
+        bpm: 128,
+        confidence: 0.62,
+        liveBeat: { anchorFrame: 20 * PERIOD_FRAMES, bpm: 128 },
+        originFrames: 0,
+      }),
+    )
+    expect(result.current.bpm).toBe(128)
 
     // No stats yet: the clock must stay blank rather than guess.
     expect(result.current.getLiveBeat()).toBeNull()
@@ -1351,76 +1367,28 @@ describe('useDeck beat clocks (M20)', () => {
     expect(result.current.getLiveBeat()).toBeNull()
   })
 
-  it('rides out one breathing estimate without blanking the clock', async () => {
+  it('subtracts the published stream origin so the beat lands on the lattice', async () => {
+    // The native engine reports a GLOBAL, never-reset render count, while the
+    // shell's anchorFrame resets to 0 with the stream (ADR-0014/0025). The
+    // shell captures the origin at each reset and publishes it with the
+    // analysis; the clock math subtracts it so the two share a frame domain.
+    // 5 s = 10.666… periods at 128 BPM — NOT a whole beat, so a dropped or
+    // wrong-sign origin pushes the reported beat off the lattice.
+    const ORIGIN_FRAMES = 5 * 48_000
     const { engine, captured } = makeFakeEngine()
     const { result } = renderDeck(engine)
     act(() => socket(0).serverOpen())
     await act(() => result.current.play())
 
-    const { samples } = clickChannels(128, 14)
-    const frameStride = 48_000 * 2
-    for (let second = 0; second < 14; second++) {
-      const chunk = samples.slice(second * frameStride, (second + 1) * frameStride)
-      act(() => feedPcm(chunk.buffer))
-      act(() => void vi.advanceTimersByTime(1_000))
-    }
     act(() =>
-      captured.onStats?.({
-        underruns: 0,
-        bufferedSeconds: 2,
-        playing: true,
-        playedFrames: 10 * 48_000,
-        contextTime: 100,
+      fireAnalysis({
+        bpm: 128,
+        confidence: 0.62,
+        liveBeat: { anchorFrame: 20 * PERIOD_FRAMES, bpm: 128 },
+        originFrames: ORIGIN_FRAMES,
       }),
     )
-    expect(result.current.getLiveBeat()).not.toBeNull()
-
-    // One second of half-period-shifted clicks: the anchor measurement
-    // misses (contradiction or incoherence) — the held clock must ride
-    // it out rather than strobe the meter.
-    const shifted = clickChannels(128, 3).samples
-    const halfPeriod = Math.round(((60 / 128) * 48_000) / 2) * 2
-    const slice = shifted.slice(halfPeriod, halfPeriod + frameStride)
-    act(() => feedPcm(slice.buffer))
-    act(() => void vi.advanceTimersByTime(1_000))
-    act(() =>
-      captured.onStats?.({
-        underruns: 0,
-        bufferedSeconds: 2,
-        playing: true,
-        playedFrames: 11 * 48_000,
-        contextTime: 101,
-      }),
-    )
-    expect(result.current.getLiveBeat()).not.toBeNull()
-  })
-
-  it('subtracts the native global render origin so the beat lands on the lattice', async () => {
-    // The native engine reports a GLOBAL, never-reset render count, while the
-    // beat tracker's anchorFrame resets to 0 with the stream (ADR-0014). useDeck
-    // captures getContextTime()·SR at each stream reset and subtracts it so the
-    // two share a frame domain. The rest of the M20 suite runs getContextTime
-    // () => 0, leaving that origin at 0 and the subtraction unexercised; here it
-    // is non-zero, so the subtraction carries weight and a dropped/wrong-sign
-    // origin would push the reported beat off the click lattice.
-    const ORIGIN_SECONDS = 5 // 5 s = 10.666… periods at 128 BPM: NOT a whole beat
-    const ORIGIN_FRAMES = ORIGIN_SECONDS * 48_000
-    const { engine, captured } = makeFakeEngine({
-      getContextTime: vi.fn(() => ORIGIN_SECONDS),
-    })
-    const { result } = renderDeck(engine)
-    act(() => socket(0).serverOpen())
-    // play() anchors playedFramesOriginRef at getContextTime()·SR = ORIGIN_FRAMES.
-    await act(() => result.current.play())
-
-    const { samples } = clickChannels(128, 14)
-    const frameStride = 48_000 * 2
-    for (let second = 0; second < 14; second++) {
-      const chunk = samples.slice(second * frameStride, (second + 1) * frameStride)
-      act(() => feedPcm(chunk.buffer))
-      act(() => void vi.advanceTimersByTime(1_000))
-    }
-    expect(result.current.bpm).not.toBeNull()
+    expect(result.current.bpm).toBe(128)
 
     // playedFrames is in the GLOBAL render domain: the per-stream position
     // (10 s) plus the never-reset origin.
@@ -1449,21 +1417,21 @@ describe('useDeck beat clocks (M20)', () => {
 
   it('derives the track beat clock from the grid, rate-aware', async () => {
     const { engine, channel } = makeFakeEngine()
-    const { left, right } = clickChannels(120, 24)
-    vi.mocked(channel.loadTrack).mockResolvedValue({
-      duration: 24,
-      sampleRate: 48_000,
-      left,
-      right,
-    })
+    // The shell's offline verdict (ADR-0030): a refined grid, one number.
+    vi.mocked(channel.loadTrack).mockResolvedValue(
+      loadedTrackDto({
+        duration: 24,
+        bpm: 120,
+        grid: { bpm: 120, firstBeatSeconds: 0 },
+      }),
+    )
     const { result } = renderDeck(engine)
     act(() => socket(0).serverOpen())
     await act(async () => {
-      await result.current.loadTrack(new ArrayBuffer(8), 'Gridded')
+      await result.current.loadTrack(TEST_SOURCE, 'Gridded')
     })
     const grid = result.current.track!.grid
     expect(grid).not.toBeNull()
-    expect(Math.abs(grid!.bpm - 120)).toBeLessThanOrEqual(120 * 0.005)
     // One number: the readout BPM is the grid's refined verdict.
     expect(result.current.track!.bpm).toBe(grid!.bpm)
 
@@ -1488,17 +1456,17 @@ describe('useDeck beat clocks (M20)', () => {
 
   it('SYNC matches tempo within the envelope and refuses outside it', async () => {
     const { engine, channel } = makeFakeEngine()
-    const { left, right } = clickChannels(120, 24)
-    vi.mocked(channel.loadTrack).mockResolvedValue({
-      duration: 24,
-      sampleRate: 48_000,
-      left,
-      right,
-    })
+    vi.mocked(channel.loadTrack).mockResolvedValue(
+      loadedTrackDto({
+        duration: 24,
+        bpm: 120,
+        grid: { bpm: 120, firstBeatSeconds: 0 },
+      }),
+    )
     const { result } = renderDeck(engine)
     act(() => socket(0).serverOpen())
     await act(async () => {
-      await result.current.loadTrack(new ArrayBuffer(8), 'Syncable')
+      await result.current.loadTrack(TEST_SOURCE, 'Syncable')
     })
     const bpm = result.current.track!.bpm!
 
@@ -1507,12 +1475,10 @@ describe('useDeck beat clocks (M20)', () => {
       synced = result.current.syncTrack(bpm * 1.05)
     })
     expect(synced).toBe('synced')
+    // The rate crosses to the shell, which also recomputes the synced echo's
+    // clock from the load-time analysis (ADR-0030).
     expect(channel.setTrackRate).toHaveBeenCalledWith(expect.closeTo(1.05, 5))
     expect(result.current.track!.rate).toBeCloseTo(1.05, 5)
-    // The synced echo's clock follows the new effective tempo.
-    expect(channel.setBeatPeriod).toHaveBeenLastCalledWith(
-      expect.closeTo(60 / (bpm * 1.05), 5),
-    )
 
     act(() => {
       synced = result.current.syncTrack(bpm * 1.2)
@@ -1528,13 +1494,13 @@ describe('useDeck beat clocks (M20)', () => {
 
   async function griddedDeck(position: number) {
     const { engine, channel } = makeFakeEngine()
-    const { left, right } = clickChannels(120, 24)
-    vi.mocked(channel.loadTrack).mockResolvedValue({
-      duration: 24,
-      sampleRate: 48_000,
-      left,
-      right,
-    })
+    vi.mocked(channel.loadTrack).mockResolvedValue(
+      loadedTrackDto({
+        duration: 24,
+        bpm: 120,
+        grid: { bpm: 120, firstBeatSeconds: 0 },
+      }),
+    )
     // The engine mock holds a loop like the real boundary would, so
     // the hook's mirror-from-the-engine path is what's under test.
     let engineLoop: { start: number; end: number } | null = null
@@ -1561,7 +1527,7 @@ describe('useDeck beat clocks (M20)', () => {
     const rendered = renderDeck(engine)
     act(() => socket(0).serverOpen())
     await act(async () => {
-      await rendered.result.current.loadTrack(new ArrayBuffer(8), 'Cueable')
+      await rendered.result.current.loadTrack(TEST_SOURCE, 'Cueable')
     })
     expect(rendered.result.current.track!.grid).not.toBeNull()
     return { ...rendered, channel, status }
@@ -1617,7 +1583,7 @@ describe('useDeck beat clocks (M20)', () => {
     const { result } = renderDeck(engine)
     act(() => socket(0).serverOpen())
     await act(async () => {
-      await result.current.loadTrack(new ArrayBuffer(8), 'Gridless')
+      await result.current.loadTrack(TEST_SOURCE, 'Gridless')
     })
     expect(result.current.track!.grid).toBeNull()
     act(() => result.current.hotCuePad(0))
@@ -1690,7 +1656,7 @@ describe('useDeck beat clocks (M20)', () => {
     const { result } = renderDeck(engine)
     act(() => socket(0).serverOpen())
     await act(async () => {
-      await result.current.loadTrack(new ArrayBuffer(8), 'Gridless')
+      await result.current.loadTrack(TEST_SOURCE, 'Gridless')
     })
     expect(result.current.track!.grid).toBeNull()
     act(() => result.current.beatLoop(4))
