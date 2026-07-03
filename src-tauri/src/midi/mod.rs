@@ -55,6 +55,12 @@ pub const STATUS_EVENT: &str = "midi://status";
 
 /// How often the scanner re-enumerates ports (the shim's hot-plug cadence).
 const SCAN_INTERVAL: Duration = Duration::from_secs(1);
+/// How long a full repaint waits before sending. The FLX4 clears its own pad
+/// LEDs as part of a pad-mode switch; the native path is fast enough to land
+/// the repaint BEFORE that clear, which then wipes it — pads stayed dark
+/// after every mode switch (found on the device). The retired webview path
+/// never raced this only because React's render cycle delayed its repaints.
+const REPAINT_SETTLE: Duration = Duration::from_millis(50);
 /// The monitor keeps the last few raw messages, like the webview ring it
 /// replaces.
 const MONITOR_SIZE: usize = 6;
@@ -473,7 +479,13 @@ fn run_painter(shared: Arc<Shared>, paint_rx: Receiver<Paint>) {
     while let Ok(paint) = paint_rx.recv() {
         match paint {
             Paint::Snapshot(state) => snapshot = Some(*state),
-            Paint::Repaint => last_frame.clear(),
+            Paint::Repaint => {
+                // Wait out the device's own LED clear (see REPAINT_SETTLE) —
+                // painting first means painting into the wipe. Blocking the
+                // painter briefly is fine: queued paints just batch behind.
+                std::thread::sleep(REPAINT_SETTLE);
+                last_frame.clear();
+            }
             Paint::Tick => {}
         }
         // Without a store snapshot yet there is nothing truthful to paint.
