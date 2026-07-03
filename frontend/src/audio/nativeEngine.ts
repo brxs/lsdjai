@@ -292,10 +292,26 @@ export type DeckSnap = {
   /** The realtime deck's 2D style-pad targets (prompt + position), mirrored from
    * DeckColumn (sampled-target embedding ids stay out). */
   styleTargets: { x: number; y: number; text: string }[]
+  /** Which style targets are in the active blend (the net mask, one bool per
+   * target; empty = no mask) — mirrored up for the native pad LEDs (ADR-0031). */
+  styleSelected: boolean[]
   /** The 2D style-pad cursor (the blend point). */
   cursor: { x: number; y: number }
+  /** Whether the deck is primed off-air (the transport-CUE LED state) — a
+   * read-back the webview mirrors up. */
+  primed: boolean
+  /** The performance-surface config (issue #48): armed decks take pad/keyboard
+   * notes and run the small ADR-0023 chunk. Written through the shell
+   * note-steering service; the webview projects it. */
+  performance: {
+    armed: boolean
+    key: number
+    scale: 'major' | 'minor' | 'pentatonicMinor' | 'chromatic'
+    mode: 'chord' | 'onset'
+  }
   /** The realtime deck's note steering (ADR-0023) — held pitches + mode, or
-   * null when unsteered. Cleared on transport transitions. */
+   * null when unsteered. Authored by the shell note-steering service
+   * (hardware pads/keyboard, MCP); cleared on transport transitions. */
   notes: { pitches: number[]; mode: 'chord' | 'onset' } | null
   /** Drum conditioning (ADR-0023): null = the model decides, false = suppress
    * drums, true = force them. Cleared like `notes`. */
@@ -413,21 +429,28 @@ export function setDeckLoopLabels(deck: number, labels: (string | null)[]): void
   void invoke('set_deck_loop_labels', { deck, labels }).catch(() => {})
 }
 
-/** Mirror a deck's note steering into the store (ADR-0023 over ADR-0020): the
- * wire multihot still goes to the worker via deck_set_notes; this records the
- * authored pitches + mode so an MCP agent reads (and writes) the same state.
- * Null = unsteered. Fire-and-forget. */
-export function setDeckNotes(
-  deck: number,
-  notes: { pitches: number[]; mode: 'chord' | 'onset' } | null,
-): void {
-  void invoke('set_deck_notes', { deck, notes }).catch(() => {})
+/** Mirror the primed-off-air read-back into the store (the transport-CUE LED
+ * state, read by the native LED painter — ADR-0031). Fire-and-forget. */
+export function setDeckPrimed(deck: number, primed: boolean): void {
+  void invoke('set_deck_primed', { deck, primed }).catch(() => {})
 }
 
-/** Mirror a deck's drum-conditioning tri-state into the store (null = the model
- * decides). Fire-and-forget. */
-export function setDeckDrums(deck: number, drums: boolean | null): void {
-  void invoke('set_deck_drums', { deck, drums }).catch(() => {})
+/** Mirror the style-pad selection mask (which targets are in the blend) into
+ * the store — the native pad LEDs burn selected targets bright and dim the
+ * rest (ADR-0031). Fire-and-forget. */
+export function setDeckStyleSelection(deck: number, selected: boolean[]): void {
+  void invoke('set_deck_style_selection', { deck, selected }).catch(() => {})
+}
+
+/** Set a deck's performance-surface config (issue #48): arm/disarm, key,
+ * scale, note mode. Routed through the shell note-steering service — the
+ * same single sender the hardware uses; arming also applies the ADR-0023
+ * chunk knob. Fire-and-forget; the store projection reflects it. */
+export function setDeckPerformance(
+  deck: number,
+  perf: DeckSnap['performance'],
+): void {
+  void invoke('set_deck_performance', { deck, perf }).catch(() => {})
 }
 
 // Coalesce high-rate mirror writes to ~one invoke per animation frame, like the

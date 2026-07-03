@@ -32,12 +32,15 @@ Underlying tools: uv + pytest + ruff in `backend/`, npm + vitest + eslint in
   controller (`backend/lsdj/`) is a pure generation server (render /
   generate / models) on a loopback port (ADR-0002).
 - `frontend/src/` map: `audio/` (engine-facing state, FX curves in `fx.ts`),
-  `control/` (Web MIDI link, FLX4 byte translator, `ControlIntent` bus),
-  `deck/`, `mixer/`, `ui/` primitives.
-- Hardware control is Web MIDI in the frontend (ADR-0005). The DDJ-FLX4 byte
-  map — including the position-query SysEx and the PAD FX banks — is
-  *measured*, not assumed; it lives in `docs/midi-ddj-flx4.md`. Keep it current
-  when adding mappings.
+  `control/` (the `ControlIntent` bus + the native-MIDI status/monitor
+  projections), `deck/`, `mixer/`, `ui/` primitives.
+- Hardware control is **native MIDI in the Rust shell** (`src-tauri/src/midi/`,
+  ADR-0031, superseding ADR-0005's Web MIDI): midir/CoreMIDI transport, the
+  FLX4/DDJ-400 translators, LEDs, and the performance-note steering all live
+  shell-side; translated control-surface intents reach the webview ControlBus
+  over the `midi://intent` event. The DDJ-FLX4 byte map — including the
+  position-query SysEx and the pad banks — is *measured*, not assumed; it
+  lives in `docs/midi-ddj-flx4.md`. Keep it current when adding mappings.
 - Headphone cue is handled by the Rust engine: a chosen output device or the
   FLX4's own phones jack. Color FX are pure amount→parameter curves at a
   pre-fader insert with a bit-exact bypass (ADR-0008).

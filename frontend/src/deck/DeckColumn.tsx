@@ -7,6 +7,7 @@ import { LOOP_LENGTH_OPTIONS, LOOP_SLOT_COUNT } from '../audio/loops'
 import { setDeckStyle } from '../audio/nativeEngine'
 import { useInterfaceStore } from '../audio/interfaceStore'
 import { useControlBus } from '../control/busContext'
+import { PerformancePanel } from './PerformancePanel'
 import { Button } from '../ui/Button'
 import { Knob } from '../ui/Knob'
 import { Meter } from '../ui/Meter'
@@ -124,10 +125,9 @@ type DeckColumnProps = {
   onSetStyle: (style: ActiveStyle) => void
   onSetModel: (model: string) => void
   onRestart: () => void
-  /** Reports how many style targets exist (for the pad LED echo). */
-  onTargetCount?: (count: number) => void
-  /** Reports which pads are selected in the net (for the pad LED echo),
-   * one boolean per target by pad index. */
+  /** Reports which pads are selected in the net, one boolean per target by
+   * pad index — App mirrors it into the store for the native pad LEDs
+   * (ADR-0031; the target count travels as the mirrored style targets). */
   onSelectionChange?: (selected: boolean[]) => void
   /** Which deck's SHIFT is held (App-tracked). When it equals this deck's id,
    * the jogs steer this deck's cursor — jog A the x axis, jog B the y. */
@@ -194,7 +194,6 @@ export function DeckColumn({
   onSetStyle,
   onSetModel,
   onRestart,
-  onTargetCount,
   onSelectionChange,
   shiftedDeck,
   primed = false,
@@ -448,10 +447,6 @@ export function DeckColumn({
       ),
     )
   }
-
-  useEffect(() => {
-    onTargetCount?.(targets.length)
-  }, [targets.length, onTargetCount])
 
   // Mirror the selection to the controller LEDs, one boolean per pad index.
   useEffect(() => {
@@ -967,6 +962,11 @@ export function DeckColumn({
             {t('deck.style.savePreset')}
           </Button>
         </div>
+
+        {/* Play the deck (issue #48): arm the performance surface, pick the
+            key/scale/mode the hardware notes snap to. Store-projected — the
+            KEYBOARD pad-mode selector arms it from hardware too. */}
+        <PerformancePanel deckIndex={deckId === 'a' ? 0 : 1} />
       </Panel>
       )}
 

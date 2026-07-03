@@ -18,14 +18,9 @@
     }
   },
   "midi": {
-    "connect": "Connect MIDI",
     "device": "Controller",
     "status": {
-      "unsupported": "MIDI unavailable",
-      "idle": "MIDI off",
-      "requesting": "Requesting MIDI…",
-      "no-device": "No supported controller found",
-      "denied": "MIDI access denied"
+      "no-device": "No supported controller found"
     },
     "monitor": {
       "label": "MIDI monitor",
@@ -137,6 +132,27 @@
     "title": "Deck {{id}}",
     "model": {
       "label": "Model"
+    },
+    "perform": {
+      "title": "Play the deck",
+      "arm": "Play the deck",
+      "disarm": "Stop playing",
+      "key": "Key",
+      "scale": "Scale",
+      "mode": "Note mode",
+      "scales": {
+        "major": "Major",
+        "minor": "Minor",
+        "pentatonicMinor": "Pentatonic minor",
+        "chromatic": "Chromatic (no snap)"
+      },
+      "modes": {
+        "chord": "Chord follow",
+        "onset": "On-grid onset"
+      },
+      "held": "Holding {{notes}}",
+      "armedIdle": "Armed — pads and keys steer this deck",
+      "disarmed": "Arm to steer with the FLX4 KEYBOARD pads or a MIDI keyboard"
     },
     "worker": {
       "died": "The deck engine crashed.",

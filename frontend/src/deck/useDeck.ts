@@ -21,22 +21,13 @@ import { useAudioEngine } from '../audio/engineContext'
 import {
   getApiBaseUrl,
   setDeckCues,
-  setDeckDrums,
   setDeckLoopLabels,
   setDeckModel,
-  setDeckNotes,
+  setDeckPrimed,
   setDeckTrack,
   setDeckTransport,
   subscribeModelsChanged,
 } from '../audio/nativeEngine'
-import {
-  buildNoteMultihot,
-  drumWireFlag,
-  isNotePitch,
-  sameNoteSteering,
-  type NoteMode,
-  type NoteSteering,
-} from '../audio/notes'
 import { fxKindFromSnap, useInterfaceStore } from '../audio/interfaceStore'
 import {
   sendNativeDeckCommand,
@@ -293,11 +284,6 @@ export type DeckControls = {
   play: () => Promise<void>
   stop: () => void
   setStyle: (style: ActiveStyle) => void
-  /** Note/drum steering (ADR-0023): idempotent full-state sends at chunk
-   * cadence — empty pitches / null clear back to "the model decides". State
-   * resets on stream discontinuities (play/prime/stop/model switch/crash). */
-  setNotes: (pitches: number[], mode?: NoteMode) => void
-  setDrums: (drums: boolean | null) => void
   setModel: (model: string) => void
   restartWorker: () => void
   setVolume: (volume: number) => void
@@ -510,21 +496,6 @@ export function useDeck(deckId: DeckId): DeckControls {
     setDeckModel(deckIndex, state.model)
   }, [deckIndex, state.model])
 
-  // Note/drum steering (ADR-0023): the authored state (held pitches + mode /
-  // the drum tri-state) in refs beside the store mirror. Reset on stream
-  // discontinuities like the trackers — the worker clears its engine state on
-  // the play/stop commands, and a fresh worker starts masked, so clearing here
-  // (local + store) keeps every holder telling the same story.
-  const notesRef = useRef<NoteSteering | null>(null)
-  const drumsRef = useRef<boolean | null>(null)
-  const clearConditioning = useCallback(() => {
-    if (notesRef.current === null && drumsRef.current === null) return
-    notesRef.current = null
-    drumsRef.current = null
-    setDeckNotes(deckIndex, null)
-    setDeckDrums(deckIndex, null)
-  }, [deckIndex])
-
   // Mirror the loaded track's hot-cue points UP into the store (ADR-0015 →
   // ADR-0020): the cue STATE LOCATION moves to the store, while the webview keeps
   // the set/jump logic (jump is a plain seek). Empty with no track.
@@ -621,6 +592,12 @@ export function useDeck(deckId: DeckId): DeckControls {
     primedRef.current = next
   }, [])
 
+  // Mirror the primed-off-air state UP into the store: the native LED painter
+  // reads it for the transport-CUE LED (ADR-0031 — LEDs read the store).
+  useEffect(() => {
+    setDeckPrimed(deckIndex, primed)
+  }, [deckIndex, primed])
+
   const channelRef = useRef<DeckChannel | null>(null)
   // Memoised in-flight channel build so rapid play() clicks share one
   // channel instead of stacking worklets on the bus.
@@ -704,9 +681,6 @@ export function useDeck(deckId: DeckId): DeckControls {
       if (status.event === 'model_loading' || status.event === 'worker_died') {
         channelRef.current?.reset()
         resetStreamMeasurements()
-        // The replacement worker starts masked; held steering dies with the
-        // stream (ADR-0023) — unlike style, which DeckColumn re-applies.
-        clearConditioning()
       }
       dispatch({ type: 'server_event', event: status as ServerEvent })
     })
@@ -751,7 +725,7 @@ export function useDeck(deckId: DeckId): DeckControls {
       channelRef.current = null
       channelPromiseRef.current = null
     }
-  }, [deckId, loudness, bandScroller, resetStreamMeasurements, clearConditioning])
+  }, [deckId, loudness, bandScroller, resetStreamMeasurements])
 
   // Project the shell's live beat analysis (ADR-0025): the honesty-gated
   // readout and the anchor-agreed phase clock arrive over the store at the
@@ -841,10 +815,7 @@ export function useDeck(deckId: DeckId): DeckControls {
     // The deck_play command drives the worker AND writes the store's transport;
     // the button lights when the snapshot round-trips (the transport projection).
     send({ type: 'play' })
-    // The play command clears the worker's held steering (ADR-0023);
-    // mirror that locally and in the store.
-    clearConditioning()
-  }, [ensureChannel, engine, send, setPrimed, resetStreamMeasurements, clearConditioning])
+  }, [ensureChannel, engine, send, setPrimed, resetStreamMeasurements])
 
   const seekTrack = useCallback((seconds: number) => {
     if (modeRef.current !== 'playback') return
@@ -902,8 +873,7 @@ export function useDeck(deckId: DeckId): DeckControls {
     // A primed deck IS playing (generating, off air): deck_play writes the store's
     // transport, so the button lights over the same projection as a plain play.
     send({ type: 'play' })
-    clearConditioning()
-  }, [ensureChannel, engine, send, setPrimed, resetStreamMeasurements, seekTrack, clearConditioning])
+  }, [ensureChannel, engine, send, setPrimed, resetStreamMeasurements, seekTrack])
 
   // Stop every layered sample on the engine (ADR-0022); the caller resets the UI
   // `layering` set in its own setLoop. Reads only refs, so it stays stable.
@@ -944,12 +914,11 @@ export function useDeck(deckId: DeckId): DeckControls {
       setLoop({ ...loopRef.current, active: null, layering: [] })
     }
     resetStreamMeasurements()
-    clearConditioning()
     setPrimed(false)
     // Recovery valve: if a play's round-trip never landed (dropped IPC), the
     // pending guard must not wedge the transport — STOP always re-arms it.
     playPendingRef.current = false
-  }, [send, setPrimed, setLoop, resetStreamMeasurements, silenceLayers, clearConditioning])
+  }, [send, setPrimed, setLoop, resetStreamMeasurements, silenceLayers])
 
   const setStyle = useCallback(
     (style: ActiveStyle) => {
@@ -957,79 +926,6 @@ export function useDeck(deckId: DeckId): DeckControls {
     },
     [send],
   )
-
-  /** Steer the deck's harmony (ADR-0023): builds the full wire multihot
-   * (empty pitches clear to masked), sends it to the worker, and mirrors the
-   * authored state into the store so an MCP agent reads the same truth. */
-  const setNotes = useCallback(
-    (pitches: number[], mode: NoteMode = 'chord') => {
-      // Filter before authoring: an invalid pitch must not survive into the
-      // ref/wire/store — a non-empty hold of only invalid pitches would send
-      // an all-OFF multihot (suppress melody) while the Rust mirror guard
-      // drops the write, leaving the three holders telling different stories.
-      const held = pitches.filter(isNotePitch)
-      const previous = notesRef.current
-      const next: NoteSteering | null =
-        held.length === 0 ? null : { pitches: held, mode }
-      notesRef.current = next
-      send({
-        type: 'set_notes',
-        notes:
-          next === null
-            ? null
-            : buildNoteMultihot(next.pitches, mode, previous?.pitches ?? []),
-      })
-      setDeckNotes(deckIndex, next)
-    },
-    [send, deckIndex],
-  )
-
-  /** Drum conditioning (ADR-0023): null = the model decides, false =
-   * suppress, true = force. Sent full-state and mirrored like setNotes. */
-  const setDrums = useCallback(
-    (drums: boolean | null) => {
-      drumsRef.current = drums
-      send({ type: 'set_drums', drums: drumWireFlag(drums) })
-      setDeckDrums(deckIndex, drums)
-    },
-    [send, deckIndex],
-  )
-
-  // Adopt EXTERNAL note/drum steering from the store (an MCP set_notes /
-  // set_drums) and drive the worker — the read side the mirror writes above
-  // pair with (ADR-0020's projection carrying ADR-0023's channel). Our own
-  // writes echo back value-equal and no-op; no synced gate is needed because
-  // both sides start unsteered (null) and nothing is persisted or replayed.
-  // The store's transport-transition clear lands here too — the null it
-  // brings is idempotent against the reset the worker already did.
-  useEffect(() => {
-    const snap = storeState?.decks[deckIndex]
-    if (!snap) return
-    const externalNotes = snap.notes ?? null
-    if (!sameNoteSteering(externalNotes, notesRef.current)) {
-      const previous = notesRef.current
-      notesRef.current =
-        externalNotes === null
-          ? null
-          : { pitches: [...externalNotes.pitches], mode: externalNotes.mode }
-      send({
-        type: 'set_notes',
-        notes:
-          externalNotes === null
-            ? null
-            : buildNoteMultihot(
-                externalNotes.pitches,
-                externalNotes.mode,
-                previous?.pitches ?? [],
-              ),
-      })
-    }
-    const externalDrums = snap.drums ?? null
-    if (externalDrums !== drumsRef.current) {
-      drumsRef.current = externalDrums
-      send({ type: 'set_drums', drums: drumWireFlag(externalDrums) })
-    }
-  }, [storeState, deckIndex, send])
 
   const loadTrack = useCallback(
     async (source: TrackSource, title: string) => {
@@ -1797,8 +1693,6 @@ export function useDeck(deckId: DeckId): DeckControls {
     play,
     stop,
     setStyle,
-    setNotes,
-    setDrums,
     setModel,
     restartWorker,
     setVolume,

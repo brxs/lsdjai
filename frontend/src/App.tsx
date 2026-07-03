@@ -12,6 +12,7 @@ import {
   invoke,
   getMcpInfo,
   rotateMcpToken,
+  setDeckStyleSelection,
   setMcpPort,
   subscribeLoadTrack,
   subscribeLoadSample,
@@ -20,7 +21,6 @@ import {
 } from './audio/nativeEngine'
 import { useAudioEngine } from './audio/engineContext'
 import { useInterfaceStore, useProjected } from './audio/interfaceStore'
-import { FX_KINDS } from './audio/fx'
 import { applyAppIntent } from './control/appIntents'
 import { useControlBus } from './control/busContext'
 import { MidiControls } from './control/MidiControls'
@@ -56,7 +56,6 @@ import type { StylePreset } from './presets'
 import { combinedRamWarning } from './ramWarning'
 import { phaseOffsetBeats } from './audio/track'
 import { handleShortcutKey } from './shortcuts'
-import { sameMask } from './selectionMask'
 
 /** The agent harnesses we tailor a connection snippet for. A `command` harness gets
  * a one-line CLI; a `config` harness gets a JSON block for its settings file (the
@@ -664,123 +663,20 @@ function App() {
     return aPlayback ? phaseOffsetBeats(a, b) : phaseOffsetBeats(b, a)
   }, [deckA, deckB])
 
+  // The MIDI hook is now a projection + intent bridge (ADR-0031): the shell
+  // owns the transport and paints the LEDs from the store, so App's old LED
+  // effects are gone. What remains webview-side is mirroring the two LED
+  // inputs React still owns into the store: the style-pad selection mask
+  // (below) and the primed flag (useDeck).
   const midi = useMidi()
-  const {
-    status: midiStatus,
-    setPadLeds,
-    setFxPadLeds,
-    setLoopPadLeds,
-    setCuePadLeds,
-    setChannelCueLed,
-    setTransportCueLed,
-    ledEpoch,
-  } = midi
-  const [padCounts, setPadCounts] = useState<Record<DeckId, number>>({
-    a: 0,
-    b: 0,
-  })
-  const handleTargetCount = useCallback((deck: DeckId, count: number) => {
-    setPadCounts((previous) =>
-      previous[deck] === count ? previous : { ...previous, [deck]: count },
-    )
-  }, [])
-  const handleTargetCountA = useCallback(
-    (count: number) => handleTargetCount('a', count),
-    [handleTargetCount],
-  )
-  const handleTargetCountB = useCallback(
-    (count: number) => handleTargetCount('b', count),
-    [handleTargetCount],
-  )
-  const [padSelections, setPadSelections] = useState<Record<DeckId, boolean[]>>(
-    { a: [], b: [] },
-  )
-  const handleSelectionChange = useCallback(
-    (deck: DeckId, selected: boolean[]) => {
-      setPadSelections((previous) =>
-        sameMask(previous[deck], selected)
-          ? previous
-          : { ...previous, [deck]: selected },
-      )
-    },
+  const handleSelectionChangeA = useCallback(
+    (selected: boolean[]) => setDeckStyleSelection(0, selected),
     [],
   )
-  const handleSelectionChangeA = useCallback(
-    (selected: boolean[]) => handleSelectionChange('a', selected),
-    [handleSelectionChange],
-  )
   const handleSelectionChangeB = useCallback(
-    (selected: boolean[]) => handleSelectionChange('b', selected),
-    [handleSelectionChange],
+    (selected: boolean[]) => setDeckStyleSelection(1, selected),
+    [],
   )
-
-  // LED feedback (M7 stretch): the HOT CUE bank's meaning follows the
-  // deck mode (M21, ADR-0015) — pads 1–N lit for N style targets on a
-  // realtime deck, filled hot cues lit on a playback deck. Re-sent on
-  // reconnect so a hot-plugged controller picks the state back up, and
-  // on every ledEpoch bump — a pad-mode switch clears the device's pad
-  // LEDs, so each bank repaints. Exactly one painter per deck.
-  const cueLedsA = deckA.mode === 'playback' ? deckA.track?.cues : undefined
-  const cueLedsB = deckB.mode === 'playback' ? deckB.track?.cues : undefined
-  useEffect(() => {
-    if (midiStatus !== 'connected') return
-    if (cueLedsA) setCuePadLeds('a', cueLedsA.map((cue) => cue !== null))
-    else setPadLeds('a', padCounts.a, padSelections.a)
-    if (cueLedsB) setCuePadLeds('b', cueLedsB.map((cue) => cue !== null))
-    else setPadLeds('b', padCounts.b, padSelections.b)
-  }, [
-    midiStatus,
-    setPadLeds,
-    setCuePadLeds,
-    padCounts,
-    padSelections,
-    cueLedsA,
-    cueLedsB,
-    ledEpoch,
-  ])
-
-  // PAD FX bank LEDs (M12): the active effect's pad lit per deck.
-  useEffect(() => {
-    if (midiStatus !== 'connected') return
-    setFxPadLeds('a', deckA.fx.kind ? FX_KINDS.indexOf(deckA.fx.kind) : null)
-    setFxPadLeds('b', deckB.fx.kind ? FX_KINDS.indexOf(deckB.fx.kind) : null)
-  }, [midiStatus, setFxPadLeds, deckA.fx.kind, deckB.fx.kind, ledEpoch])
-
-  // SAMPLER bank LEDs (M13): filled pad slots lit per deck — captures
-  // and generated slots alike (M18); a pending generation stays dark
-  // until it's actually playable.
-  const loopLedsA = useMemo(
-    () => deckA.loop.slots.map((slot) => slot.state === 'filled'),
-    [deckA.loop.slots],
-  )
-  const loopLedsB = useMemo(
-    () => deckB.loop.slots.map((slot) => slot.state === 'filled'),
-    [deckB.loop.slots],
-  )
-  useEffect(() => {
-    if (midiStatus !== 'connected') return
-    setLoopPadLeds('a', loopLedsA)
-    setLoopPadLeds('b', loopLedsB)
-  }, [midiStatus, setLoopPadLeds, loopLedsA, loopLedsB, ledEpoch])
-
-  // Cue LEDs (M10): channel CUE mirrors the headphone-cue toggles,
-  // transport CUE lights while a deck is primed off air. The active driver
-  // owns the bytes (issue #30) — App speaks deck + on/off, not status/note.
-  useEffect(() => {
-    if (midiStatus !== 'connected') return
-    setChannelCueLed('a', deckA.cue)
-    setChannelCueLed('b', deckB.cue)
-    setTransportCueLed('a', deckA.primed)
-    setTransportCueLed('b', deckB.primed)
-  }, [
-    midiStatus,
-    setChannelCueLed,
-    setTransportCueLed,
-    deckA.cue,
-    deckB.cue,
-    deckA.primed,
-    deckB.primed,
-  ])
 
   const ramWarning = combinedRamWarning(
     { a: deckA.state.model, b: deckB.state.model },
@@ -833,12 +729,10 @@ function App() {
             </p>
           )}
           <MidiControls
-            status={midi.status}
+            connected={midi.connected}
             deviceName={midi.deviceName}
             devices={midi.devices}
-            onConnect={midi.connect}
             onSelectDevice={midi.selectDevice}
-            readMonitor={midi.readMonitor}
           />
           <RecordControl recordingsFolder={recordingsFolder} />
           <Button onClick={() => setSettingsOpen(true)}>{t('settings.open')}</Button>
@@ -983,7 +877,6 @@ function App() {
           onSetStyle={deckA.setStyle}
           onSetModel={deckA.setModel}
           onRestart={deckA.restartWorker}
-          onTargetCount={handleTargetCountA}
           onSelectionChange={handleSelectionChangeA}
           shiftedDeck={shiftedDeck}
           primed={deckA.primed}
@@ -1041,7 +934,6 @@ function App() {
           onSetStyle={deckB.setStyle}
           onSetModel={deckB.setModel}
           onRestart={deckB.restartWorker}
-          onTargetCount={handleTargetCountB}
           onSelectionChange={handleSelectionChangeB}
           shiftedDeck={shiftedDeck}
           primed={deckB.primed}
