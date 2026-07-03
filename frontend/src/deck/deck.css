@@ -195,7 +195,9 @@
 }
 
 /* The door body: hidden (and untabbable) while the door is parked so only
-   the rail remains interactive; the visibility flip waits out the slide. */
+   the rail remains interactive; the visibility flip waits out the slide.
+   Scrolls as a last resort — the square pad is the door's fixed frame, and
+   clipped controls would be unreachable. */
 .deck__perform-content {
   flex: 1;
   min-width: 0;
@@ -203,8 +205,16 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3);
+  overflow-y: auto;
   visibility: hidden;
   transition: visibility 0s linear 0.3s;
+}
+
+.deck__perform-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
 }
 
 .deck__perform-door--open .deck__perform-content {
@@ -257,6 +267,7 @@
 
 .deck__perform-rail-chevron {
   display: none;
+  writing-mode: horizontal-tb;
   font: 700 var(--text-m) var(--font-mono);
   margin: auto 0;
 }

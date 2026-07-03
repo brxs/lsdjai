@@ -63,7 +63,7 @@ describe('PerformanceDrawer', () => {
     const rail = screen.getByRole('button', { name: 'Steer' })
     expect(rail).toHaveAttribute('aria-expanded', 'false')
     // The parked door body is hidden from the tree — only the rail remains.
-    expect(screen.queryByRole('button', { name: 'MIDI steer' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'MIDI steering' })).toBeNull()
     expect(container.querySelector('.deck__perform-rail-led--on')).toBeNull()
   })
 
@@ -81,7 +81,7 @@ describe('PerformanceDrawer', () => {
   it('the MIDI steer toggle arms and disarms through the shell service', () => {
     const first = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
     fireEvent.click(screen.getByRole('button', { name: 'Steer' }))
-    fireEvent.click(screen.getByRole('button', { name: 'MIDI steer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'MIDI steering' }))
     expect(setDeckPerformance).toHaveBeenCalledWith(1, {
       armed: true,
       key: 0,
@@ -97,7 +97,7 @@ describe('PerformanceDrawer', () => {
     )
     render(<PerformanceDrawer deckId="b" deckIndex={1} />)
     fireEvent.click(screen.getByRole('button', { name: 'Steer' }))
-    fireEvent.click(screen.getByRole('button', { name: 'MIDI steer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'MIDI steering' }))
     expect(setDeckPerformance).toHaveBeenLastCalledWith(
       1,
       expect.objectContaining({ armed: false }),
@@ -172,7 +172,7 @@ describe('PerformanceDrawer', () => {
     const first = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
     fireEvent.click(screen.getByRole('button', { name: 'Steer' }))
     expect(screen.getByRole('status')).toHaveTextContent(
-      'Steering off — flip MIDI steer to play',
+      'Steering off — flip MIDI steering to play',
     )
     first.unmount()
 

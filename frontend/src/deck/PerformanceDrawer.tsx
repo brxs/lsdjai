@@ -98,9 +98,8 @@ export function PerformanceDrawer({
       aria-label={t('deck.perform.title')}
     >
       <div className="deck__perform-content" aria-hidden={!open}>
-        <h3 className="deck__perform-title">{t('deck.perform.title')}</h3>
-        <p className="deck__perform-hint">{t('deck.perform.hint')}</p>
-        <div className="deck__perform-row">
+        <header className="deck__perform-head">
+          <h3 className="deck__perform-title">{t('deck.perform.title')}</h3>
           <Button
             onClick={toggleSteer}
             aria-pressed={perf.armed}
@@ -108,6 +107,9 @@ export function PerformanceDrawer({
           >
             {t('deck.perform.steer')}
           </Button>
+        </header>
+        <p className="deck__perform-hint">{t('deck.perform.hint')}</p>
+        <div className="deck__perform-row">
           <Select
             label={t('deck.perform.key')}
             value={NOTE_NAMES[perf.key] ?? 'C'}
