@@ -128,8 +128,9 @@ pub const PAD_COUNT: u8 = 8;
 pub const PAD_FX_NOTE_BASE: u8 = 0x10;
 /// SAMPLER bank base: the freeze-pad loop slots (ADR-0009).
 pub const LOOP_NOTE_BASE: u8 = 0x30;
-/// KEYBOARD bank base (issue #48): the performance-note pads. Interpolated
-/// from the same 0x10-per-bank scheme — measured on device via the checklist.
+/// KEYBOARD bank base (issue #48): the performance-note pads. Note base per
+/// the 0x10-per-bank scheme; the pads arrive on the SHIFT pad statuses —
+/// both MEASURED on the device (2026-07-03, docs/midi-ddj-flx4.md).
 pub const KEYBOARD_NOTE_BASE: u8 = 0x40;
 /// The loop-slot count the SAMPLER bank drives (mirrors `LOOP_SLOT_COUNT`).
 const LOOP_SLOT_COUNT: u8 = lsdj_engine::LOOP_SLOT_COUNT as u8;
@@ -306,9 +307,13 @@ impl Flx4Translator {
         }
 
         // KEYBOARD bank (issue #48): both edges matter — extracted before the
-        // release drop. The bank is self-identifying by note range, so no
+        // release drop. MEASURED on the device (2026-07-03): KEYBOARD is a
+        // shift-layer pad mode and its pads ride the SHIFT pad statuses
+        // (`0x98`/`0x9A`), not the plain pad channels the 0x10-per-bank
+        // scheme suggested — the same firmware habit as the SAMPLER-clear
+        // chord. The bank stays self-identifying by note range, so no
         // pad-mode tracking is needed for input.
-        if let Some(deck) = deck_of(PAD_STATUS, status) {
+        if let Some(deck) = deck_of(SHIFT_PAD_STATUS, status) {
             if (KEYBOARD_NOTE_BASE..KEYBOARD_NOTE_BASE + PAD_COUNT).contains(&number) {
                 return Translated::PerformancePad {
                     deck,
@@ -914,8 +919,10 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_bank_pads_report_both_edges() {
-        for (status, deck) in [(0x97, DeckId::A), (0x99, DeckId::B)] {
+    fn keyboard_bank_pads_report_both_edges_on_the_shift_layer() {
+        // Measured on the device (2026-07-03): deck A sends `98 40-47`,
+        // deck B `9A 40-47` — the shift pad layer, notes per the bank scheme.
+        for (status, deck) in [(0x98, DeckId::A), (0x9a, DeckId::B)] {
             let mut t = translator();
             for pad in 0..8u8 {
                 assert_eq!(
@@ -928,6 +935,15 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_plain_pad_layer_at_the_keyboard_range_stays_unmapped() {
+        // The interpolation that shipped first put the bank here; the device
+        // said otherwise — these bytes must translate to nothing.
+        let mut t = translator();
+        assert_eq!(t.translate(&[0x97, 0x40, PRESS]), Translated::None);
+        assert_eq!(t.translate(&[0x99, 0x47, PRESS]), Translated::None);
     }
 
     #[test]
