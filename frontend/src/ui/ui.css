@@ -642,6 +642,11 @@
   box-shadow: var(--inset-border);
   touch-action: none;
   cursor: crosshair;
+  /* The pad owns its square: edge targets' labels used to spill into the
+     panel (and under the performance door's parked rail, poking out the far
+     side). Drags past the edge still work — pointer capture, not geometry,
+     keeps them alive. */
+  overflow: hidden;
 }
 
 .ui-xypad__surface:focus-visible {
