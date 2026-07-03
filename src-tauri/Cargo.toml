@@ -97,3 +97,17 @@ hound = "=3.5.1"
 [profile.release]
 opt-level = 3
 
+# Dev profile: dependencies get full optimisation — symphonia/rubato run the
+# whole track-load decode+resample (ADR-0030), which measures 37.4 s at
+# opt-level 0 vs 0.5 s optimised on a 5-minute 44.1 kHz WAV (the
+# `timing_full_load_pipeline` diagnostic in decode.rs) — and the workspace
+# crates take opt-level 2 for the in-crate sample loops and analyses (1.5 s
+# end-to-end vs 3.0 s at opt-level 1; the rebuild cost is dominated by the
+# link step either way). `package."*"` never applies to workspace members, so
+# the split is exactly deps-hot / app-warm.
+[profile.dev]
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 3
+

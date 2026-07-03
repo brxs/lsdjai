@@ -269,6 +269,44 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "timing diagnostic — run with --ignored --nocapture"]
+    fn timing_full_load_pipeline() {
+        use std::time::Instant;
+        let samples = crate::analysis::beat::fixtures::click_track(128.0, 300.0, 44_100.0, 1);
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut cursor = Cursor::new(Vec::new());
+        let mut writer = hound::WavWriter::new(&mut cursor, spec).expect("wav writer");
+        for s in &samples {
+            let clamped = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+            writer.write_sample(clamped).expect("wav sample");
+        }
+        writer.finalize().expect("wav finalize");
+        let bytes = cursor.into_inner();
+
+        let t = Instant::now();
+        let decoded = decode_to_48k(bytes, Some("wav")).expect("decodes");
+        eprintln!("decode+resample (5 min @ 44.1k): {:?}", t.elapsed());
+        let t = Instant::now();
+        let coarse = crate::analysis::beat::track_bpm(&decoded.left, &decoded.right, 48_000.0);
+        eprintln!("track_bpm: {:?} -> {coarse:?}", t.elapsed());
+        let t = Instant::now();
+        let grid =
+            crate::analysis::grid::track_beatgrid(&decoded.left, &decoded.right, 48_000.0, coarse);
+        eprintln!("beatgrid: {:?} -> {:?}", t.elapsed(), grid.map(|g| g.bpm));
+        let t = Instant::now();
+        let bands = crate::analysis::bands::track_bands(&decoded.left, &decoded.right, 48_000.0);
+        eprintln!("bands: {:?} ({} hops)", t.elapsed(), bands.hops());
+        let t = Instant::now();
+        let interleaved = decoded.interleaved();
+        eprintln!("interleave: {:?} ({} samples)", t.elapsed(), interleaved.len());
+    }
+
+    #[test]
     fn refuses_bytes_that_are_not_audio() {
         let err = match decode_to_48k(b"definitely not audio".to_vec(), None) {
             Err(err) => err,
