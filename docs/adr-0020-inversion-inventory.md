@@ -120,7 +120,13 @@ picker enumerations, `previewingId` row mapping, throttle/coalescer instances.
   `playPendingRef` is gone: `deck_play` guards itself with the store's
   atomic `start_transport` (stopped→playing under the lock), so a racing
   second tap is a shell-side no-op that cannot re-arm the worker or reset
-  held steering. The `mcp://deck-command` relay REMAINS for
+  held steering. Found in the field right after D: gate-free adoption is
+  only sound if snapshots arrive in MUTATION order, and the store's
+  emit-after-unlock let a streaming deck's analysis tick publish a stale
+  snapshot over a fresh `deck_play` (the play-button-lights-late bug) —
+  snapshots now enqueue under the state lock and a single publisher thread
+  emits + fans out to the watchers in that order. The `mcp://deck-command`
+  relay REMAINS for
   seek/rate/sync/beatloop/onair: those semantics (transport wrappers,
   quantise, sync, the prime flow) are exactly Phase E's items, and the relay
   dies with them (constraint 5) rather than half-moving now.

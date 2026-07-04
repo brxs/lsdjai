@@ -29,7 +29,7 @@
 //! IPC — unit-tested directly). [`InterfaceStore`] is the thin shell wrapper that
 //! locks the state, applies a mutation, and emits the snapshot.
 
-use std::sync::Mutex;
+use std::sync::{mpsc, Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -847,20 +847,56 @@ type StoreWatcher = Box<dyn Fn(&InterfaceState) + Send + Sync>;
 
 pub struct InterfaceStore {
     state: Mutex<InterfaceState>,
-    app: AppHandle,
+    /// The ordered publication queue: snapshots are enqueued UNDER the state
+    /// lock — so queue order IS mutation order — and drained by the single
+    /// publisher thread, which emits to the webview and runs the watcher
+    /// fan-out. Publishing after the lock dropped (the old shape) let two
+    /// mutating threads invert: a snapshot cloned before a change could be
+    /// emitted after it, and the gate-free projection adopted the stale one
+    /// (the play-button-lights-late bug — `deck_play` on the main thread
+    /// racing a streaming deck's analysis tick).
+    publish: mpsc::Sender<InterfaceState>,
     /// In-process change listeners (the native LED painter, ADR-0031), called
-    /// with the fresh snapshot after every real mutation — the Rust-side
-    /// equivalent of the webview's `store://changed` subscription, without a
-    /// serde round-trip.
-    watchers: Mutex<Vec<StoreWatcher>>,
+    /// with each published snapshot in mutation order, on the publisher
+    /// thread — the Rust-side equivalent of the webview's `store://changed`
+    /// subscription, without a serde round-trip.
+    watchers: Arc<Mutex<Vec<StoreWatcher>>>,
 }
 
 impl InterfaceStore {
     pub fn new(app: AppHandle) -> Self {
+        Self::with_emitter(move |snapshot| {
+            let _ = app.emit(STORE_CHANGED_EVENT, snapshot);
+        })
+    }
+
+    /// The store with a custom webview emitter — the seam the ordering test
+    /// uses (a real `AppHandle` needs a running Tauri app). Spawns the
+    /// publisher thread; it lives as long as the store (the channel
+    /// disconnects when the store drops, and the thread exits with it).
+    fn with_emitter(emit: impl Fn(&InterfaceState) + Send + 'static) -> Self {
+        let watchers: Arc<Mutex<Vec<StoreWatcher>>> = Arc::new(Mutex::new(Vec::new()));
+        let (publish, inbox) = mpsc::channel::<InterfaceState>();
+        {
+            let watchers = Arc::clone(&watchers);
+            std::thread::Builder::new()
+                .name("lsdj-store-publish".into())
+                .spawn(move || {
+                    while let Ok(snapshot) = inbox.recv() {
+                        emit(&snapshot);
+                        for watcher in
+                            watchers.lock().unwrap_or_else(|p| p.into_inner()).iter()
+                        {
+                            watcher(&snapshot);
+                        }
+                    }
+                })
+                .expect("failed to spawn lsdj store publisher thread");
+        }
         InterfaceStore {
             state: Mutex::new(InterfaceState::default()),
-            app,
-            watchers: Mutex::new(Vec::new()),
+            publish,
+            watchers,
         }
     }
 
@@ -878,29 +914,26 @@ impl InterfaceStore {
         self.lock().clone()
     }
 
-    /// Apply a mutation under the lock, then emit the fresh snapshot to the webview.
-    /// The clone happens under the lock and the emit after it drops, so serialisation
-    /// never holds the mutex. A poisoned lock is recovered (a panic in another
-    /// holder must not wedge every later control).
+    /// Apply a mutation under the lock, then queue the fresh snapshot for
+    /// publication. The enqueue happens UNDER the lock so publication order is
+    /// mutation order across threads (commands on the main thread, the
+    /// analysis ticks on theirs); serialisation and the watcher fan-out stay
+    /// off the mutex — they run on the publisher thread. A poisoned lock is
+    /// recovered (a panic in another holder must not wedge every later
+    /// control).
     ///
     /// A mutation that leaves the state unchanged emits nothing — many mirror writers
     /// re-push identical values (a boot replay, a `track?.cues` reference change with
     /// the same points), and a redundant `store://changed` would re-render every
     /// projection consumer for no reason.
     fn mutate(&self, f: impl FnOnce(&mut InterfaceState)) {
-        let snapshot = {
-            let mut state = self.lock();
-            let before = state.clone();
-            f(&mut state);
-            if *state == before {
-                return;
-            }
-            state.clone()
-        };
-        let _ = self.app.emit(STORE_CHANGED_EVENT, &snapshot);
-        for watcher in self.watchers.lock().unwrap_or_else(|p| p.into_inner()).iter() {
-            watcher(&snapshot);
+        let mut state = self.lock();
+        let before = state.clone();
+        f(&mut state);
+        if *state == before {
+            return;
         }
+        let _ = self.publish.send(state.clone());
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, InterfaceState> {
@@ -1547,5 +1580,48 @@ mod tests {
         assert!(json.contains("\"onAir\""));
         assert!(json.contains("\"trimDb\""));
         assert!(json.contains("\"dubEcho\""));
+    }
+
+    /// Concurrent mutators must never publish a stale snapshot after a fresher
+    /// one: the enqueue happens under the state lock, so the publisher thread
+    /// sees mutation order. The old emit-after-unlock shape let a streaming
+    /// deck's analysis tick overwrite `deck_play`'s fresh transport in the
+    /// projection (the play-button-lights-late bug).
+    #[test]
+    fn snapshots_publish_in_mutation_order_across_threads() {
+        const WRITES: usize = 200;
+        let store = InterfaceStore::with_emitter(|_| {});
+        let (tx, rx) = mpsc::channel();
+        store.watch(move |state| {
+            let _ = tx.send((state.decks[0].volume, state.decks[1].volume));
+        });
+        std::thread::scope(|s| {
+            for deck in 0..2 {
+                let store = &store;
+                s.spawn(move || {
+                    // Descending from just below the 1.0 default, so each
+                    // deck's column is monotonic from the very first snapshot.
+                    for i in 0..WRITES {
+                        store.set_volume(deck, (WRITES - 1 - i) as f32 / WRITES as f32);
+                    }
+                });
+            }
+        });
+        // Disconnect the queue so the publisher drains, exits, and drops the
+        // watcher (and with it the channel) — `rx` then ends deterministically.
+        drop(store);
+        let published: Vec<(f32, f32)> = rx.iter().collect();
+        assert_eq!(published.len(), 2 * WRITES);
+        // Each deck's writes were monotonic, so any published regression means
+        // a stale snapshot overtook a fresher one.
+        for pair in published.windows(2) {
+            assert!(
+                pair[1].0 <= pair[0].0 && pair[1].1 <= pair[0].1,
+                "stale snapshot published after a fresher one: {:?} then {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        assert_eq!(*published.last().unwrap(), (0.0, 0.0));
     }
 }

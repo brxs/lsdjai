@@ -144,6 +144,10 @@ before the port (and the monitor shows the documented bytes).
 - [ ] Hammer PLAY twice quickly from stopped — one clean stream start, no
       restart glitch, and held MIDI steering survives a redundant tap on a
       playing deck (the shell's atomic start_transport is the guard now).
+- [ ] With deck A streaming (or freshly stopped), press PLAY on the other
+      deck — the button lights immediately, first press, no ~1 s catch-up
+      (the ordered store publisher: an analysis tick can no longer publish
+      a stale snapshot over the fresh transport).
 - [ ] MCP `set_hot_cue`/`clear_hot_cue` light/clear the on-screen pads
       immediately; a pad set on-screen right after is kept.
 
