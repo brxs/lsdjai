@@ -493,7 +493,7 @@ fn bind_output(shared: &Arc<Shared>, driver: &Driver, name: &str) {
 }
 
 /// The LED painter: recompute the full frame on every trigger and send only
-/// the groups whose bytes changed (a Repaint clears the diff baseline — the
+/// the groups whose bytes changed (a Rebind clears the diff baseline — the
 /// device's pads were just wiped). Loop-slot fill comes from the engine (the
 /// truth of the audio), everything else from the store snapshot.
 fn run_painter(shared: Arc<Shared>, paint_rx: Receiver<Paint>) {
