@@ -1,46 +1,50 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createControlBus, type ControlBus } from './bus'
 import { ControlBusProvider } from './ControlBusProvider'
 import { MidiControls } from './MidiControls'
 import { useMidi } from './useMidi'
+import {
+  midiMonitor,
+  midiSelect,
+  midiStatus,
+  subscribeMidiIntent,
+  subscribeMidiStatus,
+  type NativeMidiStatus,
+} from './nativeMidi'
 
-type FakeInput = {
-  name: string
-  onmidimessage: ((event: { data: Uint8Array | null }) => void) | null
-}
-
-function stubMidiAccess(inputs: FakeInput[]) {
-  const access = {
-    inputs: new Map(inputs.map((input, index) => [`in-${index}`, input])),
-    outputs: new Map(),
-    onstatechange: null,
+// The shell owns the MIDI transport (ADR-0031); the webview sees only the
+// status/monitor commands and the midi://intent / midi://status events.
+vi.mock('./nativeMidi', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./nativeMidi')>()
+  return {
+    ...original,
+    midiStatus: vi.fn(async () => original.DISCONNECTED_STATUS),
+    midiMonitor: vi.fn(async () => []),
+    midiSelect: vi.fn(),
+    subscribeMidiStatus: vi.fn(() => () => {}),
+    subscribeMidiIntent: vi.fn(() => () => {}),
   }
-  Object.defineProperty(navigator, 'requestMIDIAccess', {
-    configurable: true,
-    value: vi.fn(() => Promise.resolve(access)),
-  })
-}
+})
 
-function clearMidiAccess() {
-  Object.defineProperty(navigator, 'requestMIDIAccess', {
-    configurable: true,
-    value: undefined,
-  })
-}
+const connectedStatus = (over: Partial<NativeMidiStatus> = {}): NativeMidiStatus => ({
+  connected: true,
+  deviceName: 'DDJ-FLX4 MIDI 1',
+  driverId: 'flx4',
+  devices: ['DDJ-FLX4 MIDI 1'],
+  ...over,
+})
 
 /** App owns useMidi and passes the result down; mirror that here. */
 function Harness() {
   const midi = useMidi()
   return (
     <MidiControls
-      status={midi.status}
+      connected={midi.connected}
       deviceName={midi.deviceName}
       devices={midi.devices}
-      onConnect={midi.connect}
       onSelectDevice={midi.selectDevice}
-      readMonitor={midi.readMonitor}
     />
   )
 }
@@ -53,88 +57,89 @@ function renderControls(bus: ControlBus = createControlBus()) {
   )
 }
 
+beforeEach(() => {
+  vi.mocked(midiStatus).mockResolvedValue({
+    connected: false,
+    deviceName: null,
+    driverId: null,
+    devices: [],
+  })
+  vi.mocked(midiMonitor).mockResolvedValue([])
+})
+
 afterEach(() => {
-  clearMidiAccess()
-  vi.restoreAllMocks()
+  vi.clearAllMocks()
 })
 
 describe('MidiControls', () => {
-  it('reports MIDI as unavailable when the browser lacks Web MIDI', () => {
-    clearMidiAccess()
+  it('shows a passive no-controller status while nothing is bound', async () => {
     renderControls()
-    expect(screen.getByRole('status')).toHaveTextContent('MIDI unavailable')
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent(
+        'No supported controller found',
+      ),
+    )
+    // Native binding is automatic — there is no connect button any more.
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 
-  it('connects on click and shows the device name', async () => {
-    stubMidiAccess([{ name: 'DDJ-FLX4 MIDI 1', onmidimessage: null }])
+  it('shows the bound device name from the initial status hydrate', async () => {
+    vi.mocked(midiStatus).mockResolvedValue(connectedStatus())
     renderControls()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Connect MIDI' }))
-    await waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent('DDJ-FLX4 MIDI 1'),
-    )
-    expect(screen.queryByRole('button')).not.toBeInTheDocument()
-  })
-
-  it('offers a retry when no supported controller is plugged in', async () => {
-    stubMidiAccess([{ name: 'Some Keyboard', onmidimessage: null }])
-    renderControls()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Connect MIDI' }))
-    // The chip itself surfaces the failure and stays clickable to retry.
-    await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: 'No supported controller found' }),
-      ).toBeEnabled(),
-    )
-  })
-
-  it('shows no picker for a single controller, one to switch between two', async () => {
-    stubMidiAccess([{ name: 'DDJ-FLX4 MIDI 1', onmidimessage: null }])
-    const { unmount } = renderControls()
-    fireEvent.click(screen.getByRole('button', { name: 'Connect MIDI' }))
     await waitFor(() =>
       expect(screen.getByRole('status')).toHaveTextContent('DDJ-FLX4 MIDI 1'),
     )
     // One device: nothing to pick.
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
-    unmount()
+  })
 
-    stubMidiAccess([
-      { name: 'DDJ-FLX4 MIDI 1', onmidimessage: null },
-      { name: 'DDJ-400 MIDI 1', onmidimessage: null },
-    ])
+  it('follows midi://status changes (hot-plug lands without a gesture)', async () => {
+    let announce: ((status: NativeMidiStatus) => void) | null = null
+    vi.mocked(subscribeMidiStatus).mockImplementation((onStatus) => {
+      announce = onStatus
+      return () => {}
+    })
     renderControls()
-    fireEvent.click(screen.getByRole('button', { name: 'Connect MIDI' }))
-    // First match (the FLX4) binds; the picker offers both.
+    await waitFor(() => expect(announce).not.toBeNull())
+
+    announce!(connectedStatus())
     await waitFor(() =>
       expect(screen.getByRole('status')).toHaveTextContent('DDJ-FLX4 MIDI 1'),
     )
-    const picker = screen.getByRole('combobox', { name: 'Controller' })
-    expect(picker).toBeInTheDocument()
-
-    // Choosing the DDJ-400 re-binds onto it.
-    fireEvent.change(picker, { target: { value: 'DDJ-400 MIDI 1' } })
-    await waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent('DDJ-400 MIDI 1'),
-    )
   })
 
-  it('publishes translated intents and shows raw bytes in the monitor', async () => {
-    const input: FakeInput = { name: 'DDJ-FLX4', onmidimessage: null }
-    stubMidiAccess([input])
+  it('offers a picker for two controllers and selects through the shell', async () => {
+    vi.mocked(midiStatus).mockResolvedValue(
+      connectedStatus({ devices: ['DDJ-FLX4 MIDI 1', 'DDJ-400 MIDI 1'] }),
+    )
+    renderControls()
+    const picker = await screen.findByRole('combobox', { name: 'Controller' })
+    fireEvent.change(picker, { target: { value: 'DDJ-400 MIDI 1' } })
+    expect(midiSelect).toHaveBeenCalledWith('DDJ-400 MIDI 1')
+  })
+
+  it('bridges midi://intent onto the ControlBus', async () => {
+    let deliver: ((intent: { kind: string }) => void) | null = null
+    vi.mocked(subscribeMidiIntent).mockImplementation((onIntent) => {
+      deliver = onIntent as (intent: { kind: string }) => void
+      return () => {}
+    })
     const bus = createControlBus()
     const seen = vi.fn()
     bus.subscribe(seen)
     renderControls(bus)
+    await waitFor(() => expect(deliver).not.toBeNull())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Connect MIDI' }))
-    await waitFor(() => expect(input.onmidimessage).not.toBeNull())
-
-    input.onmidimessage?.({ data: new Uint8Array([0x90, 0x0b, 0x7f]) })
+    deliver!({ kind: 'play_toggle', deck: 'a' } as never)
     expect(seen).toHaveBeenCalledWith({ kind: 'play_toggle', deck: 'a' })
+  })
 
+  it('shows raw bytes from the native monitor while connected', async () => {
+    vi.mocked(midiStatus).mockResolvedValue(connectedStatus())
+    vi.mocked(midiMonitor).mockResolvedValue([
+      { id: 0, bytes: [0x90, 0x0b, 0x7f] },
+    ])
+    renderControls()
     const monitor = await screen.findByLabelText('MIDI monitor')
     await waitFor(() => expect(monitor).toHaveTextContent('90 0B 7F'))
   })

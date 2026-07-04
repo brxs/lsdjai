@@ -9,10 +9,13 @@ import {
 } from './audio/types'
 import { uploadStyleSample } from './audio/styleSample'
 import {
+  FX_ARG,
   invoke,
   getMcpInfo,
   rotateMcpToken,
   setMcpPort,
+  setRecordingsFolder,
+  styleApplyPreset,
   subscribeLoadTrack,
   subscribeLoadSample,
   subscribeDeckCommand,
@@ -20,7 +23,6 @@ import {
 } from './audio/nativeEngine'
 import { useAudioEngine } from './audio/engineContext'
 import { useInterfaceStore, useProjected } from './audio/interfaceStore'
-import { FX_KINDS } from './audio/fx'
 import { applyAppIntent } from './control/appIntents'
 import { useControlBus } from './control/busContext'
 import { MidiControls } from './control/MidiControls'
@@ -43,6 +45,9 @@ import {
   deletePreset,
   loadAppSettings,
   loadPresets,
+  takeLegacyDeckStyles,
+  takeLegacyMixerSettings,
+  takeLegacyShellSettings,
   updateAppSettings,
   upsertPresets,
   type AccentTheme,
@@ -56,7 +61,6 @@ import type { StylePreset } from './presets'
 import { combinedRamWarning } from './ramWarning'
 import { phaseOffsetBeats } from './audio/track'
 import { handleShortcutKey } from './shortcuts'
-import { sameMask } from './selectionMask'
 
 /** The agent harnesses we tailor a connection snippet for. A `command` harness gets
  * a one-line CLI; a `config` harness gets a JSON block for its settings file (the
@@ -226,15 +230,18 @@ function App() {
   const deckA = useDeck('a')
   const deckB = useDeck('b')
   // Crossfade / cue-mix are projections of the store, rendered optimistically
-  // during a drag and reconciled to the store (a MIDI move arrives the same way).
+  // during a drag and reconciled to the store (a MIDI move arrives the same
+  // way). The shell hydrates its persisted values into engine + store before
+  // the webview exists (ADR-0020 phase C), so the initials only cover the
+  // frames before the first snapshot.
   const [crossfade, setCrossfade] = useProjected(
     store?.crossfade,
-    loadAppSettings().crossfade ?? INITIAL_CROSSFADE,
+    INITIAL_CROSSFADE,
     (position) => engine.setCrossfade(position),
   )
   const [cueMix, setCueMix] = useProjected(
     store?.cueMix,
-    loadAppSettings().cueMix ?? INITIAL_CUE_MIX,
+    INITIAL_CUE_MIX,
     (position) => engine.setCueMix(position),
   )
   // Stable per-deck model-option arrays so the memoised Settings <Select> isn't
@@ -257,13 +264,11 @@ function App() {
   // The chosen native MAIN output device by name (empty = system default;
   // master → its ch 1/2) and the headphone CUE device (empty = "same as main",
   // the FLX4 phones on ch 3/4; a different name routes cue to a second device).
-  // App owns the persisted choices; each picker owns its live list and switch.
-  const [mainDevice, setMainDevice] = useState(
-    () => loadAppSettings().outputDevice ?? '',
-  )
-  const [cueDevice, setCueDevice] = useState(
-    () => loadAppSettings().cueDevice ?? '',
-  )
+  // Shell-persisted store settings (ADR-0020 phase A): the pickers project the
+  // snapshot; a successful switch records + persists Rust-side, and the shell
+  // re-applies them at boot — no localStorage, no webview replay.
+  const mainDevice = store?.mainDevice ?? ''
+  const cueDevice = store?.cueDevice ?? ''
   // The beat view's home (M22): centre stacked, top bar, or off.
   const [beatView, setBeatView] = useState<BeatViewLayout>(
     () => loadAppSettings().beatView ?? 'center',
@@ -310,18 +315,15 @@ function App() {
     updateAppSettings({ accent: value })
   }, [])
 
-  // Where master-bus recordings are saved (empty = the OS Downloads folder, the
-  // default). App owns the persisted choice; RecordControl reads it to save the
-  // take, the Rust side recreates the folder and falls back to Downloads.
-  const [recordingsFolder, setRecordingsFolder] = useState(
-    () => loadAppSettings().recordingsFolder ?? '',
-  )
+  // Where master-bus recordings are saved (empty = the OS Downloads folder,
+  // the default). A shell-persisted store setting (ADR-0020 phase A):
+  // RecordControl reads the projection, the command persists Rust-side.
+  const recordingsFolder = store?.recordingsFolder ?? ''
   const [recordingsFolderError, setRecordingsFolderError] = useState<string | null>(
     null,
   )
   const handleRecordingsFolder = useCallback((path: string) => {
     setRecordingsFolder(path)
-    updateAppSettings({ recordingsFolder: path })
   }, [])
   const chooseRecordingsFolder = useCallback(async () => {
     setRecordingsFolderError(null)
@@ -372,34 +374,78 @@ function App() {
     setMcpInfo((info) => (info ? { ...info, port: bound } : info))
   }, [])
 
-  // Hand the restored mix positions to the engine once — it holds them
-  // until the bus is built on first play. Later moves go through the
-  // handlers, so this deliberately ignores state updates. The persisted
-  // output device is applied best-effort: it may be gone since last run,
-  // and a failure must leave the engine's default routing undisturbed.
-  useEffect(() => {
-    engine.setCrossfade(crossfade)
-    engine.setCueMix(cueMix)
-    // Apply persisted device choices best-effort (either may be gone since last
-    // run). Main first, so a "same as main" cue resolves against the right
-    // device on the engine side.
-    if (mainDevice) void engine.setMainDevice(mainDevice).catch(() => {})
-    if (cueDevice) void engine.setCueDevice(cueDevice).catch(() => {})
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine])
+  // No mix-position boot replay: the SHELL hydrates its persisted crossfade,
+  // cue mix, and per-deck mixer into the engine and the store before the
+  // webview exists (ADR-0020 phase C), like the devices in phase A.
 
-  // The one place a successful device switch lands: state + persist. The picker
-  // has already performed the switch on the engine; we only record the choice
-  // (so a rejected switch never reaches here and the selection reverts to the
-  // last good value). Main persists under the legacy `outputDevice` key.
-  const handleMainDevice = useCallback((name: string) => {
-    setMainDevice(name)
-    updateAppSettings({ outputDevice: name })
-  }, [])
-  const handleCueDevice = useCallback((name: string) => {
-    setCueDevice(name)
-    updateAppSettings({ cueDevice: name })
-  }, [])
+  // One-time migration: device/folder choices saved by pre-inversion builds
+  // live in localStorage; once the store hydrates empty (a fresh shell
+  // settings file), push the legacy values through the same commands a picker
+  // uses — they persist shell-side — and drop the localStorage keys.
+  const migratedShellSettingsRef = useRef(false)
+  useEffect(() => {
+    if (!store || migratedShellSettingsRef.current) return
+    migratedShellSettingsRef.current = true
+    const legacy = takeLegacyShellSettings()
+    if (legacy) {
+      if (legacy.outputDevice && !store.mainDevice) {
+        void engine.setMainDevice(legacy.outputDevice).catch(() => {})
+      }
+      if (legacy.cueDevice && !store.cueDevice) {
+        void engine.setCueDevice(legacy.cueDevice).catch(() => {})
+      }
+      if (legacy.recordingsFolder && !store.recordingsFolder) {
+        setRecordingsFolder(legacy.recordingsFolder)
+      }
+    }
+    // The style-pad arrangements moved shell-side in phase B: replay a
+    // pre-inversion localStorage layout through the preset intent — only
+    // onto a deck the shell hydrated empty, so the settings file (once
+    // written) always wins.
+    const legacyStyles = takeLegacyDeckStyles()
+    if (legacyStyles) {
+      for (const deckId of ['a', 'b'] as const) {
+        const style = legacyStyles[deckId]
+        const deckIndex = deckId === 'a' ? 0 : 1
+        if (style && store.decks[deckIndex]?.styleTargets.length === 0) {
+          styleApplyPreset(deckIndex, style.targets, style.cursor)
+        }
+      }
+    }
+    // The mixer moved shell-side in phase C: push a pre-inversion layout
+    // through the same commands a fader uses (they write engine + store; the
+    // settings watcher persists). Unconditional: the strip fires exactly
+    // once per profile, on the first post-upgrade boot — a boot on which the
+    // shell can only have hydrated defaults (the settings file gains mixer
+    // values on this very run).
+    const legacyMixer = takeLegacyMixerSettings()
+    if (legacyMixer) {
+      for (const deckId of ['a', 'b'] as const) {
+        const mixer = legacyMixer.decks[deckId]
+        if (!mixer) continue
+        const deck = deckId === 'a' ? 0 : 1
+        if (mixer.volume !== undefined) {
+          void invoke('set_volume', { deck, gain: mixer.volume }).catch(() => {})
+        }
+        if (mixer.eq) {
+          for (const band of ['low', 'mid', 'high'] as const) {
+            void invoke('set_eq', { deck, band, value: mixer.eq[band] }).catch(() => {})
+          }
+        }
+        if (mixer.fx?.kind) {
+          void invoke('set_fx', { deck, kind: FX_ARG[mixer.fx.kind] }).catch(() => {})
+          void invoke('set_fx_amount', { deck, amount: mixer.fx.amount }).catch(() => {})
+        }
+        if (mixer.trimDb !== undefined) {
+          void invoke('set_trim', { deck, db: mixer.trimDb }).catch(() => {})
+        }
+      }
+      if (legacyMixer.crossfade !== undefined) setCrossfade(legacyMixer.crossfade)
+      if (legacyMixer.cueMix !== undefined) setCueMix(legacyMixer.cueMix)
+    }
+    // setCrossfade/setCueMix are stable projections; the effect is one-shot.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, engine])
 
   useEffect(() => {
     window.addEventListener('keydown', handleShortcutKey)
@@ -425,14 +471,14 @@ function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [handleMediaToggle])
 
-  // The one place a crossfade move is defined: audio bus + state + persist.
-  // Every source — slider, keyboard, hardware — lands here.
+  // The one place a crossfade move is defined: audio bus + state. Every
+  // source — slider, keyboard, hardware — lands here; the store change it
+  // records is what the shell persists (ADR-0020 phase C).
   const handleCrossfade = useCallback(
     (position: number) => {
       // The projected setter renders optimistically and emits engine.setCrossfade,
       // which records the move into the store (the single source of truth).
       setCrossfade(position)
-      updateAppSettings({ crossfade: position })
     },
     [setCrossfade],
   )
@@ -441,7 +487,6 @@ function App() {
   const handleCueMix = useCallback(
     (position: number) => {
       setCueMix(position)
-      updateAppSettings({ cueMix: position })
     },
     [setCueMix],
   )
@@ -664,123 +709,12 @@ function App() {
     return aPlayback ? phaseOffsetBeats(a, b) : phaseOffsetBeats(b, a)
   }, [deckA, deckB])
 
+  // The MIDI hook is now a projection + intent bridge (ADR-0031): the shell
+  // owns the transport and paints the LEDs from the store, so App's old LED
+  // effects are gone. The LED inputs React still owns mirror into the store
+  // where that state lives: the net selection rides DeckColumn's atomic
+  // style mirror, the primed flag rides useDeck's.
   const midi = useMidi()
-  const {
-    status: midiStatus,
-    setPadLeds,
-    setFxPadLeds,
-    setLoopPadLeds,
-    setCuePadLeds,
-    setChannelCueLed,
-    setTransportCueLed,
-    ledEpoch,
-  } = midi
-  const [padCounts, setPadCounts] = useState<Record<DeckId, number>>({
-    a: 0,
-    b: 0,
-  })
-  const handleTargetCount = useCallback((deck: DeckId, count: number) => {
-    setPadCounts((previous) =>
-      previous[deck] === count ? previous : { ...previous, [deck]: count },
-    )
-  }, [])
-  const handleTargetCountA = useCallback(
-    (count: number) => handleTargetCount('a', count),
-    [handleTargetCount],
-  )
-  const handleTargetCountB = useCallback(
-    (count: number) => handleTargetCount('b', count),
-    [handleTargetCount],
-  )
-  const [padSelections, setPadSelections] = useState<Record<DeckId, boolean[]>>(
-    { a: [], b: [] },
-  )
-  const handleSelectionChange = useCallback(
-    (deck: DeckId, selected: boolean[]) => {
-      setPadSelections((previous) =>
-        sameMask(previous[deck], selected)
-          ? previous
-          : { ...previous, [deck]: selected },
-      )
-    },
-    [],
-  )
-  const handleSelectionChangeA = useCallback(
-    (selected: boolean[]) => handleSelectionChange('a', selected),
-    [handleSelectionChange],
-  )
-  const handleSelectionChangeB = useCallback(
-    (selected: boolean[]) => handleSelectionChange('b', selected),
-    [handleSelectionChange],
-  )
-
-  // LED feedback (M7 stretch): the HOT CUE bank's meaning follows the
-  // deck mode (M21, ADR-0015) — pads 1–N lit for N style targets on a
-  // realtime deck, filled hot cues lit on a playback deck. Re-sent on
-  // reconnect so a hot-plugged controller picks the state back up, and
-  // on every ledEpoch bump — a pad-mode switch clears the device's pad
-  // LEDs, so each bank repaints. Exactly one painter per deck.
-  const cueLedsA = deckA.mode === 'playback' ? deckA.track?.cues : undefined
-  const cueLedsB = deckB.mode === 'playback' ? deckB.track?.cues : undefined
-  useEffect(() => {
-    if (midiStatus !== 'connected') return
-    if (cueLedsA) setCuePadLeds('a', cueLedsA.map((cue) => cue !== null))
-    else setPadLeds('a', padCounts.a, padSelections.a)
-    if (cueLedsB) setCuePadLeds('b', cueLedsB.map((cue) => cue !== null))
-    else setPadLeds('b', padCounts.b, padSelections.b)
-  }, [
-    midiStatus,
-    setPadLeds,
-    setCuePadLeds,
-    padCounts,
-    padSelections,
-    cueLedsA,
-    cueLedsB,
-    ledEpoch,
-  ])
-
-  // PAD FX bank LEDs (M12): the active effect's pad lit per deck.
-  useEffect(() => {
-    if (midiStatus !== 'connected') return
-    setFxPadLeds('a', deckA.fx.kind ? FX_KINDS.indexOf(deckA.fx.kind) : null)
-    setFxPadLeds('b', deckB.fx.kind ? FX_KINDS.indexOf(deckB.fx.kind) : null)
-  }, [midiStatus, setFxPadLeds, deckA.fx.kind, deckB.fx.kind, ledEpoch])
-
-  // SAMPLER bank LEDs (M13): filled pad slots lit per deck — captures
-  // and generated slots alike (M18); a pending generation stays dark
-  // until it's actually playable.
-  const loopLedsA = useMemo(
-    () => deckA.loop.slots.map((slot) => slot.state === 'filled'),
-    [deckA.loop.slots],
-  )
-  const loopLedsB = useMemo(
-    () => deckB.loop.slots.map((slot) => slot.state === 'filled'),
-    [deckB.loop.slots],
-  )
-  useEffect(() => {
-    if (midiStatus !== 'connected') return
-    setLoopPadLeds('a', loopLedsA)
-    setLoopPadLeds('b', loopLedsB)
-  }, [midiStatus, setLoopPadLeds, loopLedsA, loopLedsB, ledEpoch])
-
-  // Cue LEDs (M10): channel CUE mirrors the headphone-cue toggles,
-  // transport CUE lights while a deck is primed off air. The active driver
-  // owns the bytes (issue #30) — App speaks deck + on/off, not status/note.
-  useEffect(() => {
-    if (midiStatus !== 'connected') return
-    setChannelCueLed('a', deckA.cue)
-    setChannelCueLed('b', deckB.cue)
-    setTransportCueLed('a', deckA.primed)
-    setTransportCueLed('b', deckB.primed)
-  }, [
-    midiStatus,
-    setChannelCueLed,
-    setTransportCueLed,
-    deckA.cue,
-    deckB.cue,
-    deckA.primed,
-    deckB.primed,
-  ])
 
   const ramWarning = combinedRamWarning(
     { a: deckA.state.model, b: deckB.state.model },
@@ -833,12 +767,10 @@ function App() {
             </p>
           )}
           <MidiControls
-            status={midi.status}
+            connected={midi.connected}
             deviceName={midi.deviceName}
             devices={midi.devices}
-            onConnect={midi.connect}
             onSelectDevice={midi.selectDevice}
-            readMonitor={midi.readMonitor}
           />
           <RecordControl recordingsFolder={recordingsFolder} />
           <Button onClick={() => setSettingsOpen(true)}>{t('settings.open')}</Button>
@@ -876,15 +808,10 @@ function App() {
         <section className="modelmgr__section">
           <h3 className="modelmgr__heading">{t('settings.audio')}</h3>
           <div className="settings-audio">
-            <OutputDevicePicker
-              mode="main"
-              value={mainDevice}
-              onSelect={handleMainDevice}
-            />
+            <OutputDevicePicker mode="main" value={mainDevice} />
             <OutputDevicePicker
               mode="cue"
               value={cueDevice}
-              onSelect={handleCueDevice}
               mainDeviceName={mainDevice}
             />
           </div>
@@ -980,11 +907,8 @@ function App() {
           state={deckA.state}
           onPlay={() => void deckA.play()}
           onStop={deckA.stop}
-          onSetStyle={deckA.setStyle}
           onSetModel={deckA.setModel}
           onRestart={deckA.restartWorker}
-          onTargetCount={handleTargetCountA}
-          onSelectionChange={handleSelectionChangeA}
           shiftedDeck={shiftedDeck}
           primed={deckA.primed}
           fx={deckA.fx}
@@ -1038,11 +962,8 @@ function App() {
           state={deckB.state}
           onPlay={() => void deckB.play()}
           onStop={deckB.stop}
-          onSetStyle={deckB.setStyle}
           onSetModel={deckB.setModel}
           onRestart={deckB.restartWorker}
-          onTargetCount={handleTargetCountB}
-          onSelectionChange={handleSelectionChangeB}
           shiftedDeck={shiftedDeck}
           primed={deckB.primed}
           fx={deckB.fx}

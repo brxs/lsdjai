@@ -23,11 +23,14 @@ class FakeEngine:
         self.renders = []
         self.notes = []
         self.drums = []
+        self.chunk_frames = []
+        self.chunk_seconds = 1.0
         self.fail_set_style = False
         self.fail_embed_sample = False
         self.fail_generate = False
         self.fail_render = False
         self.fail_set_notes = False
+        self.fail_set_chunk_frames = False
 
     def render_clip(self, prompt, seconds):
         if self.fail_render:
@@ -53,6 +56,12 @@ class FakeEngine:
 
     def set_drums(self, flag):
         self.drums.append(flag)
+
+    def set_chunk_frames(self, frames):
+        if self.fail_set_chunk_frames:
+            raise ValueError("bad chunk frames")
+        self.chunk_frames.append(frames)
+        self.chunk_seconds = frames * 0.04
 
     def generate_chunk(self):
         if self.fail_generate:
@@ -209,6 +218,30 @@ def test_set_drums_applies_and_reports(deck):
     assert deck.engine.drums[-1] is None
 
 
+def test_set_chunk_frames_applies_and_reports(deck):
+    deck.send(type="set_chunk_frames", frames=5)
+    applied = deck.next_event("chunk_frames_applied")
+    assert applied["frames"] == 5
+    assert applied["effective_from_chunk"] == 0
+    assert deck.engine.chunk_frames[-1] == 5
+
+    # The knob is a mode, not steering: a play does not reset it (the worker
+    # sends no counter-command), and the deck keeps generating.
+    deck.send(type="play")
+    assert deck.next_event("audio") == FAKE_PCM
+    assert deck.engine.chunk_frames == [5]
+
+
+def test_set_chunk_frames_failure_keeps_worker_alive(deck):
+    deck.engine.fail_set_chunk_frames = True
+    deck.send(type="set_chunk_frames", frames=0)
+    assert "set_chunk_frames failed" in deck.next_event("error")["error"]
+    # The deck must survive and keep taking commands.
+    deck.engine.fail_set_chunk_frames = False
+    deck.send(type="set_chunk_frames", frames=25)
+    assert deck.next_event("chunk_frames_applied")["frames"] == 25
+
+
 def test_set_notes_failure_keeps_worker_alive(deck):
     deck.engine.fail_set_notes = True
     deck.send(type="set_notes", notes=[9])
@@ -248,6 +281,10 @@ def test_generation_failure_stops_deck_but_worker_survives(deck):
     deck.engine.fail_generate = True
     deck.send(type="play")
     assert "generation failed" in deck.next_event("error")["error"]
+    # The self-stop is a TRANSPORT event, not just an error: the shell relay
+    # must drop the store's `playing` or the next play round-trips as a
+    # no-op and the UI's in-flight guard wedges (found on the device).
+    assert deck.next_event("stopped")["reason"] == "generation failed"
 
     # The failure auto-stopped the deck; play must work again once the
     # engine recovers.

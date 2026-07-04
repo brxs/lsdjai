@@ -4,9 +4,20 @@ import { useTranslation } from 'react-i18next'
 import type { DeckId } from '../audio/types'
 import { FX_KINDS, fxRestPosition, type FxKind } from '../audio/fx'
 import { LOOP_LENGTH_OPTIONS, LOOP_SLOT_COUNT } from '../audio/loops'
-import { setDeckStyle } from '../audio/nativeEngine'
+import {
+  styleAddSampleTarget,
+  styleAddTarget,
+  styleApplyPreset,
+  styleFanOut,
+  styleMoveTarget,
+  styleRemoveTarget,
+  styleRenameTarget,
+  styleSetCursor,
+  styleToggleSelection,
+} from '../audio/nativeEngine'
 import { useInterfaceStore } from '../audio/interfaceStore'
 import { useControlBus } from '../control/busContext'
+import { PerformanceDrawer } from './PerformanceDrawer'
 import { Button } from '../ui/Button'
 import { Knob } from '../ui/Knob'
 import { Meter } from '../ui/Meter'
@@ -18,9 +29,9 @@ import { TrackOverview, TRACK_OVERVIEW_BUCKETS } from '../ui/TrackOverview'
 import { TransportButton } from '../ui/TransportButton'
 import { XYPad } from '../ui/XYPad'
 import { moveRadial } from '../ui/netGeometry'
-import { isDeckOperable, type ActiveStyle, type DeckState } from './deckState'
+import { isDeckOperable, type DeckState } from './deckState'
 import { TRACK_RATE_RANGE } from '../audio/track'
-import { padWeights, spawnPosition, sweepPosition, type PadPoint } from './padWeights'
+import { sweepPosition } from './padWeights'
 import {
   MAX_PRESET_NAME_LENGTH,
   MAX_PRESET_TARGETS,
@@ -34,7 +45,6 @@ import {
   type SyncResult,
   type TrackState,
 } from './useDeck'
-import { loadDeckSettings, updateDeckSettings } from '../persistence'
 import './deck.css'
 
 // The worker holds ~3s of lead (see backend worker pacing); the meter shows
@@ -42,45 +52,20 @@ import './deck.css'
 const BUFFER_TARGET_SECONDS = 3
 // One source for the pad cap (mirrors the backend's MAX_STYLE_PROMPTS).
 const MAX_TARGETS = MAX_PRESET_TARGETS
-// Cursor drags re-blend cached embeddings server-side; ~7/s is plenty when
-// styles land at chunk boundaries anyway.
-const STYLE_SEND_INTERVAL_MS = 150
 // Pad units a single jog tick steers the cursor under SHIFT (tunable on the
 // device — see the net hardware checklist).
 const CURSOR_JOG_STEP = 0.01
+// The delta-gesture overlay (jog reel / cursor steer): how long a pending
+// emitted position outlives a disagreeing snapshot before the store's word
+// wins, and how close an echo must land to count as caught-up (the f32
+// round-trip quantises; same epsilon as the mixer adoption).
+const PENDING_SETTLE_MS = 120
+function nearPending(a: number, b: number) {
+  return Math.abs(a - b) < 1e-3
+}
 
 function clamp01(value: number) {
   return Math.min(1, Math.max(0, value))
-}
-
-/** Leading+trailing throttle where an immediate send is the chokepoint:
- * it cancels any pending trailing send, so a stale gesture frame queued
- * before an add/remove can never overwrite it. */
-function createSendThrottle(intervalMs: number) {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  let last = 0
-  function fire(send: () => void) {
-    clearTimeout(timer)
-    timer = undefined
-    last = Date.now()
-    send()
-  }
-  return {
-    immediate: fire,
-    throttled(send: () => void) {
-      const elapsed = Date.now() - last
-      if (elapsed >= intervalMs) {
-        fire(send)
-      } else {
-        // Trailing send so the gesture's resting place always lands.
-        clearTimeout(timer)
-        timer = setTimeout(() => fire(send), intervalMs - elapsed)
-      }
-    },
-    cancel() {
-      clearTimeout(timer)
-    },
-  }
 }
 
 function formatTrackTime(seconds: number): string {
@@ -121,14 +106,8 @@ type DeckColumnProps = {
   state: DeckState
   onPlay: () => void
   onStop: () => void
-  onSetStyle: (style: ActiveStyle) => void
   onSetModel: (model: string) => void
   onRestart: () => void
-  /** Reports how many style targets exist (for the pad LED echo). */
-  onTargetCount?: (count: number) => void
-  /** Reports which pads are selected in the net (for the pad LED echo),
-   * one boolean per target by pad index. */
-  onSelectionChange?: (selected: boolean[]) => void
   /** Which deck's SHIFT is held (App-tracked). When it equals this deck's id,
    * the jogs steer this deck's cursor — jog A the x axis, jog B the y. */
   shiftedDeck?: DeckId | null
@@ -191,11 +170,8 @@ export function DeckColumn({
   state,
   onPlay,
   onStop,
-  onSetStyle,
   onSetModel,
   onRestart,
-  onTargetCount,
-  onSelectionChange,
   shiftedDeck,
   primed = false,
   fx,
@@ -228,9 +204,57 @@ export function DeckColumn({
   getTrackPeaks,
 }: DeckColumnProps) {
   const { t } = useTranslation()
-  const [targets, setTargets] = useState<
-    (PadPoint & { text: string; sample?: string })[]
-  >(() => loadDeckSettings(deckId).targets ?? [])
+  const deckIndex = deckId === 'a' ? 0 : 1
+  // The style pad is a PROJECTION (ADR-0020 phase B): targets, cursor, and
+  // the net selection live in the Rust store — hydrated from the shell
+  // settings, mutated only through the style_* intents below. The webview
+  // renders whatever the store accepted; there is no local copy to revert.
+  const storeState = useInterfaceStore()
+  const deckSnap = storeState?.decks[deckIndex]
+  const targets = useMemo(() => deckSnap?.styleTargets ?? [], [deckSnap])
+  const cursor = deckSnap?.cursor ?? { x: 0.5, y: 0.5 }
+  // The net: which targets are in the blend mask, projected as a text-keyed
+  // set (the shape the pad and the jog handlers consume).
+  const selected = useMemo(
+    () =>
+      new Set(
+        targets
+          .filter((_, index) => deckSnap?.styleSelected[index] ?? false)
+          .map((target) => target.text),
+      ),
+    [deckSnap, targets],
+  )
+  // Delta gestures (jog reel, SHIFT-jog cursor steer) accumulate on the last
+  // EMITTED position, not the projection: the intent coalescer keeps only
+  // the last write per frame and the store echo lags a frame or two, so two
+  // jog ticks computed from the same snapshot would swallow each other
+  // (lost steps at fast rates). Every cursor/target emit records its value
+  // here; an entry drains when the snapshot catches up to it, or after the
+  // settle window when it never will (an external writer — MCP, a fan-out —
+  // moved the thing mid-gesture and the store's word wins).
+  const pendingCursorRef = useRef<{ x: number; y: number; at: number } | null>(null)
+  const pendingMovesRef = useRef(
+    new Map<string, { x: number; y: number; at: number }>(),
+  )
+  useEffect(() => {
+    const caughtUp = (
+      pending: { x: number; y: number; at: number },
+      x: number,
+      y: number,
+    ) =>
+      (nearPending(pending.x, x) && nearPending(pending.y, y)) ||
+      Date.now() - pending.at > PENDING_SETTLE_MS
+    const cursorPending = pendingCursorRef.current
+    if (cursorPending && caughtUp(cursorPending, cursor.x, cursor.y)) {
+      pendingCursorRef.current = null
+    }
+    for (const [text, pending] of pendingMovesRef.current) {
+      const target = targets.find((candidate) => candidate.text === text)
+      if (!target || caughtUp(pending, target.x, target.y)) {
+        pendingMovesRef.current.delete(text)
+      }
+    }
+  }, [cursor.x, cursor.y, targets])
   const [sampling, setSampling] = useState(false)
   const [sampleError, setSampleError] = useState<string | null>(null)
   // Generated pads (M18): the prompt, engine, and behaviour for the
@@ -244,30 +268,6 @@ export function DeckColumn({
   } | null>(null)
   const [generateEngine, setGenerateEngine] = useState<GenerateEngine>('sfx')
   const [generateOneShot, setGenerateOneShot] = useState(true)
-  // Mirrors the latest committed targets for reads after an await —
-  // the async sample flow must not go stale, and must not smuggle
-  // side effects into a state updater (StrictMode replays those).
-  const targetsRef = useRef(targets)
-  useEffect(() => {
-    targetsRef.current = targets
-  }, [targets])
-  const [cursor, setCursor] = useState<PadPoint>(
-    () => loadDeckSettings(deckId).cursor ?? { x: 0.5, y: 0.5 },
-  )
-  // Mirrors the committed cursor for the store-adopt comparison below (a ref, read
-  // without re-running the adopt effect on every local cursor move — like targetsRef).
-  const cursorRef = useRef(cursor)
-  useEffect(() => {
-    cursorRef.current = cursor
-  }, [cursor])
-  // The authoritative store, for adopting external style changes (an MCP agent).
-  const storeState = useInterfaceStore()
-  // The net (M??): which prompts the controller has selected, keyed by prompt
-  // text so the set survives a reorder or mid-list removal. Ephemeral — a
-  // controller-side gesture, not part of the saved pad arrangement.
-  const [selected, setSelected] = useState<ReadonlySet<string>>(
-    () => new Set<string>(),
-  )
   const [targetDraft, setTargetDraft] = useState('')
   // In-place prompt editing: which row is open and its draft text.
   const [editing, setEditing] = useState<{ text: string; draft: string } | null>(
@@ -281,11 +281,14 @@ export function DeckColumn({
   const editButtons = useRef(new Map<string, HTMLButtonElement>())
   useEffect(() => {
     if (focusAfterEditRef.current === null) return
-    editButtons.current.get(focusAfterEditRef.current)?.focus()
+    const button = editButtons.current.get(focusAfterEditRef.current)
+    // A renamed row exists only once the store echoes the rename — keep the
+    // pending focus until the projection renders it.
+    if (!button) return
+    button.focus()
     focusAfterEditRef.current = null
   })
   const [presetDraft, setPresetDraft] = useState('')
-  const [throttle] = useState(() => createSendThrottle(STYLE_SEND_INTERVAL_MS))
 
   const connected = state.connection === 'open'
   const operable = isDeckOperable(state)
@@ -326,157 +329,13 @@ export function DeckColumn({
     [trackKey, getTrackPeaks],
   )
 
-  type Target = PadPoint & { text: string; sample?: string }
-
-  function styleFor(nextTargets: Target[], nextCursor: PadPoint): ActiveStyle | null {
-    if (nextTargets.length === 0) return null
-    const weights = padWeights(nextTargets, nextCursor)
-    return {
-      prompts: nextTargets.map((target, index) => ({
-        text: target.text,
-        weight: weights[index],
-        ...(target.sample ? { sample: target.sample } : {}),
-      })),
-    }
-  }
-
-  function sendStyle(nextTargets: Target[], nextCursor: PadPoint) {
-    throttle.immediate(() => {
-      const style = styleFor(nextTargets, nextCursor)
-      if (style) onSetStyle(style)
-    })
-  }
-
-  function sendStyleThrottled(nextTargets: Target[], nextCursor: PadPoint) {
-    throttle.throttled(() => {
-      const style = styleFor(nextTargets, nextCursor)
-      if (style) onSetStyle(style)
-    })
-  }
-
-  useEffect(() => () => throttle.cancel(), [throttle])
-
-  // Persist the pad arrangement so a reload picks the session back up.
-  // Sampled targets stay out: their embeddings are session-only
-  // (ADR-0011), so persisting the chip would persist a dead reference.
-  useEffect(() => {
-    updateDeckSettings(deckId, {
-      targets: targets.filter((target) => !target.sample),
-      cursor,
-    })
-  }, [deckId, targets, cursor])
-
-  // Mirror the 2D style-pad targets + cursor UP into the store (ADR-0020): the UI
-  // source the deck blends into the worker prompt. The blended prompt still goes to
-  // the worker via the throttled style send; this is a write-only read-back mirror
-  // (sampled-target embedding ids stay out, like the persisted layout).
-  useEffect(() => {
-    setDeckStyle(
-      deckId === 'a' ? 0 : 1,
-      targets.map((target) => ({ x: target.x, y: target.y, text: target.text })),
-      cursor,
-    )
-  }, [deckId, targets, cursor])
-
-  // Adopt EXTERNAL style changes from the store (an MCP set_style / set_style_cursor)
-  // into the pad AND push the new blend to the worker — the read side the mirror above
-  // pairs with (ADR-0020, Phase 2). Our own pushes echo back value-equal (sample ids
-  // aside) and just arm the gate; a genuine external change replaces the targets/cursor
-  // and re-sends the blend. Gated until the store reflects this deck's own pushed
-  // arrangement, so the persisted layout isn't clobbered by the empty boot default.
-  const styleSyncedRef = useRef(false)
-  useEffect(() => {
-    const snap = storeState?.decks[deckId === 'a' ? 0 : 1]
-    if (!snap) return
-    const localTargets = targetsRef.current
-    const localCursor = cursorRef.current
-    // x/y are f32 in the store, so an f64->f32 round-trip can perturb the last digits;
-    // compare with an epsilon well below a meaningful pad move (~1e-6) but above f32
-    // noise, or our own echo would never look equal and the gate would never arm.
-    const near = (a: number, b: number) => Math.abs(a - b) < 1e-6
-    const sameTargets =
-      snap.styleTargets.length === localTargets.length &&
-      snap.styleTargets.every((s, i) => {
-        const t = localTargets[i]
-        return t && near(s.x, t.x) && near(s.y, t.y) && s.text === t.text
-      })
-    const sameCursor = near(snap.cursor.x, localCursor.x) && near(snap.cursor.y, localCursor.y)
-    if (sameTargets && sameCursor) {
-      styleSyncedRef.current = true
-      return
-    }
-    if (!styleSyncedRef.current) return
-    const nextTargets = snap.styleTargets.map((s) => ({ x: s.x, y: s.y, text: s.text }))
-    const nextCursor = { x: snap.cursor.x, y: snap.cursor.y }
-    setTargets(nextTargets)
-    setCursor(nextCursor)
-    sendStyle(nextTargets, nextCursor)
-    // sendStyle/setTargets/setCursor are stable enough; re-running only on a store
-    // change is the point (deps on them would fire every render).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storeState, deckId])
-
-  // A worker restart (crash or model switch) drops its sample cache;
-  // the chips die with it rather than poisoning every style send.
-  // Render-time adjustment (the React "derived state" pattern), so the
-  // stripped pad is what this very render shows.
-  const workerGone = state.workerDied || state.switchingModel
-  if (workerGone && targets.some((target) => target.sample)) {
-    setTargets(targets.filter((target) => !target.sample))
-  }
-
-  // An open edit whose target vanished (preset load, removal, the
-  // strip above) must not linger — its input unmounts without a blur,
-  // and a later same-named target would render pre-opened with the
-  // stale draft. Same render-time pattern as the strip above.
+  // An open edit whose target vanished (preset load, removal, a worker
+  // restart stripping its sampled chip store-side) must not linger — its
+  // input unmounts without a blur, and a later same-named target would
+  // render pre-opened with the stale draft.
   if (editing && !targets.some((target) => target.text === editing.text)) {
     setEditing(null)
   }
-
-  // Selection is keyed by prompt text; a removed or renamed prompt (or a
-  // worker-dropped sample) leaves a stray that would re-select a later
-  // same-named prompt. Drop the strays — same render-time pattern as above.
-  if (
-    selected.size > 0 &&
-    [...selected].some((text) => !targets.some((target) => target.text === text))
-  ) {
-    setSelected(
-      new Set(
-        [...selected].filter((text) =>
-          targets.some((target) => target.text === text),
-        ),
-      ),
-    )
-  }
-
-  useEffect(() => {
-    onTargetCount?.(targets.length)
-  }, [targets.length, onTargetCount])
-
-  // Mirror the selection to the controller LEDs, one boolean per pad index.
-  useEffect(() => {
-    onSelectionChange?.(targets.map((target) => selected.has(target.text)))
-  }, [targets, selected, onSelectionChange])
-
-  // The worker has no style after a reload, a model switch, or a crash
-  // restart — re-apply the pad's arrangement once per such episode, as soon
-  // as the deck can take it. Ref-gated so the in-flight server echo doesn't
-  // trigger duplicate sends on every render.
-  const resentRef = useRef(false)
-  useEffect(() => {
-    const needsStyle =
-      isDeckOperable(state) && !state.activeStyle && targets.length > 0
-    if (!needsStyle) {
-      resentRef.current = false
-      return
-    }
-    if (resentRef.current) return
-    resentRef.current = true
-    throttle.immediate(() => {
-      const style = styleFor(targets, cursor)
-      if (style) onSetStyle(style)
-    })
-  })
 
   function addTarget() {
     const text = targetDraft.trim()
@@ -487,10 +346,8 @@ export function DeckColumn({
     ) {
       return
     }
-    const next = [...targets, { text, ...spawnPosition(targets) }]
-    setTargets(next)
+    styleAddTarget(deckIndex, text)
     setTargetDraft('')
-    sendStyle(next, cursor)
   }
 
   function savePreset() {
@@ -504,8 +361,12 @@ export function DeckColumn({
   }
 
   // One action (M15): capture the other deck, register the embedding,
-  // land it on the pad as a blendable target. The upload resolves once
-  // the embed command is queued ahead of any style send (FIFO).
+  // land it on the pad as a blendable chip. The capture resolves once the
+  // embed frame is queued on the deck's control socket, and the add-intent
+  // fires after that — the socket's FIFO keeps any blend send behind the
+  // embedding it references. The store enforces the cap and dup rules (the
+  // pad may have filled during the await); a rejected add just never
+  // appears in the projection.
   async function sampleOtherDeck() {
     if (sampling || targets.length >= MAX_TARGETS) return
     setSampling(true)
@@ -518,14 +379,7 @@ export function DeckColumn({
         setSampleError(t('deck.style.sampleTooSoon'))
         return
       }
-      const current = targetsRef.current
-      if (current.length >= MAX_TARGETS) return
-      const next = [
-        ...current,
-        { text: result.label, sample: result.sample, ...spawnPosition(current) },
-      ]
-      setTargets(next)
-      sendStyle(next, cursor)
+      styleAddSampleTarget(deckIndex, result.label, result.sample)
     } catch (error) {
       setSampleError(error instanceof Error ? error.message : String(error))
     } finally {
@@ -554,11 +408,7 @@ export function DeckColumn({
     const finalText = renamed ? text : original
     if (restoreFocus) focusAfterEditRef.current = finalText
     if (!renamed) return
-    const next = targets.map((target) =>
-      target.text === original ? { ...target, text } : target,
-    )
-    setTargets(next)
-    sendStyle(next, cursor)
+    styleRenameTarget(deckIndex, original, text)
   }
 
   function cancelEdit() {
@@ -568,42 +418,30 @@ export function DeckColumn({
   }
 
   function removeTarget(text: string) {
-    const next = targets.filter((target) => target.text !== text)
-    setTargets(next)
-    sendStyle(next, cursor)
+    styleRemoveTarget(deckIndex, text)
   }
 
   function handleCursor(x: number, y: number) {
-    const next = { x, y }
-    setCursor(next)
-    sendStyleThrottled(targets, next)
+    pendingCursorRef.current = { x, y, at: Date.now() }
+    styleSetCursor(deckIndex, x, y)
   }
 
-  // Double-clicking the pad tidies the arrangement in one move: park the blue
-  // dot at the canvas centre and fan the dots out evenly on the spawn circle —
-  // every prompt equidistant from the centred cursor, a neutral blend.
+  // Double-clicking the pad tidies the arrangement in one move: the store's
+  // fan-out intent parks the blue dot at the canvas centre and fans the dots
+  // evenly onto the spawn circle — every prompt equidistant from the centred
+  // cursor, a neutral blend.
   function handleCursorActivate() {
     if (!operable || targets.length === 0) return
-    const centre = { x: 0.5, y: 0.5 }
-    const fanned = targets.map((target, index) => ({
-      ...target,
-      ...sweepPosition(index / targets.length),
-    }))
-    setTargets(fanned)
-    setCursor(centre)
-    sendStyle(fanned, centre)
+    styleFanOut(deckIndex)
   }
 
-  // Loading a preset (M16) replaces the pad wholesale: targets,
-  // cursor, and an immediate style send — exactly like typing the
-  // prompts (cached embeddings make repeats cheap). Sampled chips are
-  // gone by construction: presets never contain them.
+  // Loading a preset (M16) replaces the pad wholesale — targets, cursor, and
+  // a cleared net selection (a preset is a fresh arrangement). The shell
+  // sender pushes the new blend like typing the prompts (cached embeddings
+  // make repeats cheap). Sampled chips are gone by construction: presets
+  // never contain them.
   function applyPreset(preset: StylePreset) {
-    setTargets(preset.targets)
-    setCursor(preset.cursor)
-    // A preset is a fresh arrangement; start the net with nothing selected.
-    setSelected(new Set())
-    sendStyle(preset.targets, preset.cursor)
+    styleApplyPreset(deckIndex, preset.targets, preset.cursor)
   }
 
   // Hardware style intents (ADR-0005) drive the net on a realtime deck: a
@@ -628,12 +466,7 @@ export function DeckColumn({
         // the jog then moves whatever is selected.
         const target = targets[intent.index]
         if (!target) return
-        setSelected((previous) => {
-          const next = new Set(previous)
-          if (next.has(target.text)) next.delete(target.text)
-          else next.add(target.text)
-          return next
-        })
+        styleToggleSelection(deckIndex, target.text)
       } else if (intent.kind === 'track_seek') {
         if (shiftedDeck === deckId) {
           // SHIFT held on this deck: the two jogs steer this cursor in 2D —
@@ -641,10 +474,11 @@ export function DeckColumn({
           // deck's jog reaches us because shiftedDeck routes by held SHIFT,
           // not by the jog's own deck.
           const delta = intent.steps * CURSOR_JOG_STEP
+          const base = pendingCursorRef.current ?? cursor
           if (intent.deck === 'a') {
-            handleCursor(clamp01(cursor.x + delta), cursor.y)
+            handleCursor(clamp01(base.x + delta), base.y)
           } else {
-            handleCursor(cursor.x, clamp01(cursor.y + delta))
+            handleCursor(base.x, clamp01(base.y + delta))
           }
         } else if (
           shiftedDeck == null &&
@@ -653,13 +487,13 @@ export function DeckColumn({
         ) {
           // No SHIFT: this deck's own jog reels its selected dots radially
           // about the cursor — CW pulls inward (more weight), CCW pushes out.
-          const next = targets.map((target) =>
-            selected.has(target.text)
-              ? { ...target, ...moveRadial(target, cursor, intent.steps) }
-              : target,
-          )
-          setTargets(next)
-          sendStyleThrottled(next, cursor)
+          const centre = pendingCursorRef.current ?? cursor
+          for (const target of targets) {
+            if (!selected.has(target.text)) continue
+            const base = pendingMovesRef.current.get(target.text) ?? target
+            const moved = moveRadial({ ...target, x: base.x, y: base.y }, centre, intent.steps)
+            handleTargetMove(target.text, moved.x, moved.y)
+          }
         }
         // Otherwise another deck is being steered — leave this one alone.
       } else if (intent.kind === 'style_sweep' && intent.deck === deckId) {
@@ -670,11 +504,10 @@ export function DeckColumn({
   )
 
   function handleTargetMove(id: string, x: number, y: number) {
-    const next = targets.map((target) =>
-      target.text === id ? { ...target, x, y } : target,
-    )
-    setTargets(next)
-    sendStyleThrottled(next, cursor)
+    // Record the emit so the next jog tick in the echo window builds on it
+    // (mouse drags too — a drag mid-reel must not leave a stale base).
+    pendingMovesRef.current.set(id, { x, y, at: Date.now() })
+    styleMoveTarget(deckIndex, id, x, y)
   }
 
   const activeSummary = state.activeStyle
@@ -868,6 +701,10 @@ export function DeckColumn({
           </Button>
         </div>
 
+        {/* The 2D prompt pad, carrying the performance door in its overlay
+            slot (issue #48): the door slides across the pad surface only —
+            deck A from the left, deck B from the right — leaving the pad
+            label clear. */}
         <XYPad
           label={t('deck.style.pad')}
           targets={padTargets}
@@ -877,7 +714,9 @@ export function DeckColumn({
           onTargetMove={handleTargetMove}
           selectedIds={selected}
           onCursorActivate={handleCursorActivate}
-        />
+        >
+          <PerformanceDrawer deckId={deckId} deckIndex={deckId === 'a' ? 0 : 1} />
+        </XYPad>
 
         {targets.length > 0 && (
           <ul className="deck__targets">
@@ -967,6 +806,7 @@ export function DeckColumn({
             {t('deck.style.savePreset')}
           </Button>
         </div>
+
       </Panel>
       )}
 

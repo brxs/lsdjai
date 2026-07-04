@@ -139,6 +139,218 @@
   align-items: flex-end;
 }
 
+/* Play the deck (issue #48): the performance door slides over the 2D prompt
+   pad — deck A from the left, deck B from the right — in the deck's accent.
+   Door open = the deck armed for note steering; the covered pad is the
+   signal that pads/keys now play notes, not prompt edits. */
+
+/* The pad square keeps a rail-wide gutter on the deck's OUTER edge — the
+   side its door parks on (A left, B right). The parked STEER rail lives in
+   that gutter, flush against the square but NEVER over it: no pad
+   coordinate is under the rail, so a dot can't be dropped somewhere the
+   rail would then steal the grab from. */
+.deck {
+  --perform-rail: 1rem;
+}
+
+.deck--a .ui-xypad__surface,
+.deck--b .ui-xypad__surface {
+  /* The gutter comes OUT of the square's width — width:100% plus a margin
+     would overflow the panel by one rail. The 19rem cap still applies. */
+  width: calc(100% - var(--perform-rail));
+}
+
+.deck--a .ui-xypad__surface {
+  margin-inline: var(--perform-rail) auto;
+}
+
+.deck--b .ui-xypad__surface {
+  margin-inline: auto var(--perform-rail);
+}
+
+/* The door: ONE rigid assembly — [content | rail] for deck A, mirrored for
+   deck B — sliding as a whole like a machine gate, inside the XYPad's
+   overlay slot so it covers the square pad surface only (the pad label
+   stays clear). Closed, only the rail peeks out at the pad edge (the
+   "STEER" tab); open, the same rail sits at the opposite edge as the
+   push-back chevron. No pasted-on chrome: the rail IS the door's leading
+   edge, its LED is the steering tell. */
+.deck__perform-door {
+  /* --perform-rail (the slim grab strip's width) is set on .deck: the pad
+     gutter and the door's parking offset must share one value. */
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  color: var(--color-on-accent);
+  transition: transform 0.3s cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+
+.deck__perform-door--a {
+  background:
+    repeating-linear-gradient(
+      0deg,
+      color-mix(in srgb, var(--color-on-accent) 6%, transparent) 0 1px,
+      transparent 1px 3px
+    ),
+    var(--color-deck-a);
+  transform: translateX(calc(-100% + var(--perform-rail)));
+}
+
+.deck__perform-door--b {
+  flex-direction: row-reverse;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      color-mix(in srgb, var(--color-on-accent) 6%, transparent) 0 1px,
+      transparent 1px 3px
+    ),
+    var(--color-deck-b);
+  transform: translateX(calc(100% - var(--perform-rail)));
+}
+
+.deck__perform-door--open {
+  transform: translateX(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deck__perform-door {
+    transition: none;
+  }
+}
+
+/* The door body: hidden (and untabbable) while the door is parked so only
+   the rail remains interactive; the visibility flip waits out the slide.
+   Scrolls as a last resort — the square pad is the door's fixed frame, and
+   clipped controls would be unreachable. */
+.deck__perform-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  overflow-y: auto;
+  visibility: hidden;
+  transition: visibility 0s linear 0.3s;
+}
+
+.deck__perform-head {
+  display: flex;
+  align-items: center;
+  /* Title removed: the steering switch alone keeps the top-right corner. */
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.deck__perform-door--open .deck__perform-content {
+  visibility: visible;
+  transition: none;
+}
+
+/* The rail: the door's grab edge. Grip ridges instead of a printed label
+   frame; the LED at its head shows MIDI steer with the door shut. */
+.deck__perform-rail {
+  flex: none;
+  width: var(--perform-rail);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  background: color-mix(in srgb, var(--color-on-accent) 14%, transparent);
+  border: 0;
+  color: var(--color-on-accent);
+  cursor: pointer;
+}
+
+.deck__perform-door--a .deck__perform-rail {
+  border-left: 1px solid color-mix(in srgb, var(--color-on-accent) 35%, transparent);
+}
+
+.deck__perform-door--b .deck__perform-rail {
+  border-right: 1px solid color-mix(in srgb, var(--color-on-accent) 35%, transparent);
+}
+
+.deck__perform-rail-led {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--color-led-off);
+}
+
+.deck__perform-rail-led--on {
+  background: var(--color-led-ok);
+}
+
+.deck__perform-rail-label {
+  writing-mode: vertical-rl;
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  margin: auto 0;
+}
+
+.deck__perform-rail-chevron {
+  display: none;
+  writing-mode: horizontal-tb;
+  font: 700 var(--text-m) var(--font-mono);
+  margin: auto 0;
+}
+
+.deck__perform-door--open .deck__perform-rail-label {
+  display: none;
+}
+
+.deck__perform-door--open .deck__perform-rail-chevron {
+  display: block;
+}
+
+.deck__perform-hint {
+  margin: 0;
+  font: 500 var(--text-xs) var(--font-mono);
+  opacity: 0.82;
+}
+
+.deck__perform-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-end;
+}
+
+/* Key + Scale share a line (the compact config), and the fields hug their
+   content instead of taking the kit's stretch-to-fill default (`.ui-field`
+   is flex: 1): the native select sizes to its longest option, which is the
+   right width for a two-up config row on the door. */
+.deck__perform-row .ui-field {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* The dark field modules read as stickers on the accent slab; their
+   silkscreen labels flip to the on-accent ink for contrast. */
+.deck__perform-door .ui-field__label {
+  color: var(--color-on-accent);
+}
+
+/* The live readout: a bottom HUD strip, monospace, like a status LCD. */
+.deck__perform-live {
+  margin: auto 0 0;
+  padding: var(--space-1) var(--space-2);
+  font: 500 var(--text-xs) var(--font-mono);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  background: var(--color-surface-inset);
+}
+
+.deck--a .deck__perform-live {
+  color: var(--color-deck-a);
+}
+
+.deck--b .deck__perform-live {
+  color: var(--color-deck-b);
+}
+
 .deck__targets {
   display: flex;
   flex-direction: column;

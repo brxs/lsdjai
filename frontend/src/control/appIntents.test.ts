@@ -61,9 +61,6 @@ function fakeDeck(state: Partial<DeckState> = {}): DeckControls {
     prime: vi.fn(async () => {}),
     play: vi.fn(async () => {}),
     stop: vi.fn(),
-    setStyle: vi.fn(),
-    setNotes: vi.fn(),
-    setDrums: vi.fn(),
     setModel: vi.fn(),
     restartWorker: vi.fn(),
     setVolume: vi.fn(),
@@ -247,7 +244,6 @@ describe('applyAppIntent', () => {
     )
     applyAppIntent({ kind: 'record_toggle' }, decks(a), handlers)
     expect(a.play).not.toHaveBeenCalled()
-    expect(a.setStyle).not.toHaveBeenCalled()
     expect(onCrossfade).not.toHaveBeenCalled()
   })
 

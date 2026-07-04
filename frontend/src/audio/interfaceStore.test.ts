@@ -25,21 +25,32 @@ const deck = (): DeckSnap => ({
   fx: { kind: null, amount: 0 },
   model: null,
   playing: false,
+  mode: 'realtime',
   cues: [],
   track: null,
   transport: null,
   loopLabels: [],
   styleTargets: [],
+  styleSelected: [],
   cursor: { x: 0.5, y: 0.5 },
+  primed: false,
+  performance: { armed: false, key: 0, scale: 'major', mode: 'chord' },
   notes: null,
   drums: null,
   analysis: { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 },
+  workerDied: false,
+  switchingModel: false,
+  shiftHeld: false,
 })
 
 const sample = (over: Partial<InterfaceState> = {}): InterfaceState => ({
   decks: [deck(), deck()],
   crossfade: 0.3,
   cueMix: 0.4,
+  recording: { active: false, path: null },
+  mainDevice: '',
+  cueDevice: '',
+  recordingsFolder: '',
   ...over,
 })
 

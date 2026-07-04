@@ -18,14 +18,9 @@
     }
   },
   "midi": {
-    "connect": "Connect MIDI",
     "device": "Controller",
     "status": {
-      "unsupported": "MIDI unavailable",
-      "idle": "MIDI off",
-      "requesting": "Requesting MIDI…",
-      "no-device": "No supported controller found",
-      "denied": "MIDI access denied"
+      "no-device": "No supported controller found"
     },
     "monitor": {
       "label": "MIDI monitor",
@@ -137,6 +132,29 @@
     "title": "Deck {{id}}",
     "model": {
       "label": "Model"
+    },
+    "perform": {
+      "title": "Play the deck",
+      "open": "Config",
+      "close": "Close performance controls — back to prompts",
+      "steer": "MIDI steering",
+      "off": "Steering off — flip MIDI steering to play",
+      "hint": "With MIDI steering on, pads (KEYBOARD mode) & MIDI keys play this deck's harmony — snapped to the key and scale below, door open or closed.",
+      "key": "Key",
+      "scale": "Scale",
+      "mode": "Note mode",
+      "scales": {
+        "major": "Major",
+        "minor": "Minor",
+        "pentatonicMinor": "Pentatonic minor",
+        "chromatic": "Chromatic (no snap)"
+      },
+      "modes": {
+        "chord": "Chord follow",
+        "onset": "On-grid onset"
+      },
+      "held": "Holding {{notes}}",
+      "live": "Live — waiting for notes"
     },
     "worker": {
       "died": "The deck engine crashed.",

@@ -17,7 +17,7 @@ import logging
 import queue
 import time
 
-from .engine import CHUNK_SECONDS, DeckEngine
+from .engine import DeckEngine
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +127,35 @@ def run_deck_worker(
                             },
                         )
                     )
+            elif kind == "set_chunk_frames":
+                # The ADR-0023 performance knob (issue #48): an armed deck
+                # runs small chunks for playable steering latency. Applied
+                # between chunks like every command; unlike note/drum
+                # steering it is a mode, so it survives play/stop.
+                try:
+                    engine.set_chunk_frames(cmd["frames"])
+                except Exception:
+                    logger.exception("deck %s: set_chunk_frames failed", deck_id)
+                    out_queue.put(
+                        (
+                            "status",
+                            {
+                                "event": "error",
+                                "error": "set_chunk_frames failed; chunk unchanged",
+                            },
+                        )
+                    )
+                else:
+                    out_queue.put(
+                        (
+                            "status",
+                            {
+                                "event": "chunk_frames_applied",
+                                "frames": cmd["frames"],
+                                "effective_from_chunk": chunk_index,
+                            },
+                        )
+                    )
             elif kind in ("set_notes", "set_drums"):
                 # Idempotent full-state conditioning (ADR-0023): the payload
                 # replaces the held state wholesale; None returns to masked.
@@ -223,6 +252,16 @@ def run_deck_worker(
                     {"event": "error", "error": "generation failed; deck stopped"},
                 )
             )
+            # A worker that stops ITSELF must end the transport upstream too:
+            # the error above feeds the UI banner, and this structured event
+            # feeds the shell's transport relay. Without it the store kept
+            # claiming `playing` after a generation failure, so the next
+            # deck_play round-tripped as a value-equal no-op — no snapshot,
+            # a wedged in-flight guard, and a play button that swallowed
+            # presses until a stop (found on the device).
+            out_queue.put(
+                ("status", {"event": "stopped", "reason": "generation failed"})
+            )
             continue
         elapsed = time.monotonic() - started
         out_queue.put(("audio", pcm))
@@ -238,4 +277,7 @@ def run_deck_worker(
             )
         )
         chunk_index += 1
-        pace_seconds += CHUNK_SECONDS
+        # Pace on the engine's CURRENT chunk length — the performance knob
+        # changes it mid-stream, and pacing on a constant would let an armed
+        # deck run 5× ahead (or starve) of real time.
+        pace_seconds += engine.chunk_seconds

@@ -4,6 +4,7 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type PointerEvent,
+  type ReactNode,
 } from 'react'
 
 import { orderByAngle, strandPath, webPath } from './netGeometry'
@@ -29,6 +30,12 @@ type XYPadProps = {
   /** Double-clicking the pad fires this — the owner decides what it does
    * (centre the cursor and fan the dots out). */
   onCursorActivate?: () => void
+  /** Overlay slot: rendered in the pad's frame — the surface square plus
+   * any gutter the caller's CSS reserves beside it — and clipped to it.
+   * For covers like the deck's performance door: the door can park in the
+   * gutter without overlapping (or stealing clicks from) pad coordinates.
+   * Pointer events on overlay content stay in the overlay. */
+  children?: ReactNode
 }
 
 const KEYBOARD_STEP = 0.05
@@ -52,6 +59,7 @@ export function XYPad({
   onTargetMove,
   selectedIds,
   onCursorActivate,
+  children,
 }: XYPadProps) {
   const id = useId()
   const surfaceRef = useRef<HTMLDivElement>(null)
@@ -167,6 +175,7 @@ export function XYPad({
       <span className="ui-xypad__label" id={id}>
         {label}
       </span>
+      <div className="ui-xypad__frame">
       <div
         ref={surfaceRef}
         className={`ui-xypad__surface${disabled ? ' ui-xypad__surface--disabled' : ''}`}
@@ -216,6 +225,16 @@ export function XYPad({
           style={{ left: `${cursor.x * 100}%`, top: `${cursor.y * 100}%` }}
           data-cursor=""
         />
+      </div>
+      {children && (
+        <div
+          className="ui-xypad__overlay"
+          onPointerDown={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+        >
+          {children}
+        </div>
+      )}
       </div>
     </div>
   )

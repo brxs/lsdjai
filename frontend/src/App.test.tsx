@@ -10,7 +10,6 @@ import { AudioEngineProvider } from './audio/AudioEngineProvider'
 import type { AudioEngine } from './audio/types'
 import { createControlBus, type ControlBus } from './control/bus'
 import { ControlBusProvider } from './control/ControlBusProvider'
-import { loadAppSettings } from './persistence'
 
 // The LSDJai brand mark renders through three.js / react-three-fiber, which needs
 // a real WebGL context and ResizeObserver — neither exists in jsdom. These
@@ -47,20 +46,22 @@ function renderApp(engine: AudioEngine, bus: ControlBus = createControlBus()) {
 }
 
 describe('App crossfade ownership', () => {
-  it('a slider move drives the audio bus and persists', () => {
+  // Persistence assertions are gone with the localStorage slot: the engine
+  // move records into the Rust store, and the SHELL persists that (ADR-0020
+  // phase C — settings::watch_persistence).
+  it('a slider move drives the audio bus', () => {
     const engine = makeEngine()
     renderApp(engine)
-    vi.mocked(engine.setCrossfade).mockClear() // drop the one-time restore
+    vi.mocked(engine.setCrossfade).mockClear()
 
     fireEvent.change(screen.getByLabelText('Crossfade'), {
       target: { value: '0.2' },
     })
 
     expect(engine.setCrossfade).toHaveBeenCalledWith(0.2)
-    expect(loadAppSettings().crossfade).toBe(0.2)
   })
 
-  it('a cue-mix move drives the engine and persists', () => {
+  it('a cue-mix move drives the engine', () => {
     const engine = makeEngine()
     renderApp(engine)
 
@@ -69,7 +70,6 @@ describe('App crossfade ownership', () => {
     })
 
     expect(engine.setCueMix).toHaveBeenLastCalledWith(0.3)
-    expect(loadAppSettings().cueMix).toBe(0.3)
   })
 
   it('a hardware cue-mix intent flows through the same chain', () => {
@@ -80,7 +80,6 @@ describe('App crossfade ownership', () => {
     act(() => bus.publish({ kind: 'cue_mix', value: 0.8 }))
 
     expect(engine.setCueMix).toHaveBeenLastCalledWith(0.8)
-    expect(loadAppSettings().cueMix).toBe(0.8)
   })
 
   it('a hardware crossfade intent flows through the same chain', () => {
@@ -92,7 +91,6 @@ describe('App crossfade ownership', () => {
     act(() => bus.publish({ kind: 'crossfade', value: 0.75 }))
 
     expect(engine.setCrossfade).toHaveBeenCalledWith(0.75)
-    expect(loadAppSettings().crossfade).toBe(0.75)
     expect(screen.getByLabelText('Crossfade')).toHaveValue('0.75')
   })
 })

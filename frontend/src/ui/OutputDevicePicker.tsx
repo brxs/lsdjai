@@ -30,9 +30,11 @@ type OutputDevicePickerProps = {
   mode: 'main' | 'cue'
   /** The chosen device name owned by the app (empty = the mode's default). */
   value: string
-  /** Called once a switch SUCCEEDS — the app persists it. A failed switch
-   * never fires this, so the displayed value reverts to `value`. */
-  onSelect: (name: string) => void
+  /** Called once a switch SUCCEEDS. Optional since the store records and
+   * persists the choice shell-side (ADR-0020 phase A) — the projected
+   * `value` follows the snapshot; a failed switch never mutates anything,
+   * so the displayed value reverts to `value`. */
+  onSelect?: (name: string) => void
   /** CUE picker only: the current main device name, so the "same as main" option
    * can flag when the main device can't carry the combined cue (a stereo main —
    * combined needs a ≥4-channel device). */
@@ -98,7 +100,7 @@ export function OutputDevicePicker({
       switchDevice(name).then(
         () => {
           setError(null)
-          onSelect(name)
+          onSelect?.(name)
         },
         (cause: unknown) =>
           setError(cause instanceof Error ? cause.message : String(cause)),

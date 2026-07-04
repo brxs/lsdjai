@@ -15,6 +15,13 @@ FRAME_SECONDS = 0.04
 FRAMES_PER_CHUNK = 25
 CHUNK_SECONDS = FRAMES_PER_CHUNK * FRAME_SECONDS
 
+# The ADR-0023 performance knob (issue #48): a deck whose performance surface
+# is armed shrinks its chunk toward ~5 frames (200 ms) so steering lands at
+# playable latency; disarmed decks keep the 1 s default. Bounded to the
+# default — a larger chunk would only add latency.
+MIN_CHUNK_FRAMES = 1
+MAX_CHUNK_FRAMES = FRAMES_PER_CHUNK
+
 # Note conditioning (ADR-0023): one slot per MIDI pitch, each holding a wire
 # state (docs/spike-mrt2.md): -1 masked, 0 off, 1 sustain, 2 onset, 3 on with
 # the model deciding attack vs continuation.
@@ -77,6 +84,7 @@ class DeckEngine:
         self._style = None
         self._notes: list[int] | None = None
         self._drums: int | None = None
+        self._chunk_frames = FRAMES_PER_CHUNK
         self._embed_cache: dict[str, np.ndarray] = {}
         self._samples: dict[str, np.ndarray] = {}
 
@@ -187,19 +195,43 @@ class DeckEngine:
             raise ValueError("drum flag must be 0, 1, or None")
         self._drums = flag
 
+    def set_chunk_frames(self, frames: int) -> None:
+        """Set the per-chunk frame count (the ADR-0023 performance knob).
+
+        Takes effect on the next generate_chunk(). Unlike note/drum
+        steering this is a MODE, not conditioning — it survives play/stop
+        (the arm state that drives it lives shell-side)."""
+        if (
+            not isinstance(frames, int)
+            or isinstance(frames, bool)
+            or not MIN_CHUNK_FRAMES <= frames <= MAX_CHUNK_FRAMES
+        ):
+            raise ValueError(
+                f"chunk frames must be an int in "
+                f"[{MIN_CHUNK_FRAMES}, {MAX_CHUNK_FRAMES}]"
+            )
+        self._chunk_frames = frames
+
+    @property
+    def chunk_seconds(self) -> float:
+        """Seconds of audio the next generate_chunk() will produce — the
+        worker's pacing unit."""
+        return self._chunk_frames * FRAME_SECONDS
+
     def generate_chunk(self) -> bytes:
-        """Generate CHUNK_SECONDS of audio, continuous with the previous call.
+        """Generate chunk_seconds of audio, continuous with the previous call.
 
         Returns interleaved stereo float32 little-endian PCM at SAMPLE_RATE
         (the WebSocket wire format). With no prompt set the model runs
         unconditioned. Held note/drum conditioning (ADR-0023) applies to
-        every chunk until changed.
+        every chunk until changed; the chunk length follows the held
+        performance knob (set_chunk_frames).
         """
         waveform, self._state = self._system.generate(
             style=self._style,
             notes=self._notes,
             drums=None if self._drums is None else [self._drums],
-            frames=FRAMES_PER_CHUNK,
+            frames=self._chunk_frames,
             state=self._state,
         )
         return waveform.samples.astype(np.float32).tobytes()

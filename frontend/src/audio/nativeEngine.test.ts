@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { SAMPLE_RATE } from './types'
-import { createNativeEngine } from './nativeEngine'
+import {
+  createNativeEngine,
+  styleAddTarget,
+  styleMoveTarget,
+  styleSetCursor,
+} from './nativeEngine'
 
 // A controllable __TAURI__ global: records every invoke and serves a test
 // snapshot for `engine_snapshot`. rAF is stubbed so the poller can be flushed
@@ -81,21 +86,19 @@ const SNAP = {
 }
 
 describe('createNativeEngine — control contract', () => {
-  it('createDeckChannel applies the initial config as invoke commands', async () => {
+  it('createDeckChannel replays NO mixer config — the shell hydrates (phase C)', async () => {
     const engine = createNativeEngine()
     await engine.createDeckChannel(
       'b',
       { volume: 0.8, eq: { low: 0.5, mid: 0.5, high: 0.5 }, cue: false, fx: { kind: null, amount: 0 }, trimDb: 3 },
       () => {},
     )
+    // A replay here could overwrite the shell-hydrated values with the
+    // webview's pre-snapshot defaults (an agent-started deck racing boot).
     const cmds = calls.map((c) => c.cmd)
-    expect(cmds).toContain('set_volume')
-    expect(cmds).toContain('set_eq')
-    expect(cmds).toContain('clear_fx') // fx kind null → clear
-    expect(cmds).toContain('set_trim')
-    // deck 'b' → index 1
-    expect(calls.find((c) => c.cmd === 'set_volume')?.args).toEqual({ deck: 1, gain: 0.8 })
-    expect(calls.find((c) => c.cmd === 'set_trim')?.args).toEqual({ deck: 1, db: 3 })
+    for (const cmd of ['set_volume', 'set_eq', 'clear_fx', 'set_fx', 'set_trim', 'set_cue']) {
+      expect(cmds).not.toContain(cmd)
+    }
   })
 
   it('maps deck ids and FX kinds (snake→camel) and routes null to clear_fx', async () => {
@@ -378,5 +381,44 @@ describe('createNativeEngine — output device', () => {
 
     const engine = createNativeEngine()
     await expect(engine.setMainDevice('FLX4')).rejects.toThrow('device busy')
+  })
+})
+
+// The style intents (ADR-0020 phase B): continuous gestures (cursor, target
+// drags) coalesce to the latest value per key in a frame — a pad drag fires
+// per pointermove and each store mutation broadcasts a full snapshot — while
+// discrete intents flush the pending map first, so a stale queued move can
+// never land after (and displace) an add or a fan-out.
+describe('the style intents', () => {
+  it('coalesces a cursor drag to the latest value in the frame', () => {
+    styleSetCursor(0, 0.1, 0.1)
+    styleSetCursor(0, 0.2, 0.9)
+    // Nothing crosses until the animation frame.
+    expect(calls.filter((c) => c.cmd === 'style_set_cursor')).toHaveLength(0)
+    flushRaf()
+    const shipped = calls.filter((c) => c.cmd === 'style_set_cursor')
+    expect(shipped).toHaveLength(1)
+    expect(shipped[0].args).toEqual({ deck: 0, x: 0.2, y: 0.9 })
+  })
+
+  it('keys target moves per target so a two-dot jog reel ships both', () => {
+    styleMoveTarget(0, 'dub techno', 0.2, 0.2)
+    styleMoveTarget(0, 'acid', 0.8, 0.8)
+    styleMoveTarget(0, 'dub techno', 0.3, 0.3)
+    flushRaf()
+    const shipped = calls.filter((c) => c.cmd === 'style_move_target')
+    expect(shipped).toHaveLength(2)
+    expect(shipped[0].args).toEqual({ deck: 0, text: 'dub techno', x: 0.3, y: 0.3 })
+    expect(shipped[1].args).toEqual({ deck: 0, text: 'acid', x: 0.8, y: 0.8 })
+  })
+
+  it('flushes pending moves before a discrete intent so order holds', () => {
+    styleSetCursor(0, 0.4, 0.4)
+    styleAddTarget(0, 'breakbeat')
+    // The add fired immediately AND pushed the queued cursor move out first.
+    expect(calls.map((c) => c.cmd)).toEqual(['style_set_cursor', 'style_add_target'])
+    // The already-flushed move is not re-sent on the frame.
+    flushRaf()
+    expect(calls.filter((c) => c.cmd === 'style_set_cursor')).toHaveLength(1)
   })
 })

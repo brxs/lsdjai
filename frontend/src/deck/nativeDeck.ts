@@ -28,11 +28,13 @@ function tauri(): TauriGlobal | null {
  * WebSocket in the browser). */
 export type DeckCommand = { type: string; [key: string]: unknown }
 
-/** Forward a deck command to the sidecar over IPC. play/stop/set_style/set_notes/
- * set_drums map to the `deck_*` commands; set_model and restart both map to `deck_set_model` (a model
- * switch restarts the sidecar with the new model, reusing the deck ring; restart
- * re-uses the deck's current model, which `useDeck` passes through). A command
- * with no model is dropped (the Rust side rejects an empty model). */
+/** Forward a deck command to the sidecar over IPC. play/stop/set_style map to
+ * the `deck_*` commands (note/drum steering goes through the shell
+ * note-steering service now — ADR-0031); set_model and restart both map to
+ * `deck_set_model` (a model switch restarts the sidecar with the new model,
+ * reusing the deck ring; restart re-uses the deck's current model, which
+ * `useDeck` passes through). A command with no model is dropped (the Rust
+ * side rejects an empty model). */
 export function sendNativeDeckCommand(deckId: DeckId, command: DeckCommand): void {
   const core = tauri()?.core
   if (!core) return
@@ -46,12 +48,6 @@ export function sendNativeDeckCommand(deckId: DeckId, command: DeckCommand): voi
       break
     case 'set_style':
       void core.invoke('deck_set_style', { deck, prompts: command.prompts })
-      break
-    case 'set_notes':
-      void core.invoke('deck_set_notes', { deck, notes: command.notes })
-      break
-    case 'set_drums':
-      void core.invoke('deck_set_drums', { deck, drums: command.drums })
       break
     case 'set_model':
     case 'restart':

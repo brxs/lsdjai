@@ -39,7 +39,8 @@ use crate::generation::GenerationServer;
 use crate::samples::{NewSample, SampleLibrary};
 use crate::sidecar::Sidecars;
 use crate::songs::{NewSong, SongLibrary};
-use crate::store::{InterfaceStore, NoteModeSnap, NoteSteeringSnap, PadPointSnap, StyleTargetSnap};
+use crate::midi::notes::NoteSteering;
+use crate::store::{InterfaceStore, NoteModeSnap, PadPointSnap, StyleTargetSnap};
 use lsdj_engine::host::Host;
 use lsdj_engine::FxKind;
 
@@ -383,16 +384,11 @@ impl McpHandler {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
         }
-        // A kind-swap lands the engine at the new effect's REST amount (so it starts
-        // bypassed); the UI mirrors that by following set_fx with set_fx_amount(rest).
-        // Do the same here, else the store/resource (and the adopted on-screen knob)
-        // keep the previous amount while the deck actually plays at rest.
+        // A kind-swap lands the engine at the new effect's REST amount (so it
+        // starts bypassed); the store's set_fx records kind + rest in one write.
         let kind: FxKind = kind.into();
-        let rest = kind.rest_position();
         self.app.state::<Host>().set_fx(deck, kind);
-        let store = self.app.state::<InterfaceStore>();
-        store.set_fx(deck, kind);
-        store.set_fx_amount(deck, rest);
+        self.app.state::<InterfaceStore>().set_fx(deck, kind);
         format!("deck {deck} fx selected")
     }
 
@@ -446,14 +442,18 @@ impl McpHandler {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
         }
-        // Open the engine gate, then tell the worker to generate — the same order
-        // the `deck_play` command takes — and write the transport to the store,
-        // which owns `playing` (ADR-0020); the webview's button projects it.
+        // The same flow as the `deck_play` command: the store's atomic
+        // start_transport is the idempotence guard (phase D) — a play on an
+        // already-running deck is a no-op that must not reset held steering.
+        if !self.app.state::<InterfaceStore>().start_transport(deck) {
+            return format!("deck {deck} already playing");
+        }
         self.app.state::<Host>().set_deck_playing(deck, true);
         self.app
             .state::<Sidecars>()
             .send(deck, &json!({ "type": "play" }).to_string());
-        self.app.state::<InterfaceStore>().set_playing(deck, true);
+        // A fresh stream starts unsteered (ADR-0023).
+        self.app.state::<crate::midi::notes::NoteSteering>().reset(deck);
         format!("deck {deck} playing")
     }
 
@@ -564,10 +564,14 @@ impl McpHandler {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
         }
+        // An external arrangement replaces the pad wholesale (the store owns
+        // the semantics — ADR-0020 phase B; sampled chips can't come from
+        // outside, the sanitiser drops them).
+        let targets = crate::style::sanitize_preset_targets(targets);
         let count = targets.len();
         self.app
             .state::<InterfaceStore>()
-            .set_deck_style(deck, targets, cursor);
+            .style_apply_preset(deck, targets, cursor);
         format!("deck {deck} style set ({count} target(s))")
     }
 
@@ -612,10 +616,10 @@ impl McpHandler {
         }
     }
 
-    /// Steer a realtime deck's harmony (ADR-0023). Writes the store; the webview
-    /// adopts the change, maps pitches + mode to the wire multihot, and drives the
-    /// worker — the same path a UI surface takes (the bidirectional projection),
-    /// not a hidden raw override.
+    /// Steer a realtime deck's harmony (ADR-0023). Routed through the shell
+    /// note-steering service (ADR-0031) — the single sender native MIDI and the
+    /// UI use: it builds the wire multihot, drives the worker directly, and
+    /// mirrors the store; the webview only displays.
     #[tool(
         description = "Steer a realtime deck's harmony with held MIDI pitches \
                        (0-127); an empty list clears the steering (the model plays \
@@ -635,19 +639,19 @@ impl McpHandler {
         if pitches.iter().any(|&pitch| pitch > 127) {
             return "pitches must be MIDI note numbers 0-127".to_string();
         }
-        let store = self.app.state::<InterfaceStore>();
-        if pitches.is_empty() {
-            store.set_deck_notes(deck, None);
-            return format!("deck {deck} note steering cleared");
-        }
         let count = pitches.len();
         let mode = mode.unwrap_or(NoteModeSnap::Chord);
-        store.set_deck_notes(deck, Some(NoteSteeringSnap { pitches, mode }));
+        self.app
+            .state::<NoteSteering>()
+            .apply_external(deck, &pitches, mode);
+        if count == 0 {
+            return format!("deck {deck} note steering cleared");
+        }
         format!("deck {deck} steering {count} held note(s)")
     }
 
-    /// Set a realtime deck's drum conditioning (ADR-0023) — the same store
-    /// projection as `set_notes`.
+    /// Set a realtime deck's drum conditioning (ADR-0023) — the same shell
+    /// service as `set_notes` (it sends the wire flag and mirrors the store).
     #[tool(
         description = "Set a realtime deck's drum conditioning: 'suppress' keeps \
                        drums out (sit beside another deck), 'force' asks for them, \
@@ -666,7 +670,7 @@ impl McpHandler {
             DrumSteerArg::Force => Some(true),
             DrumSteerArg::Auto => None,
         };
-        self.app.state::<InterfaceStore>().set_deck_drums(deck, flag);
+        self.app.state::<NoteSteering>().set_drums(deck, flag);
         format!(
             "deck {deck} drums {}",
             match mode {
@@ -692,13 +696,14 @@ impl McpHandler {
             return format!("invalid deck {deck}");
         }
         let center = PadPointSnap { x: 0.5, y: 0.5 };
-        self.app.state::<InterfaceStore>().set_deck_style(
+        self.app.state::<InterfaceStore>().style_apply_preset(
             deck,
-            vec![StyleTargetSnap {
+            crate::style::sanitize_preset_targets(vec![StyleTargetSnap {
                 x: 0.5,
                 y: 0.5,
                 text: prompt.clone(),
-            }],
+                sample: None,
+            }]),
             center,
         );
         format!("deck {deck} prompt set to \"{prompt}\"")

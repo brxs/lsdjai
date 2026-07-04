@@ -604,21 +604,30 @@ pub fn sidecar_base_command() -> io::Result<Command> {
 }
 
 /// Whether a status event ends the deck's transport: the worker stopped
-/// generating — it died, or is reloading for a model switch — so the interface
-/// store's `playing` must drop with it. This is the Rust half of the transport
-/// derivation (ADR-0020: the store owns `playing`); the status relay consults it
-/// before forwarding the event to the webview. Unparseable JSON is not a
-/// transport signal.
+/// generating — it died, is reloading for a model switch, or halted ITSELF
+/// (`stopped`, a generation failure) — so the interface store's `playing`
+/// must drop with it. This is the Rust half of the transport derivation
+/// (ADR-0020: the store owns `playing`); the status relay consults it before
+/// forwarding the event to the webview. Missing the self-stop left the store
+/// claiming `playing` after a failure, so the next deck_play round-tripped as
+/// a value-equal no-op and wedged the webview's in-flight guard (the
+/// play-button-swallows-presses bug, found on the device). Unparseable JSON
+/// is not a transport signal.
 pub fn transport_ended(status_json: &str) -> bool {
+    matches!(
+        status_event(status_json).as_deref(),
+        Some("worker_died") | Some("model_loading") | Some("stopped")
+    )
+}
+
+/// The status line's event name, if the JSON parses to one — the relay's
+/// single parse point for transport and worker-health derivation.
+pub fn status_event(status_json: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(status_json)
-        .ok()
-        .and_then(|status| {
-            status
-                .get("event")
-                .and_then(|event| event.as_str())
-                .map(|event| event == "worker_died" || event == "model_loading")
-        })
-        .unwrap_or(false)
+        .ok()?
+        .get("event")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 /// Build the command that launches the Python sidecar for a deck, pointed at the
@@ -644,11 +653,15 @@ mod tests {
 
     #[test]
     fn transport_ended_matches_only_worker_end_events() {
-        // The two events after which the worker is no longer generating.
+        // The three events after which the worker is no longer generating.
         assert!(transport_ended(r#"{"event":"worker_died","deck":"a"}"#));
         assert!(transport_ended(r#"{"event":"model_loading","deck":"a","model":"mrt2_base"}"#));
+        // The worker halting itself (a generation failure) ends the transport
+        // too — missing it wedged the play button behind a stale store.
+        assert!(transport_ended(r#"{"event":"stopped","reason":"generation failed"}"#));
         // Everything else — including the events of a healthy stream — is not a
-        // transport signal, and neither is garbage.
+        // transport signal, and neither is garbage. A plain error is NOT a
+        // stop: the worker survives bad payloads without ending the stream.
         assert!(!transport_ended(r#"{"event":"ready","deck":"a","model":"mrt2_small"}"#));
         assert!(!transport_ended(r#"{"event":"chunk","index":3,"rtf":1.2}"#));
         assert!(!transport_ended(r#"{"event":"error","error":"boom"}"#));

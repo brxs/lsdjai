@@ -273,8 +273,12 @@ export type DeckSnap = {
   model: string | null
   /** Whether the realtime deck is generating (a derived read-back the store mirrors). */
   playing: boolean
+  /** Which source the deck plays (M19): the realtime model stream or a loaded
+   * track. Written by the load flow's mirror; agents read it natively. */
+  mode: 'realtime' | 'playback'
   /** Hot-cue points on the loaded track in track seconds, one per pad (empty with
-   * no track). ADR-0015's cue state, mirrored here per ADR-0020. */
+   * no track). The store OWNS them (phase D): pads reset with the track identity,
+   * mutate through setDeckCuePoint / the MCP cue tools, and project down. */
   cues: (number | null)[]
   /** The loaded track's identity on a playback deck (a read-back the store
    * mirrors), or null on a realtime deck / with no track. */
@@ -289,13 +293,31 @@ export type DeckSnap = {
   /** Freeze/sample loop-slot labels, one per pad (null for an empty/unlabelled
    * slot) — a read-back the store mirrors. */
   loopLabels: (string | null)[]
-  /** The realtime deck's 2D style-pad targets (prompt + position), mirrored from
-   * DeckColumn (sampled-target embedding ids stay out). */
-  styleTargets: { x: number; y: number; text: string }[]
+  /** The realtime deck's 2D style-pad targets (prompt + position). The store
+   * OWNS the arrangement (ADR-0020 phase B) — the webview projects it and
+   * mutates through the style_* intents. A sampled chip (M15) carries its
+   * session embedding key. */
+  styleTargets: { x: number; y: number; text: string; sample?: string }[]
+  /** Which style targets are in the active blend (the net mask, one bool per
+   * target; empty = no mask) — mirrored up for the native pad LEDs (ADR-0031). */
+  styleSelected: boolean[]
   /** The 2D style-pad cursor (the blend point). */
   cursor: { x: number; y: number }
+  /** Whether the deck is primed off-air (the transport-CUE LED state) — a
+   * read-back the webview mirrors up. */
+  primed: boolean
+  /** The performance-surface config (issue #48): armed decks take pad/keyboard
+   * notes and run the small ADR-0023 chunk. Written through the shell
+   * note-steering service; the webview projects it. */
+  performance: {
+    armed: boolean
+    key: number
+    scale: 'major' | 'minor' | 'pentatonicMinor' | 'chromatic'
+    mode: 'chord' | 'onset'
+  }
   /** The realtime deck's note steering (ADR-0023) — held pitches + mode, or
-   * null when unsteered. Cleared on transport transitions. */
+   * null when unsteered. Authored by the shell note-steering service
+   * (hardware pads/keyboard, MCP); cleared on transport transitions. */
   notes: { pitches: number[]; mode: 'chord' | 'onset' } | null
   /** Drum conditioning (ADR-0023): null = the model decides, false = suppress
    * drums, true = force them. Cleared like `notes`. */
@@ -312,6 +334,13 @@ export type DeckSnap = {
     liveBeat: { anchorFrame: number; bpm: number } | null
     originFrames: number
   }
+  /** The worker crashed / is reloading — shell-written from the status relay
+   * (ADR-0020 phase A), so an agent sees deck health without the webview. */
+  workerDied: boolean
+  switchingModel: boolean
+  /** The deck's hardware SHIFT held-state, written by the native translator
+   * (the origin). */
+  shiftHeld: boolean
 }
 
 /** The authoritative interface state the webview projects (mirrors Rust
@@ -321,6 +350,14 @@ export type InterfaceState = {
   decks: DeckSnap[]
   crossfade: number
   cueMix: number
+  /** The shell recorder's state — written by the recording commands, so a
+   * reload (or an agent) reads the truth instead of a local flag. */
+  recording: { active: boolean; path: string | null }
+  /** Shell-persisted settings (ADR-0020 phase A): the pickers project these;
+   * the device/folder commands persist them Rust-side. */
+  mainDevice: string
+  cueDevice: string
+  recordingsFolder: string
 }
 
 /** Fetch the current interface-state snapshot (the projection's initial hydrate). */
@@ -376,11 +413,21 @@ export function setDeckModel(deck: number, model: string | null): void {
   void invoke('set_deck_model', { deck, model }).catch(() => {})
 }
 
-/** Mirror a playback deck's hot-cue points into the store (ADR-0015 → ADR-0020).
- * The webview owns the set/jump logic; this writes the current points up.
- * Fire-and-forget. */
-export function setDeckCues(deck: number, cues: (number | null)[]): void {
-  void invoke('set_deck_cues', { deck, cues }).catch(() => {})
+/** Set or clear one hot-cue pad (ADR-0020 phase D): a store intent — the UI
+ * computes the snapped position, the store owns the points, the pads project
+ * the snapshot. Fire-and-forget. */
+export function setDeckCuePoint(
+  deck: number,
+  index: number,
+  seconds: number | null,
+): void {
+  void invoke('set_deck_cue_point', { deck, index, seconds }).catch(() => {})
+}
+
+/** Record which source a deck plays (M19, phase D): the load flow writes it so
+ * an agent sees playback vs realtime natively. Fire-and-forget. */
+export function setDeckMode(deck: number, mode: 'realtime' | 'playback'): void {
+  void invoke('set_deck_mode', { deck, mode }).catch(() => {})
 }
 
 /** Mirror a playback deck's live transport (playhead / rate / loop) into the store
@@ -413,60 +460,161 @@ export function setDeckLoopLabels(deck: number, labels: (string | null)[]): void
   void invoke('set_deck_loop_labels', { deck, labels }).catch(() => {})
 }
 
-/** Mirror a deck's note steering into the store (ADR-0023 over ADR-0020): the
- * wire multihot still goes to the worker via deck_set_notes; this records the
- * authored pitches + mode so an MCP agent reads (and writes) the same state.
- * Null = unsteered. Fire-and-forget. */
-export function setDeckNotes(
+/** Mirror the primed-off-air read-back into the store (the transport-CUE LED
+ * state, read by the native LED painter — ADR-0031). Fire-and-forget. */
+export function setDeckPrimed(deck: number, primed: boolean): void {
+  void invoke('set_deck_primed', { deck, primed }).catch(() => {})
+}
+
+/** Set (and shell-persist) the recordings folder — "" = Downloads. */
+export function setRecordingsFolder(folder: string): void {
+  void invoke('set_recordings_folder', { folder }).catch(() => {})
+}
+
+/** Set a deck's performance-surface config (issue #48): arm/disarm, key,
+ * scale, note mode. Routed through the shell note-steering service — the
+ * same single sender the hardware uses; arming also applies the ADR-0023
+ * chunk knob. Fire-and-forget; the store projection reflects it. */
+export function setDeckPerformance(
   deck: number,
-  notes: { pitches: number[]; mode: 'chord' | 'onset' } | null,
+  perf: DeckSnap['performance'],
 ): void {
-  void invoke('set_deck_notes', { deck, notes }).catch(() => {})
+  void invoke('set_deck_performance', { deck, perf }).catch(() => {})
 }
 
-/** Mirror a deck's drum-conditioning tri-state into the store (null = the model
- * decides). Fire-and-forget. */
-export function setDeckDrums(deck: number, drums: boolean | null): void {
-  void invoke('set_deck_drums', { deck, drums }).catch(() => {})
+// Coalesce high-rate intents to ~one invoke per animation frame, like the
+// engine's control coalescer. A pad drag or an EQ twist fires per pointermove
+// (and the 14-bit jog can drive changes at 200-600/s); each store mutation
+// broadcasts a full snapshot, so the continuous intents must not flood it.
+// Only the latest value per key in a frame is shipped; discrete intents flush
+// the pending map first so a queued stale move can never land after (and
+// undo) them.
+const intentPending = new Map<string, () => void>()
+let intentFlushScheduled = false
+function flushIntents(): void {
+  const due = [...intentPending.values()]
+  intentPending.clear()
+  for (const run of due) run()
 }
-
-// Coalesce high-rate mirror writes to ~one invoke per animation frame, like the
-// engine's control coalescer. The style-pad mirror fires per pointermove (and the
-// 14-bit jog can drive cursor changes at 200-600/s); the write-only mirror must not
-// flood the store with full-state broadcasts (each re-renders every projection
-// consumer). Only the latest value per key in a frame is shipped.
-const mirrorPending = new Map<string, () => void>()
-let mirrorFlushScheduled = false
-function coalesceMirror(key: string, run: () => void): void {
-  mirrorPending.set(key, run)
-  if (mirrorFlushScheduled) return
-  mirrorFlushScheduled = true
+function coalesceIntent(key: string, run: () => void): void {
+  intentPending.set(key, run)
+  if (intentFlushScheduled) return
+  intentFlushScheduled = true
   requestAnimationFrame(() => {
-    mirrorFlushScheduled = false
-    const due = [...mirrorPending.values()]
-    mirrorPending.clear()
-    for (const r of due) r()
+    intentFlushScheduled = false
+    flushIntents()
   })
 }
 
-/** Mirror a realtime deck's 2D style-pad targets + cursor into the store. The
- * blended prompt still goes to the worker via deck_set_style; this records the UI
- * source for a future MCP read. Coalesced to ~one invoke per frame (a style-pad
- * drag fires this per pointermove). Fire-and-forget. */
-export function setDeckStyle(
+// --- Deck mixer intents (ADR-0020 phase C): deck-indexed commands that write
+// --- the engine AND the store, independent of the deck channel's lifecycle —
+// --- a pre-play FX pick must land in the store, or the next snapshot (whose
+// --- values the gate-free projection adopts) would revert it.
+
+/** Continuous (fader ride) — coalesced per deck. */
+export function setDeckVolume(deck: number, gain: number): void {
+  coalesceIntent(`set_volume:${deck}`, () => {
+    void invoke('set_volume', { deck, gain }).catch(() => {})
+  })
+}
+
+/** Continuous (knob twist) — coalesced per band. */
+export function setDeckEq(deck: number, band: EqBand, value: number): void {
+  coalesceIntent(`set_eq:${deck}:${band}`, () => {
+    void invoke('set_eq', { deck, band, value }).catch(() => {})
+  })
+}
+
+/** Continuous (auto-gain ticks, trim knob) — coalesced per deck. */
+export function setDeckTrim(deck: number, db: number): void {
+  coalesceIntent(`set_trim:${deck}`, () => {
+    void invoke('set_trim', { deck, db }).catch(() => {})
+  })
+}
+
+export function setDeckCue(deck: number, on: boolean): void {
+  flushIntents()
+  void invoke('set_cue', { deck, on }).catch(() => {})
+}
+
+export function setDeckFx(deck: number, kind: FxKind | null): void {
+  flushIntents()
+  if (kind === null) {
+    void invoke('clear_fx', { deck }).catch(() => {})
+  } else {
+    void invoke('set_fx', { deck, kind: FX_ARG[kind] }).catch(() => {})
+  }
+}
+
+/** Continuous (knob twist) — coalesced per deck. */
+export function setDeckFxAmount(deck: number, amount: number): void {
+  coalesceIntent(`set_fx_amount:${deck}`, () => {
+    void invoke('set_fx_amount', { deck, amount }).catch(() => {})
+  })
+}
+
+// --- Style-pad intents (ADR-0020 phase B): the store owns the arrangement; the
+// --- webview emits gestures and projects the result. All fire-and-forget — the
+// --- projection reflects whatever the store accepted (a dup add, an over-cap
+// --- add, or a colliding rename is a quiet Rust-side no-op).
+
+export function styleAddTarget(deck: number, text: string): void {
+  flushIntents()
+  void invoke('style_add_target', { deck, text }).catch(() => {})
+}
+
+export function styleAddSampleTarget(deck: number, label: string, sample: string): void {
+  flushIntents()
+  void invoke('style_add_sample_target', { deck, label, sample }).catch(() => {})
+}
+
+/** Continuous (drag) — coalesced per target. */
+export function styleMoveTarget(deck: number, text: string, x: number, y: number): void {
+  coalesceIntent(`style_move_target:${deck}:${text}`, () => {
+    void invoke('style_move_target', { deck, text, x, y }).catch(() => {})
+  })
+}
+
+export function styleRemoveTarget(deck: number, text: string): void {
+  flushIntents()
+  void invoke('style_remove_target', { deck, text }).catch(() => {})
+}
+
+export function styleRenameTarget(deck: number, from: string, to: string): void {
+  flushIntents()
+  void invoke('style_rename_target', { deck, from, to }).catch(() => {})
+}
+
+export function styleToggleSelection(deck: number, text: string): void {
+  flushIntents()
+  void invoke('style_toggle_selection', { deck, text }).catch(() => {})
+}
+
+export function styleFanOut(deck: number): void {
+  flushIntents()
+  void invoke('style_fan_out', { deck }).catch(() => {})
+}
+
+/** Continuous (drag / sweep / jog steer) — coalesced per deck. */
+export function styleSetCursor(deck: number, x: number, y: number): void {
+  coalesceIntent(`style_set_cursor:${deck}`, () => {
+    void invoke('style_set_cursor', { deck, x, y }).catch(() => {})
+  })
+}
+
+export function styleApplyPreset(
   deck: number,
   targets: { x: number; y: number; text: string }[],
   cursor: { x: number; y: number },
 ): void {
-  coalesceMirror(`set_deck_style:${deck}`, () => {
-    void invoke('set_deck_style', { deck, targets, cursor }).catch(() => {})
-  })
+  flushIntents()
+  void invoke('style_apply_preset', { deck, targets, cursor }).catch(() => {})
 }
 
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }
 
 /** Map the TS `FxKind` (snake) to the Rust `FxKindArg` (camel, serde). */
-const FX_ARG: Record<FxKind, string> = {
+export const FX_ARG: Record<FxKind, string> = {
   filter: 'filter',
   dub_echo: 'dubEcho',
   space: 'space',
@@ -863,21 +1011,14 @@ export function createNativeEngine(): AudioEngine {
 
   return {
     getContextTime: () => (snapshot ? snapshot.health.contextFrames / SAMPLE_RATE : null),
-    createDeckChannel: async (deckId, initial, onStats) => {
+    createDeckChannel: async (deckId, _initial, onStats) => {
       const deck = DECK_INDEX[deckId]
       statsHandlers[deck] = onStats
-      // Apply the initial channel config to the engine.
-      send('set_volume', { deck, gain: initial.volume })
-      for (const band of Object.keys(initial.eq) as EqBand[]) {
-        send('set_eq', { deck, band, value: initial.eq[band] })
-      }
-      if (initial.fx.kind === null) {
-        send('clear_fx', { deck })
-      } else {
-        send('set_fx', { deck, kind: FX_ARG[initial.fx.kind] })
-        send('set_fx_amount', { deck, amount: initial.fx.amount })
-      }
-      send('set_trim', { deck, db: initial.trimDb })
+      // No initial-config replay (ADR-0020 phase C): the SHELL hydrates the
+      // mixer into engine + store at boot, and live gestures are
+      // deck-indexed intents independent of this channel. Replaying here
+      // could overwrite hydrated values with the webview's pre-snapshot
+      // defaults (an agent-started deck racing the first store snapshot).
       startPolling()
       return makeDeckChannel(deckId)
     },

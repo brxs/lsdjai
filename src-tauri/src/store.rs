@@ -29,7 +29,7 @@
 //! IPC — unit-tested directly). [`InterfaceStore`] is the thin shell wrapper that
 //! locks the state, applies a mutation, and emits the snapshot.
 
-use std::sync::Mutex;
+use std::sync::{mpsc, Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -44,8 +44,9 @@ pub const STORE_CHANGED_EVENT: &str = "store://changed";
 
 /// A Color FX kind as it appears in the snapshot — a serde camelCase enum mirroring
 /// the frontend `FxKind` (the six `fx.ts` effects), so the projection names the
-/// effect by intent rather than a magic index.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+/// effect by intent rather than a magic index. `Deserialize` too — it
+/// round-trips through the shell settings file (ADR-0020 phase C).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FxKindSnap {
     Filter,
@@ -69,9 +70,35 @@ impl From<FxKind> for FxKindSnap {
     }
 }
 
+impl From<FxKindSnap> for FxKind {
+    fn from(kind: FxKindSnap) -> Self {
+        match kind {
+            FxKindSnap::Filter => FxKind::Filter,
+            FxKindSnap::DubEcho => FxKind::DubEcho,
+            FxKindSnap::Space => FxKind::Space,
+            FxKindSnap::Crush => FxKind::Crush,
+            FxKindSnap::Noise => FxKind::Noise,
+            FxKindSnap::Sweep => FxKind::Sweep,
+        }
+    }
+}
+
+/// Which source a deck plays (M19, ADR-0013): the realtime model stream or a
+/// loaded track.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlayModeSnap {
+    Realtime,
+    Playback,
+}
+
+/// Hot-cue pads per loaded track (mirrors the webview's `HOT_CUE_COUNT`).
+pub const HOT_CUE_COUNT: usize = 8;
+
 /// A deck's three-band EQ in the snapshot (each 0..1, mirroring the frontend
-/// `Record<EqBand, number>`).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+/// `Record<EqBand, number>`). `Deserialize` too — it round-trips through the
+/// shell settings file (ADR-0020 phase C).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct EqSnap {
     pub low: f32,
     pub mid: f32,
@@ -132,15 +159,20 @@ pub struct PadPointSnap {
     pub y: f32,
 }
 
-/// One style-pad target: a prompt at a pad position (the sampled-target embedding
-/// id is session-only and stays out, like the persisted layout). `Deserialize`/
-/// `JsonSchema` too — targets cross as a `set_deck_style` argument (UI/MIDI and MCP).
+/// One style-pad target: a prompt at a pad position. The store owns the
+/// arrangement (ADR-0020 phase B); a sampled chip (ADR-0011) carries its
+/// session-only embedding id in `sample` — held here so there is exactly one
+/// target list, but excluded from shell persistence and stripped when the
+/// worker (whose cache holds the embedding) dies. `Deserialize`/`JsonSchema`
+/// too — targets cross as MCP `set_style` arguments.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct StyleTargetSnap {
     pub x: f32,
     pub y: f32,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<String>,
 }
 
 /// The note mode a steering surface authors in (ADR-0023): chord-follow maps
@@ -154,11 +186,48 @@ pub enum NoteModeSnap {
     Onset,
 }
 
+/// The key/scale a performance surface snaps to (issue #48). Chromatic is
+/// the no-snap escape hatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ScaleSnap {
+    Major,
+    Minor,
+    PentatonicMinor,
+    Chromatic,
+}
+
+/// A deck's performance-surface config (issue #48, ADR-0031): whether the
+/// surface is armed (armed decks take pad/keyboard notes AND run the small
+/// ADR-0023 performance chunk), the key/scale the notes snap to, and the
+/// note mode (chord-follow or on-grid onset). Owned by the shell
+/// note-steering service; the store holds it for the projection.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PerformanceSnap {
+    pub armed: bool,
+    /// Key root as a pitch class (0 = C … 11 = B).
+    pub key: u8,
+    pub scale: ScaleSnap,
+    pub mode: NoteModeSnap,
+}
+
+impl Default for PerformanceSnap {
+    fn default() -> Self {
+        PerformanceSnap {
+            armed: false,
+            key: 0,
+            scale: ScaleSnap::Major,
+            mode: NoteModeSnap::Chord,
+        }
+    }
+}
+
 /// A realtime deck's note steering (ADR-0023): the held MIDI pitches and the
-/// note mode. The webview owns the pitches→multihot mapping and drives the
-/// worker; the store holds the authored state so MCP writes project into the
-/// same path the UI uses. `Deserialize`/`JsonSchema` too — it crosses as a
-/// `set_deck_notes` / MCP `set_notes` argument.
+/// note mode. The shell note-steering service owns the pitches→multihot
+/// mapping and drives the worker directly (ADR-0031); the store holds the
+/// authored state so every surface projects the same truth. `Deserialize`/
+/// `JsonSchema` too — it crosses as an MCP `set_notes` argument.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteSteeringSnap {
@@ -227,9 +296,16 @@ pub struct DeckSnap {
     /// Whether the realtime deck is generating — a derived read-back the store
     /// mirrors (set by play/stop, cleared on model-load / worker-death).
     pub playing: bool,
+    /// Which source the deck plays (M19, ADR-0013): the realtime model stream
+    /// or a loaded track. Written by the webview's load flow (the load
+    /// orchestration stays webview-side until the transport inverts, phase E);
+    /// recorded here so an agent sees the mode without a webview round-trip.
+    pub mode: PlayModeSnap,
     /// Hot-cue points on the loaded track, in track seconds, one per pad (empty
-    /// with no track). ADR-0015's cue state moves here per ADR-0020; the webview
-    /// owns the set/jump logic (jump is a plain seek) and mirrors the points up.
+    /// with no track). OWNED here since ADR-0020 phase D: pads reset with the
+    /// track identity (`set_track`), mutate through the `set_deck_cue_point`
+    /// intent (UI) and the MCP cue tools, and the webview projects them. The
+    /// jump itself stays a plain seek.
     pub cues: Vec<Option<f64>>,
     /// The loaded track's identity on a playback deck (a read-back the store
     /// mirrors), or `None` on a realtime deck / with no track.
@@ -241,11 +317,25 @@ pub struct DeckSnap {
     /// an unlabelled freeze) — a read-back the store mirrors. Empty until the deck
     /// reports its slots.
     pub loop_labels: Vec<Option<String>>,
-    /// The realtime deck's 2D style-pad targets (prompt + position) — the UI source
-    /// the deck blends into the worker prompt. Mirrored up by `DeckColumn`.
+    /// The realtime deck's 2D style-pad targets (prompt + position). OWNED
+    /// here since ADR-0020 phase B: the webview projects and emits intents;
+    /// the shell style sender blends and drives the worker. (The writer-flag
+    /// adoption gate this replaced is gone — a projection has nothing to
+    /// adopt, which retires the whole echo-race class.)
     pub style_targets: Vec<StyleTargetSnap>,
+    /// Which style targets are selected into the active blend (the net mask,
+    /// one bool per target) — mirrored up by the webview so the pad LEDs can
+    /// burn selected targets bright and dim the rest (ADR-0031: LEDs read the
+    /// store). Empty = no mask (every target pad lit full).
+    pub style_selected: Vec<bool>,
     /// The 2D style-pad cursor (the blend point).
     pub cursor: PadPointSnap,
+    /// Whether the deck is primed off-air (the transport-CUE LED state) — a
+    /// read-back the webview mirrors up; the deck's prime/play flow owns it.
+    pub primed: bool,
+    /// The performance-surface config (issue #48) — armed/key/scale/mode,
+    /// written through the shell note-steering service.
+    pub performance: PerformanceSnap,
     /// The realtime deck's note steering (ADR-0023), or `None` when unsteered.
     /// Cleared on transport transitions — a discontinuity resets conditioning.
     pub notes: Option<NoteSteeringSnap>,
@@ -255,6 +345,16 @@ pub struct DeckSnap {
     /// The deck's live beat analysis (ADR-0025) — a shell-written measurement,
     /// blank until the honesty gate acquires.
     pub analysis: AnalysisSnap,
+    /// The worker crashed and has not been restarted (the status relay writes
+    /// it — the same shell-side source the webview's reducer reads, so an
+    /// agent sees a dead deck without a webview round-trip).
+    pub worker_died: bool,
+    /// The worker is reloading for a model switch.
+    pub switching_model: bool,
+    /// The deck's hardware SHIFT is held — written by the native MIDI
+    /// translator (the state's origin); the webview's copy projects it for
+    /// the cross-deck jog steering until Phase D consolidates.
+    pub shift_held: bool,
 }
 
 impl Default for DeckSnap {
@@ -276,17 +376,34 @@ impl Default for DeckSnap {
             },
             model: None,
             playing: false,
+            mode: PlayModeSnap::Realtime,
             cues: Vec::new(),
             track: None,
             transport: None,
             loop_labels: Vec::new(),
             style_targets: Vec::new(),
+            style_selected: Vec::new(),
             cursor: PadPointSnap { x: 0.5, y: 0.5 },
+            primed: false,
+            performance: PerformanceSnap::default(),
             notes: None,
             drums: None,
             analysis: AnalysisSnap::default(),
+            worker_died: false,
+            switching_model: false,
+            shift_held: false,
         }
     }
+}
+
+/// The shell recorder's state (ADR-0028): whether a take is streaming to
+/// disk and where. Written by the recording commands themselves, so a
+/// webview reload (or an agent) reads the truth instead of a local flag.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingSnap {
+    pub active: bool,
+    pub path: Option<String>,
 }
 
 /// The authoritative interface state — the snapshot shape the webview projects.
@@ -304,6 +421,15 @@ pub struct InterfaceState {
     pub crossfade: f32,
     /// Cue/master headphone blend (0 = cue only, 1 = master).
     pub cue_mix: f32,
+    /// The shell recorder's state (see [`RecordingSnap`]).
+    pub recording: RecordingSnap,
+    /// The chosen MAIN output device name ("" = system default) — shell-
+    /// persisted (ADR-0020 phase A); the webview picker is a projection.
+    pub main_device: String,
+    /// The chosen CUE output device name ("" = same as main).
+    pub cue_device: String,
+    /// The recordings folder ("" = Downloads).
+    pub recordings_folder: String,
 }
 
 impl Default for InterfaceState {
@@ -312,6 +438,10 @@ impl Default for InterfaceState {
             decks: vec![DeckSnap::default(); DECK_COUNT],
             crossfade: 0.5,
             cue_mix: 0.5,
+            recording: RecordingSnap::default(),
+            main_device: String::new(),
+            cue_device: String::new(),
+            recordings_folder: String::new(),
         }
     }
 }
@@ -366,12 +496,14 @@ impl InterfaceState {
         }
     }
 
-    /// Select a deck's Color FX. Records only the kind; the deck immediately
-    /// re-applies the effect's rest amount via `set_fx_amount`, which records the
-    /// amount (mirroring the engine, which resets `fx_amount` to the kind's rest).
+    /// Select a deck's Color FX. Records the kind AND the kind's rest amount —
+    /// the engine's insert swap lands at rest (bypassed), so the store mirrors
+    /// it in the same write (ADR-0020 phase C: one discrete command, no
+    /// follow-up amount write whose absence leaves a stale knob in a snapshot).
     pub fn set_fx(&mut self, deck: usize, kind: FxKind) {
         if let Some(d) = self.deck_mut(deck) {
             d.fx.kind = Some(kind.into());
+            d.fx.amount = kind.rest_position();
         }
     }
 
@@ -381,11 +513,12 @@ impl InterfaceState {
         }
     }
 
-    /// Remove a deck's Color FX (no effect selected); the amount is left as-is, like
-    /// the frontend's `setFx(null)`.
+    /// Remove a deck's Color FX (no effect selected); the knob parks at zero,
+    /// like the frontend's `setFx(null)`.
     pub fn clear_fx(&mut self, deck: usize) {
         if let Some(d) = self.deck_mut(deck) {
             d.fx.kind = None;
+            d.fx.amount = 0.0;
         }
     }
 
@@ -409,14 +542,43 @@ impl InterfaceState {
         }
     }
 
-    pub fn set_cues(&mut self, deck: usize, cues: Vec<Option<f64>>) {
+    /// Start the transport if it is stopped; returns whether THIS call
+    /// started it. `deck_play`'s idempotence guard (ADR-0020 phase D): the
+    /// store lock is the ordering, so a second tap racing the first one's
+    /// round-trip can never re-arm the worker or reset the note steering —
+    /// the job the webview's `playPendingRef` used to do with a local flag.
+    pub fn start_transport(&mut self, deck: usize) -> bool {
+        match self.deck_mut(deck) {
+            Some(d) if !d.playing => {
+                d.notes = None;
+                d.drums = None;
+                d.playing = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Record which source the deck plays (M19; webview-written until the
+    /// transport inverts, phase E).
+    pub fn set_mode(&mut self, deck: usize, mode: PlayModeSnap) {
         if let Some(d) = self.deck_mut(deck) {
-            d.cues = cues;
+            d.mode = mode;
         }
     }
 
     pub fn set_track(&mut self, deck: usize, track: Option<TrackIdentitySnap>) {
         if let Some(d) = self.deck_mut(deck) {
+            // The cue pads live and die with the track identity (phase D):
+            // a different pressing gets fresh pads IN THE SAME WRITE, so no
+            // snapshot can ever pair a new track with the previous track's
+            // points (the stale window the webview's cuesSyncedRef gate used
+            // to fence). A redundant push of the same identity keeps them.
+            if track.is_none() {
+                d.cues = Vec::new();
+            } else if d.track != track {
+                d.cues = vec![None; HOT_CUE_COUNT];
+            }
             d.track = track;
         }
     }
@@ -433,10 +595,144 @@ impl InterfaceState {
         }
     }
 
-    pub fn set_style(&mut self, deck: usize, targets: Vec<StyleTargetSnap>, cursor: PadPointSnap) {
+    /// Add a text target at the clearest spawn slot (ADR-0020 phase B: the
+    /// add semantics — trim, length cap, dup rule, target cap, spawn
+    /// geometry — live here, one copy for UI, hardware, and MCP). Returns
+    /// whether the pad changed.
+    pub fn style_add_target(&mut self, deck: usize, text: &str) -> bool {
+        let text = text.trim();
+        if text.is_empty() || text.len() > crate::style::MAX_TARGET_TEXT {
+            return false;
+        }
+        let Some(d) = self.deck_mut(deck) else { return false };
+        if d.style_targets.len() >= crate::style::MAX_TARGETS
+            || d.style_targets.iter().any(|t| t.text == text)
+        {
+            return false;
+        }
+        let existing: Vec<(f32, f32)> = d.style_targets.iter().map(|t| (t.x, t.y)).collect();
+        let (x, y) = crate::style::spawn_position(&existing);
+        d.style_targets.push(StyleTargetSnap {
+            x,
+            y,
+            text: text.to_string(),
+            sample: None,
+        });
+        d.style_selected.push(false);
+        true
+    }
+
+    /// Add a sampled chip (ADR-0011): a session-only embedding id under a
+    /// display label; same cap/spawn rules, dup keyed on the label.
+    pub fn style_add_sample_target(&mut self, deck: usize, label: &str, sample: &str) -> bool {
+        let label = label.trim();
+        if label.is_empty() || sample.is_empty() {
+            return false;
+        }
+        let Some(d) = self.deck_mut(deck) else { return false };
+        if d.style_targets.len() >= crate::style::MAX_TARGETS
+            || d.style_targets.iter().any(|t| t.text == label)
+        {
+            return false;
+        }
+        let existing: Vec<(f32, f32)> = d.style_targets.iter().map(|t| (t.x, t.y)).collect();
+        let (x, y) = crate::style::spawn_position(&existing);
+        d.style_targets.push(StyleTargetSnap {
+            x,
+            y,
+            text: label.to_string(),
+            sample: Some(sample.to_string()),
+        });
+        d.style_selected.push(false);
+        true
+    }
+
+    /// Move a target (identified by its unique text) to a clamped position.
+    pub fn style_move_target(&mut self, deck: usize, text: &str, x: f32, y: f32) {
         if let Some(d) = self.deck_mut(deck) {
-            d.style_targets = targets;
-            d.cursor = cursor;
+            if let Some(t) = d.style_targets.iter_mut().find(|t| t.text == text) {
+                t.x = crate::style::clamp01(x);
+                t.y = crate::style::clamp01(y);
+            }
+        }
+    }
+
+    /// Remove a target and its selection entry.
+    pub fn style_remove_target(&mut self, deck: usize, text: &str) {
+        if let Some(d) = self.deck_mut(deck) {
+            if let Some(index) = d.style_targets.iter().position(|t| t.text == text) {
+                d.style_targets.remove(index);
+                if index < d.style_selected.len() {
+                    d.style_selected.remove(index);
+                }
+            }
+        }
+    }
+
+    /// Rename a text target in place (position and selection kept). A rename
+    /// that empties, overflows, collides, or touches a sampled chip (whose
+    /// label names a captured moment, not a prompt) is rejected — the same
+    /// quiet rule the webview's editor applied. Returns whether it renamed.
+    pub fn style_rename_target(&mut self, deck: usize, from: &str, to: &str) -> bool {
+        let to = to.trim();
+        if to.is_empty() || to.len() > crate::style::MAX_TARGET_TEXT {
+            return false;
+        }
+        let Some(d) = self.deck_mut(deck) else { return false };
+        if to != from && d.style_targets.iter().any(|t| t.text == to) {
+            return false;
+        }
+        match d.style_targets.iter_mut().find(|t| t.text == from) {
+            Some(t) if t.sample.is_none() => {
+                t.text = to.to_string();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Toggle a target in or out of the net selection (the blend mask the
+    /// pad LEDs mirror).
+    pub fn style_toggle_selection(&mut self, deck: usize, text: &str) {
+        if let Some(d) = self.deck_mut(deck) {
+            if let Some(index) = d.style_targets.iter().position(|t| t.text == text) {
+                if index < d.style_selected.len() {
+                    d.style_selected[index] = !d.style_selected[index];
+                }
+            }
+        }
+    }
+
+    /// The tidy-up gesture: centre the cursor and fan the targets onto the
+    /// spawn circle in order.
+    pub fn style_fan_out(&mut self, deck: usize) {
+        if let Some(d) = self.deck_mut(deck) {
+            for (index, target) in d.style_targets.iter_mut().enumerate() {
+                let (x, y) = crate::style::circle_slot(index);
+                target.x = x;
+                target.y = y;
+            }
+            d.cursor = PadPointSnap { x: 0.5, y: 0.5 };
+        }
+    }
+
+    /// Replace the pad wholesale (a preset load, an MCP arrangement): text
+    /// targets only, selection cleared, cursor set. Invalid entries are
+    /// dropped at the trust boundary before this is called.
+    pub fn style_apply_preset(
+        &mut self,
+        deck: usize,
+        targets: Vec<StyleTargetSnap>,
+        cursor: PadPointSnap,
+    ) {
+        if let Some(d) = self.deck_mut(deck) {
+            let count = targets.len().min(crate::style::MAX_TARGETS);
+            d.style_targets = targets.into_iter().take(count).collect();
+            d.style_selected = vec![false; count];
+            d.cursor = PadPointSnap {
+                x: crate::style::clamp01(cursor.x),
+                y: crate::style::clamp01(cursor.y),
+            };
         }
     }
 
@@ -454,7 +750,24 @@ impl InterfaceState {
     /// Set just the style-pad cursor (the blend point), leaving the targets.
     pub fn set_cursor(&mut self, deck: usize, cursor: PadPointSnap) {
         if let Some(d) = self.deck_mut(deck) {
-            d.cursor = cursor;
+            d.cursor = PadPointSnap {
+                x: crate::style::clamp01(cursor.x),
+                y: crate::style::clamp01(cursor.y),
+            };
+        }
+    }
+
+    /// Mirror the primed-off-air read-back (the transport-CUE LED state).
+    pub fn set_primed(&mut self, deck: usize, primed: bool) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.primed = primed;
+        }
+    }
+
+    /// Record the performance-surface config (issue #48).
+    pub fn set_performance(&mut self, deck: usize, perf: PerformanceSnap) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.performance = perf;
         }
     }
 
@@ -480,22 +793,120 @@ impl InterfaceState {
             d.analysis = analysis;
         }
     }
+
+    /// Record the worker's health from a status event: a crash sets `died`
+    /// (until a reload begins), a model switch sets `switching`, and `ready`
+    /// clears both — the same transitions the webview reducer derives from
+    /// the identical events, so the two views cannot diverge. A dead or
+    /// reloading worker drops its sample cache, so the sampled style chips
+    /// (whose embeddings lived in that cache, ADR-0011) strip with it.
+    pub fn set_worker_health(&mut self, deck: usize, died: bool, switching: bool) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.worker_died = died;
+            d.switching_model = switching;
+            if died || switching {
+                let keep: Vec<bool> = d.style_targets.iter().map(|t| t.sample.is_none()).collect();
+                let mut kept = keep.iter();
+                d.style_targets.retain(|_| *kept.next().unwrap_or(&true));
+                let mut kept = keep.iter();
+                d.style_selected.retain(|_| *kept.next().unwrap_or(&true));
+            }
+        }
+    }
+
+    /// Record the deck's hardware SHIFT held-state (the native translator is
+    /// the origin; this is a plain shell-side write, not a mirror).
+    pub fn set_shift_held(&mut self, deck: usize, held: bool) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.shift_held = held;
+        }
+    }
+
+    /// Record the shell recorder's state (active + the take's path).
+    pub fn set_recording(&mut self, active: bool, path: Option<String>) {
+        self.recording = RecordingSnap { active, path };
+    }
+
+    /// Record the chosen output devices (shell-persisted settings).
+    pub fn set_output_devices(&mut self, main: String, cue: String) {
+        self.main_device = main;
+        self.cue_device = cue;
+    }
+
+    /// Record the recordings folder ("" = Downloads).
+    pub fn set_recordings_folder(&mut self, folder: String) {
+        self.recordings_folder = folder;
+    }
 }
 
 /// The shell-level store: the locked [`InterfaceState`] plus the [`AppHandle`] used
 /// to broadcast changes. Held in Tauri managed state for the app's lifetime so every
 /// controller path (UI/MIDI commands today, MCP tools later) mutates the one copy.
+/// An in-process store-change listener (see [`InterfaceStore::watch`]).
+type StoreWatcher = Box<dyn Fn(&InterfaceState) + Send + Sync>;
+
 pub struct InterfaceStore {
     state: Mutex<InterfaceState>,
-    app: AppHandle,
+    /// The ordered publication queue: snapshots are enqueued UNDER the state
+    /// lock — so queue order IS mutation order — and drained by the single
+    /// publisher thread, which emits to the webview and runs the watcher
+    /// fan-out. Publishing after the lock dropped (the old shape) let two
+    /// mutating threads invert: a snapshot cloned before a change could be
+    /// emitted after it, and the gate-free projection adopted the stale one
+    /// (the play-button-lights-late bug — `deck_play` on the main thread
+    /// racing a streaming deck's analysis tick).
+    publish: mpsc::Sender<InterfaceState>,
+    /// In-process change listeners (the native LED painter, ADR-0031), called
+    /// with each published snapshot in mutation order, on the publisher
+    /// thread — the Rust-side equivalent of the webview's `store://changed`
+    /// subscription, without a serde round-trip.
+    watchers: Arc<Mutex<Vec<StoreWatcher>>>,
 }
 
 impl InterfaceStore {
     pub fn new(app: AppHandle) -> Self {
+        Self::with_emitter(move |snapshot| {
+            let _ = app.emit(STORE_CHANGED_EVENT, snapshot);
+        })
+    }
+
+    /// The store with a custom webview emitter — the seam the ordering test
+    /// uses (a real `AppHandle` needs a running Tauri app). Spawns the
+    /// publisher thread; it lives as long as the store (the channel
+    /// disconnects when the store drops, and the thread exits with it).
+    fn with_emitter(emit: impl Fn(&InterfaceState) + Send + 'static) -> Self {
+        let watchers: Arc<Mutex<Vec<StoreWatcher>>> = Arc::new(Mutex::new(Vec::new()));
+        let (publish, inbox) = mpsc::channel::<InterfaceState>();
+        {
+            let watchers = Arc::clone(&watchers);
+            std::thread::Builder::new()
+                .name("lsdj-store-publish".into())
+                .spawn(move || {
+                    while let Ok(snapshot) = inbox.recv() {
+                        emit(&snapshot);
+                        for watcher in
+                            watchers.lock().unwrap_or_else(|p| p.into_inner()).iter()
+                        {
+                            watcher(&snapshot);
+                        }
+                    }
+                })
+                .expect("failed to spawn lsdj store publisher thread");
+        }
         InterfaceStore {
             state: Mutex::new(InterfaceState::default()),
-            app,
+            publish,
+            watchers,
         }
+    }
+
+    /// Register an in-process change listener (never unregistered — watchers
+    /// live as long as the app, like the managed state that owns them).
+    pub fn watch(&self, watcher: impl Fn(&InterfaceState) + Send + Sync + 'static) {
+        self.watchers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(Box::new(watcher));
     }
 
     /// The current snapshot — what the webview hydrates from on mount (`store_snapshot`).
@@ -503,26 +914,26 @@ impl InterfaceStore {
         self.lock().clone()
     }
 
-    /// Apply a mutation under the lock, then emit the fresh snapshot to the webview.
-    /// The clone happens under the lock and the emit after it drops, so serialisation
-    /// never holds the mutex. A poisoned lock is recovered (a panic in another
-    /// holder must not wedge every later control).
+    /// Apply a mutation under the lock, then queue the fresh snapshot for
+    /// publication. The enqueue happens UNDER the lock so publication order is
+    /// mutation order across threads (commands on the main thread, the
+    /// analysis ticks on theirs); serialisation and the watcher fan-out stay
+    /// off the mutex — they run on the publisher thread. A poisoned lock is
+    /// recovered (a panic in another holder must not wedge every later
+    /// control).
     ///
     /// A mutation that leaves the state unchanged emits nothing — many mirror writers
     /// re-push identical values (a boot replay, a `track?.cues` reference change with
     /// the same points), and a redundant `store://changed` would re-render every
     /// projection consumer for no reason.
     fn mutate(&self, f: impl FnOnce(&mut InterfaceState)) {
-        let snapshot = {
-            let mut state = self.lock();
-            let before = state.clone();
-            f(&mut state);
-            if *state == before {
-                return;
-            }
-            state.clone()
-        };
-        let _ = self.app.emit(STORE_CHANGED_EVENT, &snapshot);
+        let mut state = self.lock();
+        let before = state.clone();
+        f(&mut state);
+        if *state == before {
+            return;
+        }
+        let _ = self.publish.send(state.clone());
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, InterfaceState> {
@@ -584,10 +995,18 @@ impl InterfaceStore {
         self.mutate(move |s| s.set_playing(deck, playing));
     }
 
-    /// Mirror the loaded track's hot-cue points (ADR-0015 → ADR-0020). The webview
-    /// owns the set/jump logic and writes the current points up.
-    pub fn set_deck_cues(&self, deck: usize, cues: Vec<Option<f64>>) {
-        self.mutate(move |s| s.set_cues(deck, cues));
+    /// Start the transport if stopped; returns whether THIS call started it
+    /// (the `deck_play` idempotence guard, phase D).
+    pub fn start_transport(&self, deck: usize) -> bool {
+        let mut started = false;
+        self.mutate(|s| started = s.start_transport(deck));
+        started
+    }
+
+    /// Record which source the deck plays (M19; the webview's load flow
+    /// writes it until the transport inverts).
+    pub fn set_deck_mode(&self, deck: usize, mode: PlayModeSnap) {
+        self.mutate(move |s| s.set_mode(deck, mode));
     }
 
     /// Mirror the loaded track's identity (a playback-deck read-back). The webview
@@ -609,10 +1028,49 @@ impl InterfaceStore {
         self.mutate(move |s| s.set_loop_labels(deck, labels));
     }
 
-    /// Mirror the realtime deck's 2D style-pad targets + cursor (the UI source the
-    /// deck blends into the worker prompt). `DeckColumn` writes them up on change.
-    pub fn set_deck_style(&self, deck: usize, targets: Vec<StyleTargetSnap>, cursor: PadPointSnap) {
-        self.mutate(move |s| s.set_style(deck, targets, cursor));
+    /// The style-pad intents (ADR-0020 phase B): one semantic surface for
+    /// the UI, the hardware, and MCP — the webview projects the result.
+    pub fn style_add_target(&self, deck: usize, text: &str) -> bool {
+        let mut added = false;
+        self.mutate(|s| added = s.style_add_target(deck, text));
+        added
+    }
+
+    pub fn style_add_sample_target(&self, deck: usize, label: &str, sample: &str) -> bool {
+        let mut added = false;
+        self.mutate(|s| added = s.style_add_sample_target(deck, label, sample));
+        added
+    }
+
+    pub fn style_move_target(&self, deck: usize, text: &str, x: f32, y: f32) {
+        self.mutate(|s| s.style_move_target(deck, text, x, y));
+    }
+
+    pub fn style_remove_target(&self, deck: usize, text: &str) {
+        self.mutate(|s| s.style_remove_target(deck, text));
+    }
+
+    pub fn style_rename_target(&self, deck: usize, from: &str, to: &str) -> bool {
+        let mut renamed = false;
+        self.mutate(|s| renamed = s.style_rename_target(deck, from, to));
+        renamed
+    }
+
+    pub fn style_toggle_selection(&self, deck: usize, text: &str) {
+        self.mutate(|s| s.style_toggle_selection(deck, text));
+    }
+
+    pub fn style_fan_out(&self, deck: usize) {
+        self.mutate(|s| s.style_fan_out(deck));
+    }
+
+    pub fn style_apply_preset(
+        &self,
+        deck: usize,
+        targets: Vec<StyleTargetSnap>,
+        cursor: PadPointSnap,
+    ) {
+        self.mutate(move |s| s.style_apply_preset(deck, targets, cursor));
     }
 
     /// Set one hot-cue pad's point (MCP `set_hot_cue` / `clear_hot_cue`). The webview
@@ -625,6 +1083,17 @@ impl InterfaceStore {
     /// and re-pushes the blended prompt to the worker.
     pub fn set_deck_cursor(&self, deck: usize, cursor: PadPointSnap) {
         self.mutate(move |s| s.set_cursor(deck, cursor));
+    }
+
+    /// Mirror the primed-off-air read-back (the transport-CUE LED state).
+    pub fn set_deck_primed(&self, deck: usize, primed: bool) {
+        self.mutate(move |s| s.set_primed(deck, primed));
+    }
+
+    /// Record a deck's performance-surface config (written by the shell
+    /// note-steering service — UI and hardware both go through it).
+    pub fn set_deck_performance(&self, deck: usize, perf: PerformanceSnap) {
+        self.mutate(move |s| s.set_performance(deck, perf));
     }
 
     /// Replace a deck's note steering (UI/MIDI writes it up; MCP `set_notes` writes
@@ -644,6 +1113,33 @@ impl InterfaceStore {
     /// [`InterfaceStore::mutate`] keeps a held (or blank) reading silent.
     pub fn set_analysis(&self, deck: usize, analysis: AnalysisSnap) {
         self.mutate(move |s| s.set_analysis(deck, analysis));
+    }
+
+    /// Record the worker's health from the status relay (crash / model
+    /// switch / ready).
+    pub fn set_worker_health(&self, deck: usize, died: bool, switching: bool) {
+        self.mutate(move |s| s.set_worker_health(deck, died, switching));
+    }
+
+    /// Record a deck's hardware SHIFT held-state (native translator origin).
+    pub fn set_deck_shift(&self, deck: usize, held: bool) {
+        self.mutate(move |s| s.set_shift_held(deck, held));
+    }
+
+    /// Record the shell recorder's state (the recording commands write it).
+    pub fn set_recording(&self, active: bool, path: Option<String>) {
+        self.mutate(move |s| s.set_recording(active, path));
+    }
+
+    /// Record the chosen output devices (the device commands write it after
+    /// a successful switch; boot hydration seeds it from the settings file).
+    pub fn set_output_devices(&self, main: String, cue: String) {
+        self.mutate(move |s| s.set_output_devices(main, cue));
+    }
+
+    /// Record the recordings folder ("" = Downloads).
+    pub fn set_recordings_folder(&self, folder: String) {
+        self.mutate(move |s| s.set_recordings_folder(folder));
     }
 }
 
@@ -762,23 +1258,119 @@ mod tests {
     }
 
     #[test]
-    fn style_targets_and_cursor_are_mirrored_per_deck() {
+    fn style_add_spawns_on_the_circle_and_enforces_trim_dup_and_cap() {
         let mut state = InterfaceState::default();
-        state.set_style(
+        // Trim; the spawn slot comes from the geometry (empty pad → slot 0).
+        assert!(state.style_add_target(0, "  dub  "));
+        assert_eq!(state.decks[0].style_targets[0].text, "dub");
+        let (x0, y0) = crate::style::circle_slot(0);
+        assert_eq!(state.decks[0].style_targets[0].x, x0);
+        assert_eq!(state.decks[0].style_targets[0].y, y0);
+        // Selection grows in step, unselected.
+        assert_eq!(state.decks[0].style_selected, vec![false]);
+        // Duplicates and empties are rejected.
+        assert!(!state.style_add_target(0, "dub"));
+        assert!(!state.style_add_target(0, "   "));
+        // The cap holds at MAX_TARGETS.
+        for i in 0..crate::style::MAX_TARGETS {
+            state.style_add_target(0, &format!("t{i}"));
+        }
+        assert_eq!(state.decks[0].style_targets.len(), crate::style::MAX_TARGETS);
+        assert!(!state.style_add_target(0, "one too many"));
+        // The other deck is untouched.
+        assert!(state.decks[1].style_targets.is_empty());
+    }
+
+    #[test]
+    fn style_move_clamps_and_remove_keeps_selection_aligned() {
+        let mut state = InterfaceState::default();
+        state.style_add_target(0, "a");
+        state.style_add_target(0, "b");
+        state.style_toggle_selection(0, "b");
+        assert_eq!(state.decks[0].style_selected, vec![false, true]);
+        // Move clamps into the unit square.
+        state.style_move_target(0, "a", -0.5, 1.5);
+        assert_eq!(state.decks[0].style_targets[0].x, 0.0);
+        assert_eq!(state.decks[0].style_targets[0].y, 1.0);
+        // Removing "a" keeps "b" selected — the mask tracks its target.
+        state.style_remove_target(0, "a");
+        assert_eq!(state.decks[0].style_targets.len(), 1);
+        assert_eq!(state.decks[0].style_targets[0].text, "b");
+        assert_eq!(state.decks[0].style_selected, vec![true]);
+    }
+
+    #[test]
+    fn style_rename_keeps_position_and_rejects_collisions_and_sample_chips() {
+        let mut state = InterfaceState::default();
+        state.style_add_target(0, "dub");
+        state.style_add_target(0, "punk");
+        state.style_add_sample_target(0, "Deck B sample 1", "sample:b:1");
+        let position = (state.decks[0].style_targets[0].x, state.decks[0].style_targets[0].y);
+        // Rename keeps the position; collisions and empties are quiet no-ops.
+        assert!(state.style_rename_target(0, "dub", "deep dub"));
+        assert_eq!(state.decks[0].style_targets[0].text, "deep dub");
+        assert_eq!(
+            (state.decks[0].style_targets[0].x, state.decks[0].style_targets[0].y),
+            position
+        );
+        assert!(!state.style_rename_target(0, "deep dub", "punk"));
+        assert!(!state.style_rename_target(0, "punk", "  "));
+        // A sampled chip's label names a captured moment — not renameable.
+        assert!(!state.style_rename_target(0, "Deck B sample 1", "nice loop"));
+    }
+
+    #[test]
+    fn style_fan_out_circles_the_targets_and_centres_the_cursor() {
+        let mut state = InterfaceState::default();
+        state.style_add_target(0, "a");
+        state.style_add_target(0, "b");
+        state.style_move_target(0, "a", 0.9, 0.9);
+        state.set_cursor(0, PadPointSnap { x: 0.1, y: 0.1 });
+        state.style_fan_out(0);
+        let (x0, y0) = crate::style::circle_slot(0);
+        let (x1, y1) = crate::style::circle_slot(1);
+        assert_eq!(state.decks[0].style_targets[0].x, x0);
+        assert_eq!(state.decks[0].style_targets[0].y, y0);
+        assert_eq!(state.decks[0].style_targets[1].x, x1);
+        assert_eq!(state.decks[0].style_targets[1].y, y1);
+        assert_eq!(state.decks[0].cursor, PadPointSnap { x: 0.5, y: 0.5 });
+    }
+
+    #[test]
+    fn style_apply_preset_replaces_wholesale_and_clears_selection() {
+        let mut state = InterfaceState::default();
+        state.style_add_target(0, "old");
+        state.style_toggle_selection(0, "old");
+        state.style_apply_preset(
             0,
             vec![StyleTargetSnap {
                 x: 0.2,
                 y: 0.8,
                 text: "dub".to_string(),
+                sample: None,
             }],
             PadPointSnap { x: 0.3, y: 0.4 },
         );
         assert_eq!(state.decks[0].style_targets.len(), 1);
         assert_eq!(state.decks[0].style_targets[0].text, "dub");
+        assert_eq!(state.decks[0].style_selected, vec![false]);
         assert_eq!(state.decks[0].cursor, PadPointSnap { x: 0.3, y: 0.4 });
-        // The other deck is untouched.
-        assert!(state.decks[1].style_targets.is_empty());
-        assert_eq!(state.decks[1].cursor, PadPointSnap { x: 0.5, y: 0.5 });
+    }
+
+    #[test]
+    fn worker_death_strips_sampled_chips_and_their_selection() {
+        let mut state = InterfaceState::default();
+        state.style_add_target(0, "dub");
+        state.style_add_sample_target(0, "Deck B sample 1", "sample:b:1");
+        state.style_toggle_selection(0, "dub");
+        state.style_toggle_selection(0, "Deck B sample 1");
+        // The dying worker takes its embedding cache — the chip goes with it,
+        // the text target (and its selection) survives.
+        state.set_worker_health(0, true, false);
+        assert_eq!(state.decks[0].style_targets.len(), 1);
+        assert_eq!(state.decks[0].style_targets[0].text, "dub");
+        assert_eq!(state.decks[0].style_selected, vec![true]);
+        assert!(state.decks[0].worker_died);
     }
 
     #[test]
@@ -846,11 +1438,31 @@ mod tests {
         assert!(!state.decks[1].playing);
     }
 
+    fn pressing(title: &str) -> TrackIdentitySnap {
+        TrackIdentitySnap {
+            title: title.to_string(),
+            bpm: Some(128.0),
+            duration_seconds: 120.0,
+        }
+    }
+
     #[test]
-    fn hot_cues_are_mirrored_per_deck() {
+    fn cue_pads_live_and_die_with_the_track_identity() {
         let mut state = InterfaceState::default();
-        state.set_cues(0, vec![Some(1.5), None, Some(3.0)]);
-        assert_eq!(state.decks[0].cues, vec![Some(1.5), None, Some(3.0)]);
+        // A load opens a fresh bank in the same write as the identity.
+        state.set_track(0, Some(pressing("Warehouse Anthem")));
+        assert_eq!(state.decks[0].cues, vec![None; HOT_CUE_COUNT]);
+        state.set_cue_point(0, 1, Some(12.5));
+        // A redundant identity push (the webview mirror re-fires) keeps them…
+        state.set_track(0, Some(pressing("Warehouse Anthem")));
+        assert_eq!(state.decks[0].cues[1], Some(12.5));
+        // …a DIFFERENT pressing resets them in the same write (no snapshot can
+        // pair the new track with the old points)…
+        state.set_track(0, Some(pressing("Second Pressing")));
+        assert_eq!(state.decks[0].cues, vec![None; HOT_CUE_COUNT]);
+        // …and an unload drops the bank.
+        state.set_track(0, None);
+        assert!(state.decks[0].cues.is_empty());
         assert!(state.decks[1].cues.is_empty());
     }
 
@@ -860,34 +1472,45 @@ mod tests {
         // A no-track deck (empty cue vec) is a silent no-op — the MCP tool reports it.
         state.set_cue_point(0, 0, Some(4.0));
         assert!(state.decks[0].cues.is_empty());
-        // With a cue bank, set one pad and clear it; the neighbours are untouched.
-        state.set_cues(0, vec![None, None, None]);
+        // With a loaded track, set one pad and clear it; the neighbours are untouched.
+        state.set_track(0, Some(pressing("Warehouse Anthem")));
         state.set_cue_point(0, 1, Some(12.5));
-        assert_eq!(state.decks[0].cues, vec![None, Some(12.5), None]);
+        assert_eq!(state.decks[0].cues[1], Some(12.5));
         state.set_cue_point(0, 1, None);
-        assert_eq!(state.decks[0].cues, vec![None, None, None]);
+        assert_eq!(state.decks[0].cues, vec![None; HOT_CUE_COUNT]);
         // An out-of-range pad on a loaded deck is a no-op too.
-        state.set_cue_point(0, 9, Some(1.0));
-        assert_eq!(state.decks[0].cues, vec![None, None, None]);
+        state.set_cue_point(0, 99, Some(1.0));
+        assert_eq!(state.decks[0].cues, vec![None; HOT_CUE_COUNT]);
+    }
+
+    #[test]
+    fn start_transport_starts_once_and_records_the_mode() {
+        let mut state = InterfaceState::default();
+        assert_eq!(state.decks[0].mode, PlayModeSnap::Realtime);
+        state.set_mode(0, PlayModeSnap::Playback);
+        assert_eq!(state.decks[0].mode, PlayModeSnap::Playback);
+        assert_eq!(state.decks[1].mode, PlayModeSnap::Realtime);
+        // The idempotence guard: only the first start reports true — a second
+        // tap must not re-arm the worker or reset held steering.
+        assert!(state.start_transport(1));
+        assert!(state.decks[1].playing);
+        assert!(!state.start_transport(1));
+        state.set_playing(1, false);
+        assert!(state.start_transport(1));
     }
 
     #[test]
     fn set_cursor_moves_the_blend_point_leaving_targets() {
         let mut state = InterfaceState::default();
-        state.set_style(
-            0,
-            vec![StyleTargetSnap {
-                x: 0.1,
-                y: 0.2,
-                text: "a".to_string(),
-            }],
-            PadPointSnap { x: 0.5, y: 0.5 },
-        );
+        state.style_add_target(0, "a");
         state.set_cursor(0, PadPointSnap { x: 0.7, y: 0.3 });
         assert_eq!(state.decks[0].cursor, PadPointSnap { x: 0.7, y: 0.3 });
         // The targets are left exactly as they were.
         assert_eq!(state.decks[0].style_targets.len(), 1);
         assert_eq!(state.decks[0].style_targets[0].text, "a");
+        // And the cursor clamps into the unit square.
+        state.set_cursor(0, PadPointSnap { x: -1.0, y: 2.0 });
+        assert_eq!(state.decks[0].cursor, PadPointSnap { x: 0.0, y: 1.0 });
     }
 
     #[test]
@@ -915,18 +1538,25 @@ mod tests {
     }
 
     #[test]
-    fn fx_select_keeps_amount_then_clear_keeps_amount() {
+    fn fx_select_parks_the_amount_at_rest_and_clear_at_zero() {
+        // Phase C: set_fx records kind + the kind's rest amount in ONE write —
+        // the engine's insert swap lands at rest, and a snapshot between the
+        // old two-write sequence must never pair the new kind with the stale
+        // amount. clear_fx parks at zero, like the webview's setFx(null).
         let mut state = InterfaceState::default();
         state.set_fx(0, FxKind::DubEcho);
         state.set_fx_amount(0, 0.7);
         assert_eq!(state.decks[0].fx.kind, Some(FxKindSnap::DubEcho));
         assert_eq!(state.decks[0].fx.amount, 0.7);
 
-        // Clearing the effect drops the kind but leaves the amount (matches the
-        // frontend's setFx(null)).
+        // A kind swap lands at the new kind's rest (filter is bipolar: 0.5).
+        state.set_fx(0, FxKind::Filter);
+        assert_eq!(state.decks[0].fx.kind, Some(FxKindSnap::Filter));
+        assert_eq!(state.decks[0].fx.amount, 0.5);
+
         state.clear_fx(0);
         assert_eq!(state.decks[0].fx.kind, None);
-        assert_eq!(state.decks[0].fx.amount, 0.7);
+        assert_eq!(state.decks[0].fx.amount, 0.0);
     }
 
     #[test]
@@ -950,5 +1580,48 @@ mod tests {
         assert!(json.contains("\"onAir\""));
         assert!(json.contains("\"trimDb\""));
         assert!(json.contains("\"dubEcho\""));
+    }
+
+    /// Concurrent mutators must never publish a stale snapshot after a fresher
+    /// one: the enqueue happens under the state lock, so the publisher thread
+    /// sees mutation order. The old emit-after-unlock shape let a streaming
+    /// deck's analysis tick overwrite `deck_play`'s fresh transport in the
+    /// projection (the play-button-lights-late bug).
+    #[test]
+    fn snapshots_publish_in_mutation_order_across_threads() {
+        const WRITES: usize = 200;
+        let store = InterfaceStore::with_emitter(|_| {});
+        let (tx, rx) = mpsc::channel();
+        store.watch(move |state| {
+            let _ = tx.send((state.decks[0].volume, state.decks[1].volume));
+        });
+        std::thread::scope(|s| {
+            for deck in 0..2 {
+                let store = &store;
+                s.spawn(move || {
+                    // Descending from just below the 1.0 default, so each
+                    // deck's column is monotonic from the very first snapshot.
+                    for i in 0..WRITES {
+                        store.set_volume(deck, (WRITES - 1 - i) as f32 / WRITES as f32);
+                    }
+                });
+            }
+        });
+        // Disconnect the queue so the publisher drains, exits, and drops the
+        // watcher (and with it the channel) — `rx` then ends deterministically.
+        drop(store);
+        let published: Vec<(f32, f32)> = rx.iter().collect();
+        assert_eq!(published.len(), 2 * WRITES);
+        // Each deck's writes were monotonic, so any published regression means
+        // a stale snapshot overtook a fresher one.
+        for pair in published.windows(2) {
+            assert!(
+                pair[1].0 <= pair[0].0 && pair[1].1 <= pair[0].1,
+                "stale snapshot published after a fresher one: {:?} then {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        assert_eq!(*published.last().unwrap(), (0.0, 0.0));
     }
 }

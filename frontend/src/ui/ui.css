@@ -76,6 +76,72 @@
   cursor: default;
 }
 
+/* ---------- switch ---------- */
+
+/* A labelled rocker toggle. The track stays a dark inset in every context
+   (it reads on panels AND on the accent door slabs); the thumb and track
+   tint take the accent when on. Deck variants remap the accent like the
+   transport buttons do. */
+.ui-switch {
+  --switch-accent: var(--color-accent);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.ui-switch--a {
+  --switch-accent: var(--color-deck-a);
+}
+
+.ui-switch--b {
+  --switch-accent: var(--color-deck-b);
+}
+
+.ui-switch:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ui-switch__label {
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+}
+
+.ui-switch__track {
+  width: 2rem;
+  height: 1.05rem;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface-inset);
+  display: flex;
+  align-items: center;
+  padding: 0.125rem;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.ui-switch__thumb {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+}
+
+.ui-switch--on .ui-switch__track {
+  background: color-mix(in srgb, var(--switch-accent) 25%, var(--color-surface-inset));
+  border-color: var(--switch-accent);
+}
+
+.ui-switch--on .ui-switch__thumb {
+  margin-left: auto;
+  background: var(--switch-accent);
+}
+
 /* ---------- text fields & selects ---------- */
 
 .ui-field {
@@ -642,6 +708,11 @@
   box-shadow: var(--inset-border);
   touch-action: none;
   cursor: crosshair;
+  /* The pad owns its square: edge targets' labels used to spill into the
+     panel (and under the performance door's parked rail, poking out the far
+     side). Drags past the edge still work — pointer capture, not geometry,
+     keeps them alive. */
+  overflow: hidden;
 }
 
 .ui-xypad__surface:focus-visible {
@@ -689,6 +760,28 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The frame: the surface square plus whatever gutter the caller reserves
+   beside it (via the surface's margins) — the overlay's positioning box, so
+   a cover can park in the gutter without sitting over pad coordinates. */
+.ui-xypad__frame {
+  position: relative;
+}
+
+/* Overlay slot: covers like the performance door slide inside the frame
+   (clipped here), above the net and dots. The wrapper is inert so an
+   empty margin never blocks pad drags; its content re-enables hits itself. */
+.ui-xypad__overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.ui-xypad__overlay > * {
+  pointer-events: auto;
 }
 
 .ui-xypad__cursor {

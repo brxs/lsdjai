@@ -97,11 +97,29 @@ headphone jack — but Chromium caps Web Audio output at stereo per sink,
 so the phones jack is unreachable from the browser; the cue feed uses a
 second output device instead (ADR-0006).
 
+## Mapped in issue #48 (play the deck — the KEYBOARD bank)
+
+Handled **natively in the Rust shell** (`src-tauri/src/midi/`, ADR-0031):
+these bytes never reach the webview — the note-steering service turns them
+into MRT2 note conditioning beside the beat clock.
+
+| Control | Message | → Behaviour |
+| ------- | ------- | ----------- |
+| Pads 1–8, KEYBOARD mode, deck 1 / 2 | `0x97`/`0x99` notes `0x40`–`0x47`; with SHIFT held the same pads move to `0x98`/`0x9A` (the shift pad layer, like every bank) — **both measured on the device (2026-07-03)** | performance notes: pad N plays the diatonic triad on degree N of the configured key/scale (single semitones in chromatic). Press AND release both matter (they edit the held set — unlike every other pad, releases are not dropped), so the translator accepts the note range on BOTH layers mapped to the same pad: playing never needs SHIFT, and a SHIFT grabbed mid-hold cannot eat a release and stick a note |
+| KEYBOARD pad-mode selector (SHIFT + HOT CUE mode) deck 1 / 2 | `0x90`/`0x91` note `0x69` — **confirmed on the device (2026-07-03)**: pressing it arms the deck (the performance door slides open) | arms the performance surface; any other bank's selector disarms it |
+| Pad-mode selectors, deck 1 / 2 | `0x90`/`0x91` notes HOT CUE `0x1B`, PAD FX1 `0x1E`, BEAT JUMP `0x20`, SAMPLER `0x22`, KEYBOARD `0x69`, PAD FX2 `0x6B`, BEAT LOOP `0x6D`, KEY SHIFT `0x6F` | no intent of their own; a switch clears the device's pad LEDs, so any selector press cues a repaint. Choosing **KEYBOARD** arms the deck's performance surface (and shrinks its worker chunk, ADR-0023); choosing any other bank disarms it. Selector bytes were carried in `flx4.ts` comments pre-ADR-0031 (HOT CUE/PAD FX1 measured, the rest interpolated) — `0x69` **confirmed on the device (2026-07-03)**, and the full selector set exercised by the issue-48 hardware pass (2026-07-04) |
+| Pad-mode selector LEDs, deck 1 / 2 | same notes echoed back on `0x90`/`0x91` (the standard echo scheme) | the shell tracks each deck's active bank from selector presses (power-on default HOT CUE — the device does NOT move these itself) and lights exactly one physical button per deck: the active bank's own note lit `0x7F`, the other three physical buttons dark via their PLAIN notes. A shifted bank (KEYBOARD `0x69` etc.) is addressed by its own note on the shared physical button — **confirmed on the device (2026-07-04)**: echoing the shifted note lights the shared button, and the rebind reset repaints HOT CUE after a replug |
+
+An external MIDI keyboard needs no mapping: any input port that matches no
+controller driver attaches as a note source — note on/off steer every armed
+deck, snapped to its key/scale.
+
 ## Useful spares for later
 
-- Pad modes other than HOT CUE, PAD FX, and SAMPLER send distinct note
-  ranges (BEAT LOOP `0x60`–`0x67`, BEAT JUMP `0x20`–`0x27`, KEY SHIFT
-  `0x70`–`0x77`) — free banks for future intents (preset crates?).
+- Pad modes other than HOT CUE, PAD FX, SAMPLER, and KEYBOARD send
+  distinct note ranges (BEAT LOOP `0x60`–`0x67`, BEAT JUMP `0x20`–`0x27`,
+  KEY SHIFT `0x70`–`0x77`) — free banks for future intents (preset
+  crates?).
 - SAMPLER pads 5–8 (`0x34`–`0x37`) are unmapped; more loop slots if four
   prove tight.
 
@@ -114,9 +132,9 @@ natural first use.
 
 The net (live mode) adds a third level: a selected target pad burns bright
 (`0x7F`), an available-but-unselected one sits dim (`0x20`), the rest dark.
-This assumes velocity drives pad brightness; if the HOT CUE pads only do
-on/off the dim/bright distinction collapses to "all lit" with no regression,
-and the on-screen net stays the primary cue. **The `0x20` dim level is
-provisional — measure it on the device** (see the net hardware checklist) and
-adjust `PAD_LED_DIM` in `flx4.ts` if the pads need a different value to read
-as clearly dim-but-on.
+Velocity drives pad brightness on the device, and **the `0x20` dim level is
+confirmed (hardware pass, 2026-07-04)** — the bright/dim distinction reads
+clearly on the pads (`PAD_LED_DIM` in `src-tauri/src/midi/leds.rs` holds the
+value). Since ADR-0031 the LEDs are
+painted natively from the interface store; the translation and echo scheme
+are unchanged, only their home moved.

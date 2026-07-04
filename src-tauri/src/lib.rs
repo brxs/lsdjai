@@ -1,7 +1,8 @@
 //! LSDJai native shell — the Tauri v2 app host (Phase 2).
 //!
-//! This embeds the React frontend, wires the WebMIDI plugin, starts the Rust
-//! audio engine, and exposes the engine control surface to the webview over IPC.
+//! This embeds the React frontend, starts the Rust audio engine and the native
+//! MIDI service (ADR-0031), and exposes the engine control surface to the
+//! webview over IPC.
 //!
 //! # The audio host lifecycle (the load-bearing bit)
 //!
@@ -43,11 +44,15 @@ mod decode;
 mod generation;
 mod library;
 mod mcp;
+mod midi;
 mod models;
 mod samples;
+mod settings;
 mod sidecar;
 mod songs;
 mod store;
+mod style;
+mod style_send;
 mod watcher;
 
 /// The default per-deck model the sidecars load (mirrors `controller.py`
@@ -170,6 +175,28 @@ fn start_sidecars(
             handle,
             move |json| {
                 use tauri::{Emitter, Manager};
+                // Worker health lives in the store too (ADR-0020 phase A): the
+                // same events the webview reducer derives its operability from
+                // write the shell-side truth, so an agent sees a dead or
+                // switching worker without a webview round-trip.
+                if let Some(event) = sidecar::status_event(&json) {
+                    if let Some(store) = app.try_state::<store::InterfaceStore>() {
+                        match event.as_str() {
+                            "worker_died" => store.set_worker_health(idx, true, false),
+                            "model_loading" => store.set_worker_health(idx, false, true),
+                            "ready" => store.set_worker_health(idx, false, false),
+                            _ => {}
+                        }
+                    }
+                    // A fresh worker has no conditioning: push the deck's
+                    // current style blend again (ADR-0020 phase B — the
+                    // shell sender owns the resend the webview used to do).
+                    if event == "ready" {
+                        if let Some(sender) = app.try_state::<style_send::StyleSender>() {
+                            sender.resend(idx);
+                        }
+                    }
+                }
                 // The transport derivation lives in Rust (ADR-0020: the store owns
                 // `playing`): a dying or model-switching worker stops generating, so
                 // the store drops the deck's transport before the event is relayed.
@@ -186,6 +213,12 @@ fn start_sidecars(
                         .try_state::<Host>()
                         .map_or(0.0, |host| host.health().context_frames as f64);
                     status_feed.reset(idx, origin);
+                    // Held note steering dies with the stream too (ADR-0023):
+                    // the worker dropped its conditioning, so the shell service
+                    // must drop the matching held state.
+                    if let Some(notes) = app.try_state::<midi::notes::NoteSteering>() {
+                        notes.reset(idx);
+                    }
                 }
                 let _ = app.emit("sidecar://status", SidecarStatus { deck: idx, json });
             },
@@ -364,11 +397,18 @@ fn reopen_cue_split(host: &Host, audio: &AudioState, cue_name: &str) -> Result<(
 fn set_main_device(
     host: tauri::State<'_, Host>,
     audio: tauri::State<'_, AudioState>,
+    store: tauri::State<'_, store::InterfaceStore>,
+    app: tauri::AppHandle,
     name: String,
 ) -> Result<(), String> {
     let cue_name = audio.cue_name.lock().unwrap_or_else(|p| p.into_inner()).clone();
     reopen_main(&host, &audio, &name, &cue_name)?;
-    *audio.main_name.lock().unwrap_or_else(|p| p.into_inner()) = name;
+    *audio.main_name.lock().unwrap_or_else(|p| p.into_inner()) = name.clone();
+    // Persistence follows ownership (ADR-0020 phase A): a successful switch
+    // records into the store (the picker projects it) and the settings file
+    // (boot hydration re-applies it) — localStorage is out of the loop.
+    settings::update(&app, |s| s.main_device = name.clone());
+    store.set_output_devices(name, cue_name);
     Ok(())
 }
 
@@ -380,6 +420,8 @@ fn set_main_device(
 fn set_cue_device(
     host: tauri::State<'_, Host>,
     audio: tauri::State<'_, AudioState>,
+    store: tauri::State<'_, store::InterfaceStore>,
+    app: tauri::AppHandle,
     name: String,
 ) -> Result<(), String> {
     let main_name = audio.main_name.lock().unwrap_or_else(|p| p.into_inner()).clone();
@@ -416,16 +458,29 @@ fn set_cue_device(
             }
         }
     }
-    *audio.cue_name.lock().unwrap_or_else(|p| p.into_inner()) = name;
+    *audio.cue_name.lock().unwrap_or_else(|p| p.into_inner()) = name.clone();
+    let main_name = audio.main_name.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    settings::update(&app, |s| s.cue_device = name.clone());
+    store.set_output_devices(main_name, name);
     Ok(())
+}
+
+/// Set (and persist) the recordings folder — "" = Downloads. The picker's
+/// native dialog supplies real paths; the recorder recreates or falls back
+/// at start, so no validation beyond ownership is needed here.
+#[tauri::command]
+fn set_recordings_folder(
+    store: tauri::State<'_, store::InterfaceStore>,
+    app: tauri::AppHandle,
+    folder: String,
+) {
+    settings::update(&app, |s| s.recordings_folder = folder.clone());
+    store.set_recordings_folder(folder);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        // The WebMIDI shim (ADR-0005): injects `navigator.requestMIDIAccess`
-        // into the webview.
-        .plugin(tauri_plugin_midi::init())
         // Native file/folder picker for the media browser's folder tab (WKWebView
         // has no File System Access API).
         .plugin(tauri_plugin_dialog::init())
@@ -442,6 +497,41 @@ pub fn run() {
             // the per-deck inference sidecars fed by the deck handles. Everything
             // is held in managed state for the app's lifetime.
             let (host, audio_state, deck_handles) = start_audio();
+            // Hydrate the shell-persisted settings (ADR-0020 phase A): the
+            // persisted output devices apply HERE, before the webview exists —
+            // this replaces App.tsx's localStorage boot replay, so the store
+            // (seeded below) is the pickers' single truth. Best-effort: a
+            // vanished device leaves the default stream running.
+            let shell_settings = settings::load(&app.handle().clone());
+            if !shell_settings.main_device.is_empty() || !shell_settings.cue_device.is_empty() {
+                let main = &shell_settings.main_device;
+                let cue = &shell_settings.cue_device;
+                match reopen_main(&host, &audio_state, main, cue) {
+                    Ok(()) => {
+                        *audio_state.main_name.lock().unwrap_or_else(|p| p.into_inner()) =
+                            main.clone();
+                        if !is_combined(main, cue) {
+                            match reopen_cue_split(&host, &audio_state, cue) {
+                                Ok(()) => {
+                                    *audio_state
+                                        .cue_name
+                                        .lock()
+                                        .unwrap_or_else(|p| p.into_inner()) = cue.clone();
+                                }
+                                Err(e) => eprintln!(
+                                    "lsdj-app: persisted cue device '{cue}' not applied: {e}"
+                                ),
+                            }
+                        } else {
+                            *audio_state.cue_name.lock().unwrap_or_else(|p| p.into_inner()) =
+                                cue.clone();
+                        }
+                    }
+                    Err(e) => eprintln!(
+                        "lsdj-app: persisted main device '{main}' not applied: {e}"
+                    ),
+                }
+            }
             // The per-deck analysis PCM taps (gap 1): the sidecars tee model PCM
             // into these, the webview subscribes via subscribe_deck_pcm.
             let taps = sidecar::PcmTaps::new(lsdj_engine::DECK_COUNT);
@@ -491,6 +581,98 @@ pub fn run() {
             // projects. Mutated by the same commands that drive the engine, it emits
             // `store://changed` on every change.
             app.manage(store::InterfaceStore::new(app.handle().clone()));
+            // Seed the store with the hydrated settings so the webview's
+            // pickers project the persisted choices from the first snapshot.
+            {
+                let store_state = app.state::<store::InterfaceStore>();
+                store_state.set_output_devices(
+                    shell_settings.main_device.clone(),
+                    shell_settings.cue_device.clone(),
+                );
+                store_state.set_recordings_folder(shell_settings.recordings_folder.clone());
+                // Hydrate the persisted style-pad arrangements (ADR-0020
+                // phase B). The settings file is user-editable, so the same
+                // trust boundary as a preset load applies.
+                for (deck, style) in shell_settings
+                    .deck_styles
+                    .iter()
+                    .enumerate()
+                    .take(lsdj_engine::DECK_COUNT)
+                {
+                    if !style.targets.is_empty() {
+                        store_state.style_apply_preset(
+                            deck,
+                            style::sanitize_preset_targets(style.targets.clone()),
+                            style.cursor,
+                        );
+                    }
+                }
+                // Hydrate the mixer (ADR-0020 phase C): engine + store from
+                // the settings file, the shipped defaults when a deck has no
+                // entry yet — Rust owns the boot values, and the webview's
+                // localStorage replay (and its per-field synced gates) is
+                // gone. Cue (PFL) deliberately never persists.
+                let host = app.state::<Host>();
+                for deck in 0..lsdj_engine::DECK_COUNT {
+                    let mixer = shell_settings
+                        .deck_mixers
+                        .get(deck)
+                        .cloned()
+                        .unwrap_or_default();
+                    host.set_volume(deck, mixer.volume);
+                    store_state.set_volume(deck, mixer.volume);
+                    for (band, value) in [
+                        (lsdj_engine::EqBand::Low, mixer.eq.low),
+                        (lsdj_engine::EqBand::Mid, mixer.eq.mid),
+                        (lsdj_engine::EqBand::High, mixer.eq.high),
+                    ] {
+                        host.set_eq(deck, band, value);
+                        store_state.set_eq(deck, band, value);
+                    }
+                    host.set_trim(deck, mixer.trim_db);
+                    store_state.set_trim(deck, mixer.trim_db);
+                    match mixer.fx_kind {
+                        Some(kind) => {
+                            let kind: lsdj_engine::FxKind = kind.into();
+                            host.set_fx(deck, kind);
+                            host.set_fx_amount(deck, mixer.fx_amount);
+                            store_state.set_fx(deck, kind);
+                            store_state.set_fx_amount(deck, mixer.fx_amount);
+                        }
+                        None => {
+                            host.clear_fx(deck);
+                            store_state.clear_fx(deck);
+                        }
+                    }
+                }
+                host.set_crossfade(shell_settings.crossfade);
+                store_state.set_crossfade(shell_settings.crossfade);
+                host.set_cue_mix(shell_settings.cue_mix);
+                store_state.set_cue_mix(shell_settings.cue_mix);
+            }
+            // The shell style sender (ADR-0020 phase B): the store owns the
+            // arrangement, this service owns the worker blend — computed,
+            // throttled, and re-sent on worker `ready`. The settings watcher
+            // persists the store's settings slice (styles + mixer, phases
+            // B+C), debounced; registered after hydration so the hydrate
+            // itself doesn't echo straight back into the settings file.
+            let style_sender = style_send::StyleSender::start(app.handle().clone());
+            style_sender.watch_store(&app.state::<store::InterfaceStore>());
+            settings::watch_persistence(
+                app.handle().clone(),
+                &app.state::<store::InterfaceStore>(),
+            );
+            app.manage(style_sender);
+            // The shell note-steering service (issue #48, ADR-0031): the single
+            // sender for note/drum conditioning — native MIDI, MCP, and the UI
+            // all go through it.
+            app.manage(midi::notes::NoteSteering::new(app.handle().clone()));
+            // Native MIDI I/O (ADR-0031): controller binding, translation, LEDs,
+            // and the performance input — the webview shim is gone. The LED
+            // painter follows the store through the in-process watcher.
+            let midi_service = midi::MidiService::start(app.handle().clone());
+            midi_service.watch_store(&app.state::<store::InterfaceStore>());
+            app.manage(midi_service);
             app.manage(audio_state);
             app.manage(sidecars);
             app.manage(taps);
@@ -512,6 +694,7 @@ pub fn run() {
             list_output_devices,
             set_main_device,
             set_cue_device,
+            set_recordings_folder,
             commands::set_crossfade,
             commands::set_eq,
             commands::set_volume,
@@ -566,24 +749,33 @@ pub fn run() {
             commands::engine_snapshot,
             commands::store_snapshot,
             commands::set_deck_model,
-            commands::set_deck_cues,
+            commands::set_deck_cue_point,
+            commands::set_deck_mode,
             commands::set_deck_track,
             commands::set_deck_transport,
             commands::set_deck_loop_labels,
-            commands::set_deck_style,
-            commands::set_deck_notes,
-            commands::set_deck_drums,
+            commands::style_add_target,
+            commands::style_add_sample_target,
+            commands::style_move_target,
+            commands::style_remove_target,
+            commands::style_rename_target,
+            commands::style_toggle_selection,
+            commands::style_fan_out,
+            commands::style_set_cursor,
+            commands::style_apply_preset,
+            commands::set_deck_primed,
+            commands::set_deck_performance,
             commands::deck_play,
             commands::deck_stop,
             commands::deck_set_prompt,
-            commands::deck_set_style,
-            commands::deck_set_notes,
-            commands::deck_set_drums,
             commands::deck_set_model,
             commands::deck_embed_sample,
             commands::subscribe_deck_pcm,
             commands::unsubscribe_deck_pcm,
             commands::analysis_reset,
+            midi::midi_status,
+            midi::midi_monitor,
+            midi::midi_select,
             models::model_status,
             models::install_model,
             models::update_model,
