@@ -607,16 +607,58 @@ pub fn run() {
                         );
                     }
                 }
+                // Hydrate the mixer (ADR-0020 phase C): engine + store from
+                // the settings file, the shipped defaults when a deck has no
+                // entry yet — Rust owns the boot values, and the webview's
+                // localStorage replay (and its per-field synced gates) is
+                // gone. Cue (PFL) deliberately never persists.
+                let host = app.state::<Host>();
+                for deck in 0..lsdj_engine::DECK_COUNT {
+                    let mixer = shell_settings
+                        .deck_mixers
+                        .get(deck)
+                        .cloned()
+                        .unwrap_or_default();
+                    host.set_volume(deck, mixer.volume);
+                    store_state.set_volume(deck, mixer.volume);
+                    for (band, value) in [
+                        (lsdj_engine::EqBand::Low, mixer.eq.low),
+                        (lsdj_engine::EqBand::Mid, mixer.eq.mid),
+                        (lsdj_engine::EqBand::High, mixer.eq.high),
+                    ] {
+                        host.set_eq(deck, band, value);
+                        store_state.set_eq(deck, band, value);
+                    }
+                    host.set_trim(deck, mixer.trim_db);
+                    store_state.set_trim(deck, mixer.trim_db);
+                    match mixer.fx_kind {
+                        Some(kind) => {
+                            let kind: lsdj_engine::FxKind = kind.into();
+                            host.set_fx(deck, kind);
+                            host.set_fx_amount(deck, mixer.fx_amount);
+                            store_state.set_fx(deck, kind);
+                            store_state.set_fx_amount(deck, mixer.fx_amount);
+                        }
+                        None => {
+                            host.clear_fx(deck);
+                            store_state.clear_fx(deck);
+                        }
+                    }
+                }
+                host.set_crossfade(shell_settings.crossfade);
+                store_state.set_crossfade(shell_settings.crossfade);
+                host.set_cue_mix(shell_settings.cue_mix);
+                store_state.set_cue_mix(shell_settings.cue_mix);
             }
             // The shell style sender (ADR-0020 phase B): the store owns the
             // arrangement, this service owns the worker blend — computed,
-            // throttled, and re-sent on worker `ready`, with the layout
-            // persisted (debounced) into the shell settings. Registered
-            // after hydration so the hydrate itself doesn't echo straight
-            // back into the settings file.
+            // throttled, and re-sent on worker `ready`. The settings watcher
+            // persists the store's settings slice (styles + mixer, phases
+            // B+C), debounced; registered after hydration so the hydrate
+            // itself doesn't echo straight back into the settings file.
             let style_sender = style_send::StyleSender::start(app.handle().clone());
             style_sender.watch_store(&app.state::<store::InterfaceStore>());
-            style_send::watch_persistence(
+            settings::watch_persistence(
                 app.handle().clone(),
                 &app.state::<store::InterfaceStore>(),
             );

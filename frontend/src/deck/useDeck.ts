@@ -20,12 +20,18 @@ import { STYLE_SAMPLE_SECONDS } from '../audio/styleSample'
 import { useAudioEngine } from '../audio/engineContext'
 import {
   getApiBaseUrl,
+  setDeckCue,
   setDeckCues,
+  setDeckEq,
+  setDeckFx,
+  setDeckFxAmount,
   setDeckLoopLabels,
   setDeckModel,
   setDeckPrimed,
   setDeckTrack,
   setDeckTransport,
+  setDeckTrim,
+  setDeckVolume,
   subscribeModelsChanged,
 } from '../audio/nativeEngine'
 import { fxKindFromSnap, useInterfaceStore } from '../audio/interfaceStore'
@@ -295,19 +301,26 @@ export type DeckControls = {
  * the native Rust engine (`src-tauri/engine/src/graph.rs`). */
 export function useDeck(deckId: DeckId): DeckControls {
   const engine = useAudioEngine()
+  const deckIndex = deckId === 'a' ? 0 : 1
   const [state, dispatch] = useReducer(deckReducer, initialDeckState)
-  const [volume, setVolumeState] = useState(() => loadDeckSettings(deckId).volume ?? 0.8)
+  // Mixer fields are projections (ADR-0020 phase C): the SHELL hydrates the
+  // engine and the store from its settings file before the webview exists,
+  // so the first snapshot is authoritative — these initials only cover the
+  // frames before it arrives (and match the shipped Rust defaults).
+  const [volume, setVolumeState] = useState(0.8)
   const volumeRef = useRef(volume)
-  const [eq, setEqState] = useState<Record<EqBand, number>>(
-    () =>
-      loadDeckSettings(deckId).eq ?? { low: EQ_FLAT, mid: EQ_FLAT, high: EQ_FLAT },
-  )
+  const [eq, setEqState] = useState<Record<EqBand, number>>({
+    low: EQ_FLAT,
+    mid: EQ_FLAT,
+    high: EQ_FLAT,
+  })
   const eqRef = useRef(eq)
   const [cue, setCueState] = useState(false)
   const cueRef = useRef(cue)
-  const [fx, setFxState] = useState<{ kind: FxKind | null; amount: number }>(
-    () => loadDeckSettings(deckId).fx ?? { kind: null, amount: 0 },
-  )
+  const [fx, setFxState] = useState<{ kind: FxKind | null; amount: number }>({
+    kind: null,
+    amount: 0,
+  })
   const fxRef = useRef(fx)
   const [loop, setLoopState] = useState<LoopState>(() => ({
     slots: Array<LoopSlot>(LOOP_SLOT_COUNT).fill(EMPTY_SLOT),
@@ -390,94 +403,81 @@ export function useDeck(deckId: DeckId): DeckControls {
     liveBeatRef.current = null
     bandScroller.reset()
   }, [loudness, bandScroller])
-  const [trim, setTrimState] = useState<TrimState>(
-    () => loadDeckSettings(deckId).trim ?? { mode: 'auto', db: 0 },
-  )
+  // The trim VALUE lives in the store (shell-hydrated, phase C); only the
+  // auto/manual MODE is webview state — the auto-gain loudness tracker is
+  // TS, so auto-trim stays an intent stream from here (inventory
+  // constraint 4) and the mode persists webview-side.
+  const [trim, setTrimState] = useState<TrimState>(() => ({
+    mode: loadDeckSettings(deckId).trimMode ?? 'auto',
+    db: 0,
+  }))
   const trimRef = useRef(trim)
   const applyTrim = useCallback(
     (next: TrimState) => {
       setTrimState(next)
       trimRef.current = next
-      updateDeckSettings(deckId, { trim: next })
-      channelRef.current?.setTrim(next.db)
+      updateDeckSettings(deckId, { trimMode: next.mode })
+      // A deck-indexed intent, not a channel call (phase C): the write must
+      // reach the engine and the store even before the channel exists.
+      setDeckTrim(deckIndex, next.db)
     },
-    [deckId],
+    [deckId, deckIndex],
   )
 
-  // Project the per-deck mixer from the store (ADR-0020): adopt EXTERNAL changes
-  // (MIDI / an MCP writer) into the rendered state. UI/MIDI moves already ran through
-  // the setters below — which update these refs and the store together — so they read
-  // here as "no change" and never echo-loop. A PER-FIELD synced gate ignores the
-  // pre-hydration Rust defaults until boot hydration (createDeckChannel replays our
-  // persisted volume/EQ/trim) echoes each field, so there is no flash.
-  const deckIndex = deckId === 'a' ? 0 : 1
+  // Project the per-deck mixer from the store (ADR-0020 phase C). The shell
+  // hydrates engine + store before the webview exists, so every snapshot is
+  // authoritative — the old per-field synced gates (which fenced off the
+  // pre-hydration Rust defaults until the webview's own boot replay echoed)
+  // are gone with the boot replay itself. Our own setters update the refs
+  // before the store echoes, so an echo compares equal and never loops; the
+  // epsilon absorbs the 14-bit MIDI position-sync quantum (a centre detent
+  // echoes as 0.5000305, not 0.5).
   const storeState = useInterfaceStore()
-  // One gate per field, not one for the whole tuple: a field still settling — or a
-  // hardware control parked away from our value — must not wedge adoption of the rest
-  // (the all-or-nothing tuple did, so an MCP FX move never reached a deck whose EQ the
-  // FLX4 position-sync had nudged off by a 14-bit quantum).
-  const mixerSyncedRef = useRef({
-    volume: false,
-    eq: false,
-    cue: false,
-    fx: false,
-    trim: false,
-  })
+  // Trim is the one field whose ADOPTION carries a semantic: an external
+  // (MCP/MIDI) trim write is deliberate, so it flips the deck to manual —
+  // but the FIRST snapshot is boot hydration, not a gesture, so it seeds
+  // the value without stealing auto mode.
+  const trimSeededRef = useRef(false)
   useEffect(() => {
     const mix = storeState?.decks[deckIndex]
     if (!mix) return
-    // A 14-bit MIDI position-sync quantises a centre detent to 0.5000305, not 0.5;
-    // treat a value within an epsilon of ours as "the store echoed us", so a hardware
-    // echo flips the gate instead of an exact compare wedging it shut forever.
     const near = (a: number, b: number) => Math.abs(a - b) < 1e-3
-    const s = mixerSyncedRef.current
 
-    if (!s.volume) {
-      if (near(mix.volume, volumeRef.current)) s.volume = true
-    } else if (mix.volume !== volumeRef.current) {
+    if (!near(mix.volume, volumeRef.current)) {
       volumeRef.current = mix.volume
       setVolumeState(mix.volume)
     }
 
-    if (!s.eq) {
-      if (
-        near(mix.eq.low, eqRef.current.low) &&
-        near(mix.eq.mid, eqRef.current.mid) &&
-        near(mix.eq.high, eqRef.current.high)
-      )
-        s.eq = true
-    } else if (
-      mix.eq.low !== eqRef.current.low ||
-      mix.eq.mid !== eqRef.current.mid ||
-      mix.eq.high !== eqRef.current.high
+    if (
+      !near(mix.eq.low, eqRef.current.low) ||
+      !near(mix.eq.mid, eqRef.current.mid) ||
+      !near(mix.eq.high, eqRef.current.high)
     ) {
       const next = { low: mix.eq.low, mid: mix.eq.mid, high: mix.eq.high }
       eqRef.current = next
       setEqState(next)
     }
 
-    if (!s.cue) {
-      if (mix.cue === cueRef.current) s.cue = true
-    } else if (mix.cue !== cueRef.current) {
+    if (mix.cue !== cueRef.current) {
       cueRef.current = mix.cue
       setCueState(mix.cue)
     }
 
     const fxKind = fxKindFromSnap(mix.fx.kind)
-    if (!s.fx) {
-      if (fxKind === fxRef.current.kind && near(mix.fx.amount, fxRef.current.amount))
-        s.fx = true
-    } else if (fxKind !== fxRef.current.kind || mix.fx.amount !== fxRef.current.amount) {
+    if (fxKind !== fxRef.current.kind || !near(mix.fx.amount, fxRef.current.amount)) {
       const next = { kind: fxKind, amount: mix.fx.amount }
       fxRef.current = next
       setFxState(next)
     }
 
-    if (!s.trim) {
-      if (near(mix.trimDb, trimRef.current.db)) s.trim = true
-    } else if (mix.trimDb !== trimRef.current.db) {
-      // Flip to manual, like the on-screen trim setter: an explicit external (MCP/MIDI)
-      // trim is a deliberate value, so auto-gain must not overwrite it on the next tick.
+    if (!trimSeededRef.current) {
+      trimSeededRef.current = true
+      if (!near(mix.trimDb, trimRef.current.db)) {
+        const next = { mode: trimRef.current.mode, db: mix.trimDb }
+        trimRef.current = next
+        setTrimState(next)
+      }
+    } else if (!near(mix.trimDb, trimRef.current.db)) {
       const next = { mode: 'manual' as const, db: mix.trimDb }
       trimRef.current = next
       setTrimState(next)
@@ -1284,10 +1284,9 @@ export function useDeck(deckId: DeckId): DeckControls {
     (next: number) => {
       setVolumeState(next)
       volumeRef.current = next
-      channelRef.current?.setVolume(next)
-      updateDeckSettings(deckId, { volume: next })
+      setDeckVolume(deckIndex, next)
     },
-    [deckId],
+    [deckIndex],
   )
 
   const getChannelLevel = useCallback(
@@ -1319,22 +1318,25 @@ export function useDeck(deckId: DeckId): DeckControls {
     applyTrim({ mode: 'auto', db: db ?? trimRef.current.db })
   }, [applyTrim, loudness])
 
-  const setCue = useCallback((on: boolean) => {
-    setCueState(on)
-    cueRef.current = on
-    channelRef.current?.setCue(on)
-  }, [])
+  const setCue = useCallback(
+    (on: boolean) => {
+      setCueState(on)
+      cueRef.current = on
+      setDeckCue(deckIndex, on)
+    },
+    [deckIndex],
+  )
 
   const setFx = useCallback(
     (kind: FxKind | null) => {
+      // One discrete intent: the Rust set_fx/clear_fx parks the amount at
+      // the kind's rest position, engine and store in the same write.
       const next = { kind, amount: kind ? fxRestPosition(kind) : 0 }
       setFxState(next)
       fxRef.current = next
-      updateDeckSettings(deckId, { fx: next })
-      channelRef.current?.setFx(kind)
-      channelRef.current?.setFxAmount(next.amount)
+      setDeckFx(deckIndex, kind)
     },
-    [deckId],
+    [deckIndex],
   )
 
   const setFxAmount = useCallback(
@@ -1342,10 +1344,9 @@ export function useDeck(deckId: DeckId): DeckControls {
       const next = { ...fxRef.current, amount }
       setFxState(next)
       fxRef.current = next
-      updateDeckSettings(deckId, { fx: next })
-      channelRef.current?.setFxAmount(amount)
+      setDeckFxAmount(deckIndex, amount)
     },
-    [deckId],
+    [deckIndex],
   )
 
   const toggleLoopPad = useCallback(
@@ -1631,10 +1632,9 @@ export function useDeck(deckId: DeckId): DeckControls {
       const next = { ...eqRef.current, [band]: value }
       eqRef.current = next
       setEqState(next)
-      updateDeckSettings(deckId, { eq: next })
-      channelRef.current?.setEq(band, value)
+      setDeckEq(deckIndex, band, value)
     },
-    [deckId],
+    [deckIndex],
   )
 
   return {

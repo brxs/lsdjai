@@ -86,21 +86,19 @@ const SNAP = {
 }
 
 describe('createNativeEngine — control contract', () => {
-  it('createDeckChannel applies the initial config as invoke commands', async () => {
+  it('createDeckChannel replays NO mixer config — the shell hydrates (phase C)', async () => {
     const engine = createNativeEngine()
     await engine.createDeckChannel(
       'b',
       { volume: 0.8, eq: { low: 0.5, mid: 0.5, high: 0.5 }, cue: false, fx: { kind: null, amount: 0 }, trimDb: 3 },
       () => {},
     )
+    // A replay here could overwrite the shell-hydrated values with the
+    // webview's pre-snapshot defaults (an agent-started deck racing boot).
     const cmds = calls.map((c) => c.cmd)
-    expect(cmds).toContain('set_volume')
-    expect(cmds).toContain('set_eq')
-    expect(cmds).toContain('clear_fx') // fx kind null → clear
-    expect(cmds).toContain('set_trim')
-    // deck 'b' → index 1
-    expect(calls.find((c) => c.cmd === 'set_volume')?.args).toEqual({ deck: 1, gain: 0.8 })
-    expect(calls.find((c) => c.cmd === 'set_trim')?.args).toEqual({ deck: 1, db: 3 })
+    for (const cmd of ['set_volume', 'set_eq', 'clear_fx', 'set_fx', 'set_trim', 'set_cue']) {
+      expect(cmds).not.toContain(cmd)
+    }
   })
 
   it('maps deck ids and FX kinds (snake→camel) and routes null to clear_fx', async () => {

@@ -384,16 +384,11 @@ impl McpHandler {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
         }
-        // A kind-swap lands the engine at the new effect's REST amount (so it starts
-        // bypassed); the UI mirrors that by following set_fx with set_fx_amount(rest).
-        // Do the same here, else the store/resource (and the adopted on-screen knob)
-        // keep the previous amount while the deck actually plays at rest.
+        // A kind-swap lands the engine at the new effect's REST amount (so it
+        // starts bypassed); the store's set_fx records kind + rest in one write.
         let kind: FxKind = kind.into();
-        let rest = kind.rest_position();
         self.app.state::<Host>().set_fx(deck, kind);
-        let store = self.app.state::<InterfaceStore>();
-        store.set_fx(deck, kind);
-        store.set_fx_amount(deck, rest);
+        self.app.state::<InterfaceStore>().set_fx(deck, kind);
         format!("deck {deck} fx selected")
     }
 

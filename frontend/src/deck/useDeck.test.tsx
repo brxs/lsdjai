@@ -26,6 +26,17 @@ import { useDeck } from './useDeck'
  * native command. The deck (deck 'a' = index 0) is the only one under test. */
 type NativeChannel = { onmessage: ((buffer: ArrayBuffer) => void) | null }
 
+/** The shipped mixer boot values (`DeckMixerSetting::default()` in Rust): the
+ * shell hydrates the store to these before the webview exists (phase C), so
+ * the harness store starts here too. */
+const hydratedMixer = () => ({
+  volume: 0.8,
+  eq: { low: 0.5, mid: 0.5, high: 0.5 },
+  fx: { kind: null, amount: 0 } as DeckSnap['fx'],
+  trimDb: 0,
+  cue: false,
+})
+
 const native: {
   invoke: ReturnType<typeof vi.fn>
   statusCb: ((e: { payload: { deck: number; json: string } }) => void) | null
@@ -38,6 +49,11 @@ const native: {
   /** The harness store's live beat analysis for deck 'a' (ADR-0025): the Rust
    * store holds the last published value, so every snapshot carries it. */
   storeAnalysis: DeckSnap['analysis']
+  /** The harness store's mixer for deck 'a' (ADR-0020 phase C): the channel's
+   * mixer methods write it and echo — like the real commands — so a fired
+   * snapshot never carries stale mixer values the gate-free adoption would
+   * take for an external move. */
+  storeMixer: ReturnType<typeof hydratedMixer>
 } = {
   invoke: vi.fn(),
   statusCb: null,
@@ -45,6 +61,7 @@ const native: {
   pcmChannel: null,
   storePlaying: false,
   storeAnalysis: { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 },
+  storeMixer: hydratedMixer(),
 }
 
 function installNativeTauri() {
@@ -53,12 +70,39 @@ function installNativeTauri() {
   native.pcmChannel = null
   native.storePlaying = false
   native.storeAnalysis = { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 }
-  native.invoke = vi.fn((cmd: string) => {
+  native.storeMixer = hydratedMixer()
+  native.invoke = vi.fn((cmd: string, args?: unknown) => {
     // The Rust deck_play/deck_stop commands write the store's transport and the
     // store echoes a snapshot — with the real dedupe (a no-change mutation emits
     // nothing). The webview's button only lights through this round-trip.
     if (cmd === 'deck_play' && !native.storePlaying) fireStore({ playing: true })
     if (cmd === 'deck_stop' && native.storePlaying) fireStore({ playing: false })
+    // The mixer commands write the Rust store and echo too (phase C) — the
+    // gate-free adoption must always see the value it just wrote, never a
+    // stale one riding a later snapshot.
+    const a = (args ?? {}) as {
+      gain?: number
+      band?: 'low' | 'mid' | 'high'
+      value?: number
+      db?: number
+      on?: boolean
+      kind?: DeckSnap['fx']['kind']
+      amount?: number
+    }
+    if (cmd === 'set_volume' && a.gain !== undefined) fireStore({ volume: a.gain })
+    if (cmd === 'set_eq' && a.band && a.value !== undefined) {
+      fireStore({ eq: { ...native.storeMixer.eq, [a.band]: a.value } })
+    }
+    if (cmd === 'set_trim' && a.db !== undefined) fireStore({ trimDb: a.db })
+    if (cmd === 'set_cue' && a.on !== undefined) fireStore({ cue: a.on })
+    // set_fx parks the amount at the kind's rest (the Rust store semantic).
+    if (cmd === 'set_fx' && a.kind) {
+      fireStore({ fx: { kind: a.kind, amount: a.kind === 'filter' ? 0.5 : 0 } })
+    }
+    if (cmd === 'clear_fx') fireStore({ fx: { kind: null, amount: 0 } })
+    if (cmd === 'set_fx_amount' && a.amount !== undefined) {
+      fireStore({ fx: { ...native.storeMixer.fx, amount: a.amount } })
+    }
     // app_info feeds getApiBaseUrl(); null port → '' (relative fetches).
     return cmd === 'app_info'
       ? Promise.resolve({ generationPort: null })
@@ -116,15 +160,16 @@ function feedPcm(buffer: ArrayBuffer) {
   native.pcmChannel?.onmessage?.(buffer)
 }
 
-/** A neutral store deck-mix channel (matches the Rust `DeckSnap` default). */
+/** The harness store's deck snapshot: mixer fields ride `native.storeMixer`
+ * (like `playing` rides `storePlaying`), the rest are the Rust defaults. */
 function storeDeck(): DeckSnap {
   return {
-    volume: 1,
-    eq: { low: 0.5, mid: 0.5, high: 0.5 },
-    trimDb: 0,
-    cue: false,
+    volume: native.storeMixer.volume,
+    eq: { ...native.storeMixer.eq },
+    trimDb: native.storeMixer.trimDb,
+    cue: native.storeMixer.cue,
     onAir: true,
-    fx: { kind: null, amount: 0 },
+    fx: { ...native.storeMixer.fx },
     model: null,
     playing: false,
     cues: [],
@@ -146,13 +191,18 @@ function storeDeck(): DeckSnap {
 }
 
 /** Fire a `store://changed` event with deck 'a' (index 0) carrying `mix`. Deck 0's
- * transport and analysis ride the harness store: a `playing`/`analysis` in `mix`
- * moves them, and every snapshot carries the current values — like the real
+ * transport, analysis, and mixer ride the harness store: values in `mix` move
+ * them, and every snapshot carries the current state — like the real
  * full-snapshot events, so unrelated churn never claims a playing deck stopped
- * (or blanks a held readout). */
+ * (or hands the gate-free mixer adoption a stale value). */
 function fireStore(mix: Partial<DeckSnap>) {
   if (mix.playing !== undefined) native.storePlaying = mix.playing
   if (mix.analysis !== undefined) native.storeAnalysis = mix.analysis
+  if (mix.volume !== undefined) native.storeMixer.volume = mix.volume
+  if (mix.eq !== undefined) native.storeMixer.eq = mix.eq
+  if (mix.fx !== undefined) native.storeMixer.fx = mix.fx
+  if (mix.trimDb !== undefined) native.storeMixer.trimDb = mix.trimDb
+  if (mix.cue !== undefined) native.storeMixer.cue = mix.cue
   const payload: InterfaceState = {
     decks: [
       {
@@ -310,6 +360,14 @@ function deckInvokes() {
   return native.invoke.mock.calls.filter(([cmd]) => (cmd as string).startsWith('deck_'))
 }
 
+/** The mixer command invokes (phase C: gestures are deck-indexed intents,
+ * rAF-coalesced) — flush the frame first so pending ones land. */
+function mixerInvokes(cmd: string) {
+  act(() => void vi.advanceTimersByTime(20))
+  return native.invoke.mock.calls.filter(([c]) => c === cmd)
+}
+
+
 describe('useDeck connection', () => {
   it('is open on mount with no handshake', () => {
     const { result } = renderDeck(makeFakeEngine().engine)
@@ -388,27 +446,29 @@ describe('useDeck connection', () => {
     ])
   })
 
-  it('restores persisted EQ and applies band changes to the channel', async () => {
-    updateDeckSettings('a', { eq: { low: 0.2, mid: 0.5, high: 0.9 } })
-    const { engine, channel } = makeFakeEngine()
+  it('adopts the shell-hydrated EQ and routes band changes as intents', async () => {
+    const { engine } = makeFakeEngine()
     const { result } = renderDeck(engine)
+    // The shell hydrated engine + store before the webview existed (phase C);
+    // the first snapshot carries the persisted EQ.
+    act(() => fireStore({ eq: { low: 0.2, mid: 0.5, high: 0.9 } }))
     expect(result.current.eq).toEqual({ low: 0.2, mid: 0.5, high: 0.9 })
 
     act(() => socket(0).serverOpen())
     await act(() => result.current.play())
-    // The channel was built with the restored EQ…
+    // The channel was built with the adopted EQ…
     expect(vi.mocked(engine.createDeckChannel).mock.calls[0][1]).toMatchObject({
       eq: { low: 0.2, mid: 0.5, high: 0.9 },
     })
-    // …and live band moves reach it.
+    // …and live band moves cross as deck-indexed intents.
     act(() => result.current.setEqBand('low', 0))
-    expect(channel.setEq).toHaveBeenCalledWith('low', 0)
+    expect(mixerInvokes('set_eq').at(-1)?.[1]).toEqual({ deck: 0, band: 'low', value: 0 })
     expect(result.current.eq.low).toBe(0)
   })
 
-  it('restores the persisted volume', () => {
-    updateDeckSettings('a', { volume: 0.55 })
+  it('adopts the shell-hydrated volume', () => {
     const { result } = renderDeck(makeFakeEngine().engine)
+    act(() => fireStore({ volume: 0.55 }))
     expect(result.current.volume).toBe(0.55)
   })
 
@@ -443,46 +503,44 @@ describe('useDeck connection', () => {
     expect(channel.setOnAir).toHaveBeenLastCalledWith(true)
   })
 
-  it('restores persisted FX, routes changes, and parks the knob on switch', async () => {
-    updateDeckSettings('a', { fx: { kind: 'dub_echo', amount: 0.6 } })
-    const { engine, channel } = makeFakeEngine()
+  it('adopts shell-hydrated FX, routes changes, and parks the knob on switch', async () => {
+    const { engine } = makeFakeEngine()
     const { result } = renderDeck(engine)
+    act(() => fireStore({ fx: { kind: 'dubEcho', amount: 0.6 } }))
     expect(result.current.fx).toEqual({ kind: 'dub_echo', amount: 0.6 })
 
     act(() => socket(0).serverOpen())
     await act(() => result.current.play())
-    // The channel is built with the restored effect…
+    // The channel is built with the adopted effect…
     expect(vi.mocked(engine.createDeckChannel).mock.calls[0][1]).toMatchObject({
       fx: { kind: 'dub_echo', amount: 0.6 },
     })
 
-    // …live knob moves reach it…
+    // …live knob moves cross as intents…
     act(() => result.current.setFxAmount(0.8))
-    expect(channel.setFxAmount).toHaveBeenCalledWith(0.8)
+    expect(mixerInvokes('set_fx_amount').at(-1)?.[1]).toEqual({ deck: 0, amount: 0.8 })
 
-    // …and switching to the bipolar filter parks the knob at centre.
+    // …and switching to the bipolar filter parks the knob at centre — ONE
+    // discrete set_fx (the Rust side records kind + rest amount together).
     act(() => result.current.setFx('filter'))
     expect(result.current.fx).toEqual({ kind: 'filter', amount: 0.5 })
-    expect(channel.setFx).toHaveBeenCalledWith('filter')
-    expect(channel.setFxAmount).toHaveBeenLastCalledWith(0.5)
+    expect(mixerInvokes('set_fx').at(-1)?.[1]).toEqual({ deck: 0, kind: 'filter' })
   })
 
-  it('seeds a pre-play cue toggle into the channel and routes live ones', async () => {
-    const { engine, channel } = makeFakeEngine()
+  it('routes a cue toggle as an intent even before the channel exists', async () => {
+    const { engine } = makeFakeEngine()
     const { result } = renderDeck(engine)
 
-    // Toggled before the channel exists — must ride along at creation.
+    // Toggled before the channel exists — the deck-indexed command reaches
+    // the engine and the store regardless (phase C).
     act(() => result.current.setCue(true))
     expect(result.current.cue).toBe(true)
+    expect(mixerInvokes('set_cue').at(-1)?.[1]).toEqual({ deck: 0, on: true })
 
     act(() => socket(0).serverOpen())
     await act(() => result.current.play())
-    expect(vi.mocked(engine.createDeckChannel).mock.calls[0][1]).toMatchObject({
-      cue: true,
-    })
-
     act(() => result.current.setCue(false))
-    expect(channel.setCue).toHaveBeenCalledWith(false)
+    expect(mixerInvokes('set_cue').at(-1)?.[1]).toEqual({ deck: 0, on: false })
     expect(result.current.cue).toBe(false)
   })
 
@@ -589,7 +647,7 @@ describe('useDeck trim (auto-gain)', () => {
   }
 
   it('auto-trims a quiet stream up toward the loudness target', async () => {
-    const { engine, channel } = makeFakeEngine()
+    const { engine } = makeFakeEngine()
     const { result } = renderDeck(engine)
     act(() => socket(0).serverOpen())
     await act(() => result.current.play())
@@ -599,11 +657,12 @@ describe('useDeck trim (auto-gain)', () => {
     act(() => void vi.advanceTimersByTime(1_000))
     expect(result.current.trim.mode).toBe('auto')
     expect(result.current.trim.db).toBeCloseTo(6, 0)
-    expect(vi.mocked(channel.setTrim).mock.calls.at(-1)![0]).toBeCloseTo(6, 0)
+    const trimArg = mixerInvokes('set_trim').at(-1)?.[1] as { deck: number; db: number }
+    expect(trimArg.db).toBeCloseTo(6, 0)
   })
 
   it('holds the trim over silence instead of winding up', async () => {
-    const { engine, channel } = makeFakeEngine()
+    const { engine } = makeFakeEngine()
     const { result } = renderDeck(engine)
     act(() => socket(0).serverOpen())
     await act(() => result.current.play())
@@ -611,18 +670,18 @@ describe('useDeck trim (auto-gain)', () => {
     streamConstant(0, 12)
     act(() => void vi.advanceTimersByTime(2_000))
     expect(result.current.trim.db).toBe(0)
-    expect(channel.setTrim).not.toHaveBeenCalled()
+    expect(mixerInvokes('set_trim')).toHaveLength(0)
   })
 
   it('a manual move takes over until AUTO re-engages', async () => {
-    const { engine, channel } = makeFakeEngine()
+    const { engine } = makeFakeEngine()
     const { result } = renderDeck(engine)
     act(() => socket(0).serverOpen())
     await act(() => result.current.play())
 
     act(() => result.current.setTrimDb(-3))
     expect(result.current.trim).toEqual({ mode: 'manual', db: -3 })
-    expect(channel.setTrim).toHaveBeenLastCalledWith(-3)
+    expect(mixerInvokes('set_trim').at(-1)?.[1]).toEqual({ deck: 0, db: -3 })
 
     // Auto must not fight the manual value on the next tick.
     streamConstant(0.075, 12)
@@ -634,10 +693,16 @@ describe('useDeck trim (auto-gain)', () => {
     expect(result.current.trim.db).toBeCloseTo(6, 0)
   })
 
-  it('restores the persisted trim and seeds the channel with it', async () => {
-    updateDeckSettings('a', { trim: { mode: 'manual', db: -4.5 } })
+  it('seeds the shell-hydrated trim value without stealing the persisted mode', async () => {
+    // The MODE stays webview-persisted (the auto tracker is TS); the VALUE
+    // hydrates from the store. The first snapshot must seed the value
+    // without flipping the deck to manual — it is boot, not a gesture.
+    updateDeckSettings('a', { trimMode: 'manual' })
     const { engine } = makeFakeEngine()
     const { result } = renderDeck(engine)
+    expect(result.current.trim.mode).toBe('manual')
+
+    act(() => fireStore({ trimDb: -4.5 }))
     expect(result.current.trim).toEqual({ mode: 'manual', db: -4.5 })
 
     act(() => socket(0).serverOpen())
@@ -645,6 +710,19 @@ describe('useDeck trim (auto-gain)', () => {
     expect(vi.mocked(engine.createDeckChannel).mock.calls[0][1]).toMatchObject({
       trimDb: -4.5,
     })
+  })
+
+  it('boot seeding keeps auto mode; a later external trim flips to manual', () => {
+    const { result } = renderDeck(makeFakeEngine().engine)
+    expect(result.current.trim.mode).toBe('auto')
+
+    // First snapshot = hydration: the value seeds, auto survives.
+    act(() => fireStore({ trimDb: -3 }))
+    expect(result.current.trim).toEqual({ mode: 'auto', db: -3 })
+
+    // A later differing trim is a deliberate external (MCP/MIDI) move.
+    act(() => fireStore({ trimDb: 2 }))
+    expect(result.current.trim).toEqual({ mode: 'manual', db: 2 })
   })
 })
 
@@ -1736,60 +1814,51 @@ describe('useDeck beat clocks (M20)', () => {
   })
 })
 
-describe('useDeck mixer projection (ADR-0020)', () => {
-  it('adopts an external store change after the store echoes our value', () => {
+describe('useDeck mixer projection (ADR-0020 phase C)', () => {
+  // The shell hydrates engine + store BEFORE the webview exists, so every
+  // snapshot is authoritative — the per-field synced gates are gone with the
+  // localStorage boot replay they fenced.
+  it('adopts any differing store value — first snapshot or later external move', () => {
     const { result } = renderDeck(makeFakeEngine().engine)
     expect(result.current.volume).toBe(0.8)
 
-    // The store echoes our boot-applied channel (volume/eq/trim match) → synced.
-    act(() => fireStore({ volume: 0.8 }))
-    // A later differing value is an external move (a future MCP agent) → adopt it.
+    // The first snapshot (hydration) adopts directly, no echo handshake…
+    act(() => fireStore({ volume: 0.55 }))
+    expect(result.current.volume).toBe(0.55)
+    // …and so does a later external move (MIDI / an MCP agent).
     act(() => fireStore({ volume: 0.3 }))
     expect(result.current.volume).toBe(0.3)
   })
 
-  it('ignores the pre-hydration default before syncing (no flash)', () => {
+  it('a local gesture is not fought by its own store echo', () => {
     const { result } = renderDeck(makeFakeEngine().engine)
-    expect(result.current.volume).toBe(0.8)
-
-    // A store value differing from our seed before sync is the Rust default — not
-    // an external move — so it must be ignored.
-    act(() => fireStore({ volume: 1 }))
-    expect(result.current.volume).toBe(0.8)
-  })
-
-  it('does not clobber FX when the store volume coincides with the default pre-sync', () => {
-    const { result } = renderDeck(makeFakeEngine().engine)
-    // Put the deck where the OLD partial gate (volume/eq.low/trim) would mis-fire:
-    // volume at exactly 1.0 (the Rust store default), with a persisted FX selected.
-    act(() => {
-      result.current.setVolume(1)
-    })
     act(() => {
       result.current.setFx('filter')
     })
-    expect(result.current.fx.kind).toBe('filter')
+    // The channel echoed the write through the harness store (like the real
+    // set_fx command); the adoption saw its own value and left it alone.
+    expect(result.current.fx).toEqual({ kind: 'filter', amount: 0.5 })
 
-    // A pre-hydration snapshot whose volume/EQ/trim coincide with the defaults but
-    // whose fx is still null must NOT flip the gate and clobber the FX.
-    act(() => fireStore({ volume: 1, fx: { kind: null, amount: 0 } }))
+    // Unrelated churn (an analysis tick) carries the CURRENT mixer — never
+    // a stale one — so the FX survives it.
+    act(() => fireStore({ playing: true }))
     expect(result.current.fx.kind).toBe('filter')
   })
 
-  it('arms the gate from a 14-bit-quantized echo, so an external FX move still adopts', () => {
+  it('a 14-bit-quantized hardware echo is not mistaken for an external move', () => {
     const { result } = renderDeck(makeFakeEngine().engine)
-    // Select an effect: the fx ref is now { filter, rest 0.5 }.
     act(() => {
       result.current.setFx('filter')
     })
     expect(result.current.fx).toEqual({ kind: 'filter', amount: 0.5 })
 
-    // The FLX4 position-sync echoes our amount quantised to a 14-bit centre detent
-    // (0.5 -> 0.5000305). An exact compare would never arm the fx gate; `near` does —
-    // without this an MCP FX move stays wedged (the bug in commit 13b95e2's parent).
+    // The FLX4 position-sync echoes our amount quantised to a 14-bit centre
+    // detent (0.5 → 0.5000305): inside the epsilon, so it must not jitter
+    // the knob back…
     act(() => fireStore({ fx: { kind: 'filter', amount: 0.5000305 } }))
+    expect(result.current.fx.amount).toBe(0.5)
 
-    // A genuinely different amount is then an external (MCP) move and must be adopted.
+    // …while a genuinely different amount is an external move and adopts.
     act(() => fireStore({ fx: { kind: 'filter', amount: 0.9 } }))
     expect(result.current.fx.amount).toBe(0.9)
   })

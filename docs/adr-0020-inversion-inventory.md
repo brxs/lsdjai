@@ -99,10 +99,18 @@ picker enumerations, `previewingId` row mapping, throttle/coalescer instances.
   (the shell sender); persistence + boot hydration in the shell settings;
   the `styleExternal` gate, the atomic mirror, and the webview
   `deck_set_style` path deleted. The proven bleeder; biggest single payoff.
-- **Phase C — mixer fields + boot hydration:** volume/eq/cue/fx/trim render
-  from the store; persistence + hydration shell-side; delete
-  `mixerSyncedRef` and the boot replay. Trim needs the auto-gain decision
-  (constraint 4).
+- **Phase C — mixer fields + boot hydration:** DONE. The shell hydrates the
+  mixer (volume/eq/fx/trim, crossfade/cue mix) into engine + store from the
+  settings file BEFORE the webview exists, and `settings::watch_persistence`
+  persists the store's settings slice — so `mixerSyncedRef`, the webview
+  boot replay (App.tsx and `createDeckChannel`'s initial-config replay), and
+  the localStorage slots are gone. Mixer gestures are deck-indexed intents
+  (`nativeEngine.setDeckVolume`/`Eq`/`Trim`/`Cue`/`Fx`/`FxAmount`),
+  independent of the channel lifecycle; Rust `set_fx`/`clear_fx` park the
+  amount at the kind's rest in the same write (the engine already did). The
+  trim decision (constraint 4): the loudness tracker stays TS — auto-trim
+  remains a webview intent stream, and only the auto/manual MODE persists
+  webview-side (`trimMode`).
 - **Phase D — transport & mode:** deck mode into the store, hot-cue logic to
   intents (delete `cuesSyncedRef`), retire the `mcp://deck-command` relay,
   then remove `playPendingRef` (the store round-trip becomes the only

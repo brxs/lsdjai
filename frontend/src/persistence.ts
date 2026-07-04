@@ -11,14 +11,13 @@ import type { PadPoint } from './deck/padWeights'
 import { clamp01, isPoint, parsePreset, type StylePreset } from './presets'
 
 export type DeckSettings = {
-  volume: number
-  eq: Record<EqBand, number>
-  fx: { kind: FxKind | null; amount: number }
   /** Freeze-pad capture length (M13). The loops themselves are
    * session-only by design (ADR-0009). */
   loopSeconds: number
-  /** Gain-staging trim (M17): the mode and the held/last value. */
-  trim: { mode: 'auto' | 'manual'; db: number }
+  /** Gain-staging trim MODE (M17). The value lives shell-side (ADR-0020
+   * phase C); the mode stays here because the auto-gain loudness tracker
+   * is webview-side (auto-trim is an intent stream). */
+  trimMode: 'auto' | 'manual'
 }
 
 /** Where the beat view lives (M22): centre stacked, centre vertical
@@ -30,8 +29,6 @@ export type BeatViewLayout = 'center' | 'vertical' | 'top' | 'off'
 export type AccentTheme = 'lime' | 'violet' | 'cyan'
 
 export type AppSettings = {
-  crossfade: number
-  cueMix: number
   beatView: BeatViewLayout
   accent: AccentTheme
   /** Media-tray drawer state: whether it's expanded, and its height in px
@@ -125,6 +122,108 @@ export function takeLegacyDeckStyles(): Partial<
   return Object.keys(legacy).length ? legacy : null
 }
 
+/** One deck's pre-inversion mixer values, as far as they were stored. */
+export type LegacyDeckMixer = {
+  volume?: number
+  eq?: Record<EqBand, number>
+  fx?: { kind: FxKind | null; amount: number }
+  trimDb?: number
+}
+
+/** The mixer moved to shell-side persistence (ADR-0020 phase C: the store
+ * owns volume/EQ/FX/trim and the master blends; the shell settings file
+ * persists them). Pre-inversion builds saved them in localStorage; this
+ * reads them ONCE for migration and strips the keys — the legacy trim's
+ * MODE survives under the new `trimMode` key (still webview-owned). Null
+ * when nothing is left. */
+export function takeLegacyMixerSettings(): {
+  decks: Partial<Record<DeckId, LegacyDeckMixer>>
+  crossfade?: number
+  cueMix?: number
+} | null {
+  const persisted = read()
+  const decks = persisted.decks as
+    | Partial<Record<DeckId, Record<string, unknown>>>
+    | undefined
+  const app = persisted.app as Record<string, unknown> | undefined
+  const legacy: {
+    decks: Partial<Record<DeckId, LegacyDeckMixer>>
+    crossfade?: number
+    cueMix?: number
+  } = { decks: {} }
+  let stripped = false
+  for (const deckId of ['a', 'b'] as const) {
+    const stored = decks?.[deckId]
+    if (!stored || typeof stored !== 'object') continue
+    const mixer: LegacyDeckMixer = {}
+    if (Number.isFinite(stored.volume)) {
+      mixer.volume = clamp01(stored.volume as number)
+    }
+    const eq = stored.eq as Record<EqBand, unknown> | undefined
+    if (
+      eq &&
+      typeof eq === 'object' &&
+      EQ_BANDS.every((band) => Number.isFinite(eq[band]))
+    ) {
+      mixer.eq = Object.fromEntries(
+        EQ_BANDS.map((band) => [band, clamp01(eq[band] as number)]),
+      ) as Record<EqBand, number>
+    }
+    const fx = stored.fx as { kind?: unknown; amount?: unknown } | undefined
+    if (
+      fx &&
+      typeof fx === 'object' &&
+      (fx.kind === null || FX_KINDS.includes(fx.kind as FxKind)) &&
+      Number.isFinite(fx.amount)
+    ) {
+      mixer.fx = {
+        kind: fx.kind as FxKind | null,
+        amount: clamp01(fx.amount as number),
+      }
+    }
+    const trim = stored.trim as { mode?: unknown; db?: unknown } | undefined
+    if (trim && typeof trim === 'object') {
+      if (Number.isFinite(trim.db)) {
+        mixer.trimDb = Math.max(
+          -TRIM_RANGE_DB,
+          Math.min(TRIM_RANGE_DB, trim.db as number),
+        )
+      }
+      // The mode stays webview-owned — carry it to its new key.
+      if (trim.mode === 'auto' || trim.mode === 'manual') {
+        stored.trimMode = trim.mode
+      }
+    }
+    if (Object.keys(mixer).length) legacy.decks[deckId] = mixer
+    if ('volume' in stored || 'eq' in stored || 'fx' in stored || 'trim' in stored) {
+      delete stored.volume
+      delete stored.eq
+      delete stored.fx
+      delete stored.trim
+      stripped = true
+    }
+  }
+  if (app && typeof app === 'object') {
+    if (Number.isFinite(app.crossfade)) {
+      legacy.crossfade = clamp01(app.crossfade as number)
+    }
+    if (Number.isFinite(app.cueMix)) {
+      legacy.cueMix = clamp01(app.cueMix as number)
+    }
+    if ('crossfade' in app || 'cueMix' in app) {
+      delete app.crossfade
+      delete app.cueMix
+      stripped = true
+    }
+  }
+  if (stripped) write(persisted)
+  const any =
+    Object.keys(legacy.decks).length > 0 ||
+    legacy.crossfade !== undefined ||
+    legacy.cueMix !== undefined
+  return any ? legacy : null
+}
+
 const STORAGE_KEY = 'lsdj:v1'
 
 type Persisted = {
@@ -155,28 +254,6 @@ export function loadDeckSettings(deckId: DeckId): Partial<DeckSettings> {
   const stored = read().decks?.[deckId]
   if (!stored || typeof stored !== 'object') return {}
   const settings: Partial<DeckSettings> = {}
-  if (Number.isFinite(stored.volume)) {
-    settings.volume = clamp01(stored.volume as number)
-  }
-  const eq = stored.eq
-  if (
-    eq &&
-    typeof eq === 'object' &&
-    EQ_BANDS.every((band) => Number.isFinite(eq[band]))
-  ) {
-    settings.eq = Object.fromEntries(
-      EQ_BANDS.map((band) => [band, clamp01(eq[band] as number)]),
-    ) as Record<EqBand, number>
-  }
-  const fx = stored.fx
-  if (
-    fx &&
-    typeof fx === 'object' &&
-    (fx.kind === null || FX_KINDS.includes(fx.kind as FxKind)) &&
-    Number.isFinite(fx.amount)
-  ) {
-    settings.fx = { kind: fx.kind, amount: clamp01(fx.amount as number) }
-  }
   if (
     LOOP_LENGTH_OPTIONS.includes(
       stored.loopSeconds as (typeof LOOP_LENGTH_OPTIONS)[number],
@@ -184,17 +261,8 @@ export function loadDeckSettings(deckId: DeckId): Partial<DeckSettings> {
   ) {
     settings.loopSeconds = stored.loopSeconds as number
   }
-  const trim = stored.trim
-  if (
-    trim &&
-    typeof trim === 'object' &&
-    (trim.mode === 'auto' || trim.mode === 'manual') &&
-    Number.isFinite(trim.db)
-  ) {
-    settings.trim = {
-      mode: trim.mode,
-      db: Math.max(-TRIM_RANGE_DB, Math.min(TRIM_RANGE_DB, trim.db as number)),
-    }
+  if (stored.trimMode === 'auto' || stored.trimMode === 'manual') {
+    settings.trimMode = stored.trimMode
   }
   return settings
 }
@@ -215,12 +283,6 @@ export function loadAppSettings(): Partial<AppSettings> {
   const stored = read().app
   if (!stored || typeof stored !== 'object') return {}
   const settings: Partial<AppSettings> = {}
-  if (Number.isFinite(stored.crossfade)) {
-    settings.crossfade = clamp01(stored.crossfade as number)
-  }
-  if (Number.isFinite(stored.cueMix)) {
-    settings.cueMix = clamp01(stored.cueMix as number)
-  }
   if (
     stored.beatView === 'center' ||
     stored.beatView === 'vertical' ||

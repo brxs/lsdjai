@@ -44,8 +44,9 @@ pub const STORE_CHANGED_EVENT: &str = "store://changed";
 
 /// A Color FX kind as it appears in the snapshot — a serde camelCase enum mirroring
 /// the frontend `FxKind` (the six `fx.ts` effects), so the projection names the
-/// effect by intent rather than a magic index.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+/// effect by intent rather than a magic index. `Deserialize` too — it
+/// round-trips through the shell settings file (ADR-0020 phase C).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FxKindSnap {
     Filter,
@@ -69,9 +70,23 @@ impl From<FxKind> for FxKindSnap {
     }
 }
 
+impl From<FxKindSnap> for FxKind {
+    fn from(kind: FxKindSnap) -> Self {
+        match kind {
+            FxKindSnap::Filter => FxKind::Filter,
+            FxKindSnap::DubEcho => FxKind::DubEcho,
+            FxKindSnap::Space => FxKind::Space,
+            FxKindSnap::Crush => FxKind::Crush,
+            FxKindSnap::Noise => FxKind::Noise,
+            FxKindSnap::Sweep => FxKind::Sweep,
+        }
+    }
+}
+
 /// A deck's three-band EQ in the snapshot (each 0..1, mirroring the frontend
-/// `Record<EqBand, number>`).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+/// `Record<EqBand, number>`). `Deserialize` too — it round-trips through the
+/// shell settings file (ADR-0020 phase C).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct EqSnap {
     pub low: f32,
     pub mid: f32,
@@ -461,12 +476,14 @@ impl InterfaceState {
         }
     }
 
-    /// Select a deck's Color FX. Records only the kind; the deck immediately
-    /// re-applies the effect's rest amount via `set_fx_amount`, which records the
-    /// amount (mirroring the engine, which resets `fx_amount` to the kind's rest).
+    /// Select a deck's Color FX. Records the kind AND the kind's rest amount —
+    /// the engine's insert swap lands at rest (bypassed), so the store mirrors
+    /// it in the same write (ADR-0020 phase C: one discrete command, no
+    /// follow-up amount write whose absence leaves a stale knob in a snapshot).
     pub fn set_fx(&mut self, deck: usize, kind: FxKind) {
         if let Some(d) = self.deck_mut(deck) {
             d.fx.kind = Some(kind.into());
+            d.fx.amount = kind.rest_position();
         }
     }
 
@@ -476,11 +493,12 @@ impl InterfaceState {
         }
     }
 
-    /// Remove a deck's Color FX (no effect selected); the amount is left as-is, like
-    /// the frontend's `setFx(null)`.
+    /// Remove a deck's Color FX (no effect selected); the knob parks at zero,
+    /// like the frontend's `setFx(null)`.
     pub fn clear_fx(&mut self, deck: usize) {
         if let Some(d) = self.deck_mut(deck) {
             d.fx.kind = None;
+            d.fx.amount = 0.0;
         }
     }
 
@@ -1394,18 +1412,25 @@ mod tests {
     }
 
     #[test]
-    fn fx_select_keeps_amount_then_clear_keeps_amount() {
+    fn fx_select_parks_the_amount_at_rest_and_clear_at_zero() {
+        // Phase C: set_fx records kind + the kind's rest amount in ONE write —
+        // the engine's insert swap lands at rest, and a snapshot between the
+        // old two-write sequence must never pair the new kind with the stale
+        // amount. clear_fx parks at zero, like the webview's setFx(null).
         let mut state = InterfaceState::default();
         state.set_fx(0, FxKind::DubEcho);
         state.set_fx_amount(0, 0.7);
         assert_eq!(state.decks[0].fx.kind, Some(FxKindSnap::DubEcho));
         assert_eq!(state.decks[0].fx.amount, 0.7);
 
-        // Clearing the effect drops the kind but leaves the amount (matches the
-        // frontend's setFx(null)).
+        // A kind swap lands at the new kind's rest (filter is bipolar: 0.5).
+        state.set_fx(0, FxKind::Filter);
+        assert_eq!(state.decks[0].fx.kind, Some(FxKindSnap::Filter));
+        assert_eq!(state.decks[0].fx.amount, 0.5);
+
         state.clear_fx(0);
         assert_eq!(state.decks[0].fx.kind, None);
-        assert_eq!(state.decks[0].fx.amount, 0.7);
+        assert_eq!(state.decks[0].fx.amount, 0.0);
     }
 
     #[test]

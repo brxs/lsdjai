@@ -9,6 +9,7 @@ import {
 } from './audio/types'
 import { uploadStyleSample } from './audio/styleSample'
 import {
+  FX_ARG,
   invoke,
   getMcpInfo,
   rotateMcpToken,
@@ -45,6 +46,7 @@ import {
   loadAppSettings,
   loadPresets,
   takeLegacyDeckStyles,
+  takeLegacyMixerSettings,
   takeLegacyShellSettings,
   updateAppSettings,
   upsertPresets,
@@ -228,15 +230,18 @@ function App() {
   const deckA = useDeck('a')
   const deckB = useDeck('b')
   // Crossfade / cue-mix are projections of the store, rendered optimistically
-  // during a drag and reconciled to the store (a MIDI move arrives the same way).
+  // during a drag and reconciled to the store (a MIDI move arrives the same
+  // way). The shell hydrates its persisted values into engine + store before
+  // the webview exists (ADR-0020 phase C), so the initials only cover the
+  // frames before the first snapshot.
   const [crossfade, setCrossfade] = useProjected(
     store?.crossfade,
-    loadAppSettings().crossfade ?? INITIAL_CROSSFADE,
+    INITIAL_CROSSFADE,
     (position) => engine.setCrossfade(position),
   )
   const [cueMix, setCueMix] = useProjected(
     store?.cueMix,
-    loadAppSettings().cueMix ?? INITIAL_CUE_MIX,
+    INITIAL_CUE_MIX,
     (position) => engine.setCueMix(position),
   )
   // Stable per-deck model-option arrays so the memoised Settings <Select> isn't
@@ -369,18 +374,9 @@ function App() {
     setMcpInfo((info) => (info ? { ...info, port: bound } : info))
   }, [])
 
-  // Hand the restored mix positions to the engine once — it holds them
-  // until the bus is built on first play. Later moves go through the
-  // handlers, so this deliberately ignores state updates. The persisted
-  // output device is applied best-effort: it may be gone since last run,
-  // and a failure must leave the engine's default routing undisturbed.
-  useEffect(() => {
-    engine.setCrossfade(crossfade)
-    engine.setCueMix(cueMix)
-    // Devices are no longer replayed here: the SHELL hydrates its persisted
-    // settings before the webview exists (ADR-0020 phase A).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine])
+  // No mix-position boot replay: the SHELL hydrates its persisted crossfade,
+  // cue mix, and per-deck mixer into the engine and the store before the
+  // webview exists (ADR-0020 phase C), like the devices in phase A.
 
   // One-time migration: device/folder choices saved by pre-inversion builds
   // live in localStorage; once the store hydrates empty (a fresh shell
@@ -416,6 +412,39 @@ function App() {
         }
       }
     }
+    // The mixer moved shell-side in phase C: push a pre-inversion layout
+    // through the same commands a fader uses (they write engine + store; the
+    // settings watcher persists). Unconditional: the strip fires exactly
+    // once per profile, on the first post-upgrade boot — a boot on which the
+    // shell can only have hydrated defaults (the settings file gains mixer
+    // values on this very run).
+    const legacyMixer = takeLegacyMixerSettings()
+    if (legacyMixer) {
+      for (const deckId of ['a', 'b'] as const) {
+        const mixer = legacyMixer.decks[deckId]
+        if (!mixer) continue
+        const deck = deckId === 'a' ? 0 : 1
+        if (mixer.volume !== undefined) {
+          void invoke('set_volume', { deck, gain: mixer.volume }).catch(() => {})
+        }
+        if (mixer.eq) {
+          for (const band of ['low', 'mid', 'high'] as const) {
+            void invoke('set_eq', { deck, band, value: mixer.eq[band] }).catch(() => {})
+          }
+        }
+        if (mixer.fx?.kind) {
+          void invoke('set_fx', { deck, kind: FX_ARG[mixer.fx.kind] }).catch(() => {})
+          void invoke('set_fx_amount', { deck, amount: mixer.fx.amount }).catch(() => {})
+        }
+        if (mixer.trimDb !== undefined) {
+          void invoke('set_trim', { deck, db: mixer.trimDb }).catch(() => {})
+        }
+      }
+      if (legacyMixer.crossfade !== undefined) setCrossfade(legacyMixer.crossfade)
+      if (legacyMixer.cueMix !== undefined) setCueMix(legacyMixer.cueMix)
+    }
+    // setCrossfade/setCueMix are stable projections; the effect is one-shot.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store, engine])
 
   useEffect(() => {
@@ -442,14 +471,14 @@ function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [handleMediaToggle])
 
-  // The one place a crossfade move is defined: audio bus + state + persist.
-  // Every source — slider, keyboard, hardware — lands here.
+  // The one place a crossfade move is defined: audio bus + state. Every
+  // source — slider, keyboard, hardware — lands here; the store change it
+  // records is what the shell persists (ADR-0020 phase C).
   const handleCrossfade = useCallback(
     (position: number) => {
       // The projected setter renders optimistically and emits engine.setCrossfade,
       // which records the move into the store (the single source of truth).
       setCrossfade(position)
-      updateAppSettings({ crossfade: position })
     },
     [setCrossfade],
   )
@@ -458,7 +487,6 @@ function App() {
   const handleCueMix = useCallback(
     (position: number) => {
       setCueMix(position)
-      updateAppSettings({ cueMix: position })
     },
     [setCueMix],
   )

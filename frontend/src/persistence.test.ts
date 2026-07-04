@@ -4,6 +4,7 @@ import {
   loadAppSettings,
   loadDeckSettings,
   takeLegacyDeckStyles,
+  takeLegacyMixerSettings,
   takeLegacyShellSettings,
   updateAppSettings,
   updateDeckSettings,
@@ -14,32 +15,18 @@ beforeEach(() => localStorage.clear())
 describe('persistence', () => {
   it('round-trips deck settings and merges partial updates', () => {
     updateDeckSettings('a', { loopSeconds: 8 })
-    updateDeckSettings('a', { volume: 0.6 })
+    updateDeckSettings('a', { trimMode: 'manual' })
     expect(loadDeckSettings('a')).toEqual({
       loopSeconds: 8,
-      volume: 0.6,
+      trimMode: 'manual',
     })
   })
 
   it('keeps decks independent', () => {
-    updateDeckSettings('a', { volume: 0.2 })
-    updateDeckSettings('b', { volume: 0.9 })
-    expect(loadDeckSettings('a').volume).toBe(0.2)
-    expect(loadDeckSettings('b').volume).toBe(0.9)
-  })
-
-  it('round-trips deck FX and drops malformed kinds', () => {
-    updateDeckSettings('a', { fx: { kind: 'filter', amount: 0.5 } })
-    expect(loadDeckSettings('a').fx).toEqual({ kind: 'filter', amount: 0.5 })
-
-    updateDeckSettings('a', { fx: { kind: null, amount: 0 } })
-    expect(loadDeckSettings('a').fx).toEqual({ kind: null, amount: 0 })
-
-    localStorage.setItem(
-      'lsdj:v1',
-      JSON.stringify({ decks: { a: { fx: { kind: 'megaverb', amount: 2 } } } }),
-    )
-    expect(loadDeckSettings('a').fx).toBeUndefined()
+    updateDeckSettings('a', { trimMode: 'manual' })
+    updateDeckSettings('b', { trimMode: 'auto' })
+    expect(loadDeckSettings('a').trimMode).toBe('manual')
+    expect(loadDeckSettings('b').trimMode).toBe('auto')
   })
 
   it('round-trips the loop length and drops off-menu values', () => {
@@ -53,47 +40,59 @@ describe('persistence', () => {
     expect(loadDeckSettings('a').loopSeconds).toBeUndefined()
   })
 
-  it('round-trips the trim, clamps its range, and drops bad modes', () => {
-    updateDeckSettings('a', { trim: { mode: 'manual', db: -4.5 } })
-    expect(loadDeckSettings('a').trim).toEqual({ mode: 'manual', db: -4.5 })
-
+  it('drops a garbage trim mode', () => {
     localStorage.setItem(
       'lsdj:v1',
-      JSON.stringify({ decks: { a: { trim: { mode: 'auto', db: 40 } } } }),
+      JSON.stringify({ decks: { a: { trimMode: 'loud' } } }),
     )
-    expect(loadDeckSettings('a').trim).toEqual({ mode: 'auto', db: 12 })
-
-    localStorage.setItem(
-      'lsdj:v1',
-      JSON.stringify({ decks: { a: { trim: { mode: 'loud', db: 0 } } } }),
-    )
-    expect(loadDeckSettings('a').trim).toBeUndefined()
-
-    localStorage.setItem(
-      'lsdj:v1',
-      JSON.stringify({ decks: { a: { trim: { mode: 'auto', db: 'hot' } } } }),
-    )
-    expect(loadDeckSettings('a').trim).toBeUndefined()
-  })
-
-  it('round-trips and clamps deck EQ', () => {
-    updateDeckSettings('a', { eq: { low: 0, mid: 0.5, high: 1 } })
-    expect(loadDeckSettings('a').eq).toEqual({ low: 0, mid: 0.5, high: 1 })
-
-    localStorage.setItem(
-      'lsdj:v1',
-      JSON.stringify({ decks: { a: { eq: { low: -3, mid: 'loud', high: 9 } } } }),
-    )
-    expect(loadDeckSettings('a').eq).toBeUndefined() // mid invalid → field dropped
+    expect(loadDeckSettings('a').trimMode).toBeUndefined()
   })
 
   it('round-trips app settings', () => {
-    updateAppSettings({ crossfade: 0.8 })
-    updateAppSettings({ cueMix: 0.3 })
+    updateAppSettings({ beatView: 'top' })
+    updateAppSettings({ mediaOpen: true })
     expect(loadAppSettings()).toEqual({
-      crossfade: 0.8,
-      cueMix: 0.3,
+      beatView: 'top',
+      mediaOpen: true,
     })
+  })
+
+  it('migrates legacy mixer settings ONCE, stripping the keys (ADR-0020 phase C)', () => {
+    // A blob saved by a pre-inversion build: the whole mixer in localStorage.
+    localStorage.setItem(
+      'lsdj:v1',
+      JSON.stringify({
+        decks: {
+          a: {
+            volume: 0.6,
+            eq: { low: 0, mid: 0.5, high: 2 },
+            fx: { kind: 'dub_echo', amount: 0.4 },
+            trim: { mode: 'manual', db: -40 },
+            loopSeconds: 8,
+          },
+          b: { fx: { kind: 'megaverb', amount: 2 } },
+        },
+        app: { crossfade: 0.8, cueMix: -1, beatView: 'top' },
+      }),
+    )
+    expect(takeLegacyMixerSettings()).toEqual({
+      decks: {
+        a: {
+          volume: 0.6,
+          eq: { low: 0, mid: 0.5, high: 1 }, // clamped
+          fx: { kind: 'dub_echo', amount: 0.4 },
+          trimDb: -12, // clamped to the trim range
+        },
+        // Deck B's malformed FX contributes nothing (and is stripped).
+      },
+      crossfade: 0.8,
+      cueMix: 0, // clamped
+    })
+    // The legacy trim MODE survives under its new webview-owned key.
+    expect(loadDeckSettings('a')).toEqual({ loopSeconds: 8, trimMode: 'manual' })
+    // The surviving settings are untouched; a second take finds nothing.
+    expect(loadAppSettings()).toEqual({ beatView: 'top' })
+    expect(takeLegacyMixerSettings()).toBeNull()
   })
 
   it('migrates legacy device/folder settings ONCE, stripping the keys (ADR-0020 phase A)', () => {
@@ -103,7 +102,7 @@ describe('persistence', () => {
       'lsdj:v1',
       JSON.stringify({
         app: {
-          crossfade: 0.4,
+          beatView: 'top',
           outputDevice: 'MacBook Speakers',
           cueDevice: 'DDJ-FLX4',
           recordingsFolder: '/Users/dj/Sets',
@@ -117,7 +116,7 @@ describe('persistence', () => {
     })
     // The keys are gone; the surviving settings are untouched; a second take
     // finds nothing (the shell file owns them now).
-    expect(loadAppSettings()).toEqual({ crossfade: 0.4 })
+    expect(loadAppSettings()).toEqual({ beatView: 'top' })
     expect(takeLegacyShellSettings()).toBeNull()
   })
 
@@ -155,14 +154,6 @@ describe('persistence', () => {
     expect(loaded.mediaHeight).toBe(720) // clamped to MEDIA_MAX_HEIGHT
   })
 
-  it('clamps an out-of-range cue mix', () => {
-    localStorage.setItem(
-      'lsdj:v1',
-      JSON.stringify({ app: { cueMix: 2 } }),
-    )
-    expect(loadAppSettings()).toEqual({ cueMix: 1 }) // clamped
-  })
-
   it('treats corrupt storage as absent', () => {
     localStorage.setItem('lsdj:v1', '{nope')
     expect(loadDeckSettings('a')).toEqual({})
@@ -196,7 +187,7 @@ describe('persistence', () => {
           a: {
             targets: [{ text: 'funk', x: 0.5, y: 1.7 }],
             cursor: { x: 0.4, y: 0.6 },
-            volume: 0.6,
+            loopSeconds: 8,
           },
           b: { cursor: { x: 0.1, y: 0.1 } },
         },
@@ -212,7 +203,7 @@ describe('persistence', () => {
     })
     // The keys are gone; the surviving settings are untouched; a second take
     // finds nothing (the shell settings file owns the layout now).
-    expect(loadDeckSettings('a')).toEqual({ volume: 0.6 })
+    expect(loadDeckSettings('a')).toEqual({ loopSeconds: 8 })
     expect(takeLegacyDeckStyles()).toBeNull()
   })
 

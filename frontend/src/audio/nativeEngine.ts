@@ -468,26 +468,74 @@ export function setDeckPerformance(
   void invoke('set_deck_performance', { deck, perf }).catch(() => {})
 }
 
-// Coalesce high-rate style intents to ~one invoke per animation frame, like the
-// engine's control coalescer. A pad drag fires per pointermove (and the 14-bit
-// jog can drive cursor changes at 200-600/s); each store mutation broadcasts a
-// full snapshot, so the continuous intents must not flood it. Only the latest
-// value per key in a frame is shipped; discrete intents flush the pending map
-// first so a queued stale move can never land after (and undo) them.
+// Coalesce high-rate intents to ~one invoke per animation frame, like the
+// engine's control coalescer. A pad drag or an EQ twist fires per pointermove
+// (and the 14-bit jog can drive changes at 200-600/s); each store mutation
+// broadcasts a full snapshot, so the continuous intents must not flood it.
+// Only the latest value per key in a frame is shipped; discrete intents flush
+// the pending map first so a queued stale move can never land after (and
+// undo) them.
 const intentPending = new Map<string, () => void>()
 let intentFlushScheduled = false
-function flushStyleIntents(): void {
+function flushIntents(): void {
   const due = [...intentPending.values()]
   intentPending.clear()
   for (const run of due) run()
 }
-function coalesceStyleIntent(key: string, run: () => void): void {
+function coalesceIntent(key: string, run: () => void): void {
   intentPending.set(key, run)
   if (intentFlushScheduled) return
   intentFlushScheduled = true
   requestAnimationFrame(() => {
     intentFlushScheduled = false
-    flushStyleIntents()
+    flushIntents()
+  })
+}
+
+// --- Deck mixer intents (ADR-0020 phase C): deck-indexed commands that write
+// --- the engine AND the store, independent of the deck channel's lifecycle —
+// --- a pre-play FX pick must land in the store, or the next snapshot (whose
+// --- values the gate-free projection adopts) would revert it.
+
+/** Continuous (fader ride) — coalesced per deck. */
+export function setDeckVolume(deck: number, gain: number): void {
+  coalesceIntent(`set_volume:${deck}`, () => {
+    void invoke('set_volume', { deck, gain }).catch(() => {})
+  })
+}
+
+/** Continuous (knob twist) — coalesced per band. */
+export function setDeckEq(deck: number, band: EqBand, value: number): void {
+  coalesceIntent(`set_eq:${deck}:${band}`, () => {
+    void invoke('set_eq', { deck, band, value }).catch(() => {})
+  })
+}
+
+/** Continuous (auto-gain ticks, trim knob) — coalesced per deck. */
+export function setDeckTrim(deck: number, db: number): void {
+  coalesceIntent(`set_trim:${deck}`, () => {
+    void invoke('set_trim', { deck, db }).catch(() => {})
+  })
+}
+
+export function setDeckCue(deck: number, on: boolean): void {
+  flushIntents()
+  void invoke('set_cue', { deck, on }).catch(() => {})
+}
+
+export function setDeckFx(deck: number, kind: FxKind | null): void {
+  flushIntents()
+  if (kind === null) {
+    void invoke('clear_fx', { deck }).catch(() => {})
+  } else {
+    void invoke('set_fx', { deck, kind: FX_ARG[kind] }).catch(() => {})
+  }
+}
+
+/** Continuous (knob twist) — coalesced per deck. */
+export function setDeckFxAmount(deck: number, amount: number): void {
+  coalesceIntent(`set_fx_amount:${deck}`, () => {
+    void invoke('set_fx_amount', { deck, amount }).catch(() => {})
   })
 }
 
@@ -497,45 +545,45 @@ function coalesceStyleIntent(key: string, run: () => void): void {
 // --- add, or a colliding rename is a quiet Rust-side no-op).
 
 export function styleAddTarget(deck: number, text: string): void {
-  flushStyleIntents()
+  flushIntents()
   void invoke('style_add_target', { deck, text }).catch(() => {})
 }
 
 export function styleAddSampleTarget(deck: number, label: string, sample: string): void {
-  flushStyleIntents()
+  flushIntents()
   void invoke('style_add_sample_target', { deck, label, sample }).catch(() => {})
 }
 
 /** Continuous (drag) — coalesced per target. */
 export function styleMoveTarget(deck: number, text: string, x: number, y: number): void {
-  coalesceStyleIntent(`style_move_target:${deck}:${text}`, () => {
+  coalesceIntent(`style_move_target:${deck}:${text}`, () => {
     void invoke('style_move_target', { deck, text, x, y }).catch(() => {})
   })
 }
 
 export function styleRemoveTarget(deck: number, text: string): void {
-  flushStyleIntents()
+  flushIntents()
   void invoke('style_remove_target', { deck, text }).catch(() => {})
 }
 
 export function styleRenameTarget(deck: number, from: string, to: string): void {
-  flushStyleIntents()
+  flushIntents()
   void invoke('style_rename_target', { deck, from, to }).catch(() => {})
 }
 
 export function styleToggleSelection(deck: number, text: string): void {
-  flushStyleIntents()
+  flushIntents()
   void invoke('style_toggle_selection', { deck, text }).catch(() => {})
 }
 
 export function styleFanOut(deck: number): void {
-  flushStyleIntents()
+  flushIntents()
   void invoke('style_fan_out', { deck }).catch(() => {})
 }
 
 /** Continuous (drag / sweep / jog steer) — coalesced per deck. */
 export function styleSetCursor(deck: number, x: number, y: number): void {
-  coalesceStyleIntent(`style_set_cursor:${deck}`, () => {
+  coalesceIntent(`style_set_cursor:${deck}`, () => {
     void invoke('style_set_cursor', { deck, x, y }).catch(() => {})
   })
 }
@@ -545,14 +593,14 @@ export function styleApplyPreset(
   targets: { x: number; y: number; text: string }[],
   cursor: { x: number; y: number },
 ): void {
-  flushStyleIntents()
+  flushIntents()
   void invoke('style_apply_preset', { deck, targets, cursor }).catch(() => {})
 }
 
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }
 
 /** Map the TS `FxKind` (snake) to the Rust `FxKindArg` (camel, serde). */
-const FX_ARG: Record<FxKind, string> = {
+export const FX_ARG: Record<FxKind, string> = {
   filter: 'filter',
   dub_echo: 'dubEcho',
   space: 'space',
@@ -949,21 +997,14 @@ export function createNativeEngine(): AudioEngine {
 
   return {
     getContextTime: () => (snapshot ? snapshot.health.contextFrames / SAMPLE_RATE : null),
-    createDeckChannel: async (deckId, initial, onStats) => {
+    createDeckChannel: async (deckId, _initial, onStats) => {
       const deck = DECK_INDEX[deckId]
       statsHandlers[deck] = onStats
-      // Apply the initial channel config to the engine.
-      send('set_volume', { deck, gain: initial.volume })
-      for (const band of Object.keys(initial.eq) as EqBand[]) {
-        send('set_eq', { deck, band, value: initial.eq[band] })
-      }
-      if (initial.fx.kind === null) {
-        send('clear_fx', { deck })
-      } else {
-        send('set_fx', { deck, kind: FX_ARG[initial.fx.kind] })
-        send('set_fx_amount', { deck, amount: initial.fx.amount })
-      }
-      send('set_trim', { deck, db: initial.trimDb })
+      // No initial-config replay (ADR-0020 phase C): the SHELL hydrates the
+      // mixer into engine + store at boot, and live gestures are
+      // deck-indexed intents independent of this channel. Replaying here
+      // could overwrite hydrated values with the webview's pre-snapshot
+      // defaults (an agent-started deck racing the first store snapshot).
       startPolling()
       return makeDeckChannel(deckId)
     },

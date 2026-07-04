@@ -122,6 +122,20 @@ before the port (and the monitor shows the documented bytes).
       immediately; a local edit right after is kept (last writer wins, no
       revert).
 
+## The shell-owned mixer (ADR-0020 phase C — boot values come from Rust)
+
+- [ ] Relaunch the app — faders, EQ, FX (kind + knob), trim, crossfade, and
+      cue mix come back where they were left (persisted in the shell
+      settings file now, not localStorage).
+- [ ] Pick an FX with the knob turned up, then switch kinds — the knob
+      parks at the new kind's rest (centre for filter, zero otherwise) with
+      no flicker of the old amount.
+- [ ] Before the first play (no deck channel yet): pick an FX and toggle
+      CUE — both stick (they are store intents now, and used to be lost
+      until the channel existed).
+- [ ] Ride the FLX4 EQ/fader while an MCP agent moves the same deck's FX —
+      both land; neither control snaps back.
+
 ## Regression sweeps
 
 - [ ] `just check` green; the app boots with sidecars and no MIDI-related
