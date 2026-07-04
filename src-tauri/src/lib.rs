@@ -51,6 +51,8 @@ mod settings;
 mod sidecar;
 mod songs;
 mod store;
+mod style;
+mod style_send;
 mod watcher;
 
 /// The default per-deck model the sidecars load (mirrors `controller.py`
@@ -184,6 +186,14 @@ fn start_sidecars(
                             "model_loading" => store.set_worker_health(idx, false, true),
                             "ready" => store.set_worker_health(idx, false, false),
                             _ => {}
+                        }
+                    }
+                    // A fresh worker has no conditioning: push the deck's
+                    // current style blend again (ADR-0020 phase B — the
+                    // shell sender owns the resend the webview used to do).
+                    if event == "ready" {
+                        if let Some(sender) = app.try_state::<style_send::StyleSender>() {
+                            sender.resend(idx);
                         }
                     }
                 }
@@ -580,7 +590,37 @@ pub fn run() {
                     shell_settings.cue_device.clone(),
                 );
                 store_state.set_recordings_folder(shell_settings.recordings_folder.clone());
+                // Hydrate the persisted style-pad arrangements (ADR-0020
+                // phase B). The settings file is user-editable, so the same
+                // trust boundary as a preset load applies.
+                for (deck, style) in shell_settings
+                    .deck_styles
+                    .iter()
+                    .enumerate()
+                    .take(lsdj_engine::DECK_COUNT)
+                {
+                    if !style.targets.is_empty() {
+                        store_state.style_apply_preset(
+                            deck,
+                            style::sanitize_preset_targets(style.targets.clone()),
+                            style.cursor,
+                        );
+                    }
+                }
             }
+            // The shell style sender (ADR-0020 phase B): the store owns the
+            // arrangement, this service owns the worker blend — computed,
+            // throttled, and re-sent on worker `ready`, with the layout
+            // persisted (debounced) into the shell settings. Registered
+            // after hydration so the hydrate itself doesn't echo straight
+            // back into the settings file.
+            let style_sender = style_send::StyleSender::start(app.handle().clone());
+            style_sender.watch_store(&app.state::<store::InterfaceStore>());
+            style_send::watch_persistence(
+                app.handle().clone(),
+                &app.state::<store::InterfaceStore>(),
+            );
+            app.manage(style_sender);
             // The shell note-steering service (issue #48, ADR-0031): the single
             // sender for note/drum conditioning — native MIDI, MCP, and the UI
             // all go through it.
@@ -671,13 +711,20 @@ pub fn run() {
             commands::set_deck_track,
             commands::set_deck_transport,
             commands::set_deck_loop_labels,
-            commands::set_deck_style,
+            commands::style_add_target,
+            commands::style_add_sample_target,
+            commands::style_move_target,
+            commands::style_remove_target,
+            commands::style_rename_target,
+            commands::style_toggle_selection,
+            commands::style_fan_out,
+            commands::style_set_cursor,
+            commands::style_apply_preset,
             commands::set_deck_primed,
             commands::set_deck_performance,
             commands::deck_play,
             commands::deck_stop,
             commands::deck_set_prompt,
-            commands::deck_set_style,
             commands::deck_set_model,
             commands::deck_embed_sample,
             commands::subscribe_deck_pcm,

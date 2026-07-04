@@ -27,6 +27,9 @@ FAKE_PCM = b"\x01\x02\x03\x04" * 8
 class FakeEngine:
     """The run_deck_worker engine contract, enough for the transport test."""
 
+    # The worker paces on the engine's chunk length (ADR-0023).
+    chunk_seconds = 1.0
+
     def __init__(self, model="fake"):
         self.styles = []
 

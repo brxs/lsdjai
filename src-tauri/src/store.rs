@@ -132,15 +132,20 @@ pub struct PadPointSnap {
     pub y: f32,
 }
 
-/// One style-pad target: a prompt at a pad position (the sampled-target embedding
-/// id is session-only and stays out, like the persisted layout). `Deserialize`/
-/// `JsonSchema` too — targets cross as a `set_deck_style` argument (UI/MIDI and MCP).
+/// One style-pad target: a prompt at a pad position. The store owns the
+/// arrangement (ADR-0020 phase B); a sampled chip (ADR-0011) carries its
+/// session-only embedding id in `sample` — held here so there is exactly one
+/// target list, but excluded from shell persistence and stripped when the
+/// worker (whose cache holds the embedding) dies. `Deserialize`/`JsonSchema`
+/// too — targets cross as MCP `set_style` arguments.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct StyleTargetSnap {
     pub x: f32,
     pub y: f32,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<String>,
 }
 
 /// The note mode a steering surface authors in (ADR-0023): chord-follow maps
@@ -278,17 +283,12 @@ pub struct DeckSnap {
     /// an unlabelled freeze) — a read-back the store mirrors. Empty until the deck
     /// reports its slots.
     pub loop_labels: Vec<Option<String>>,
-    /// The realtime deck's 2D style-pad targets (prompt + position) — the UI source
-    /// the deck blends into the worker prompt. Mirrored up by `DeckColumn`.
+    /// The realtime deck's 2D style-pad targets (prompt + position). OWNED
+    /// here since ADR-0020 phase B: the webview projects and emits intents;
+    /// the shell style sender blends and drives the worker. (The writer-flag
+    /// adoption gate this replaced is gone — a projection has nothing to
+    /// adopt, which retires the whole echo-race class.)
     pub style_targets: Vec<StyleTargetSnap>,
-    /// Whether the LAST style write (targets/cursor/selection) came from an
-    /// EXTERNAL controller (MCP) rather than the webview's own mirror. The
-    /// projection adopts style state only when this is true: its own mirror
-    /// is in flight between edit and echo, and a mid-flight snapshot (an
-    /// analysis tick, an auto-trim write) still carries the pre-edit style —
-    /// adopting one reverted a just-added prompt on a playing deck. Origin,
-    /// not timing, is the only race-free gate.
-    pub style_external: bool,
     /// Which style targets are selected into the active blend (the net mask,
     /// one bool per target) — mirrored up by the webview so the pad LEDs can
     /// burn selected targets bright and dim the rest (ADR-0031: LEDs read the
@@ -347,7 +347,6 @@ impl Default for DeckSnap {
             transport: None,
             loop_labels: Vec::new(),
             style_targets: Vec::new(),
-            style_external: false,
             style_selected: Vec::new(),
             cursor: PadPointSnap { x: 0.5, y: 0.5 },
             primed: false,
@@ -365,20 +364,11 @@ impl Default for DeckSnap {
 /// The shell recorder's state (ADR-0028): whether a take is streaming to
 /// disk and where. Written by the recording commands themselves, so a
 /// webview reload (or an agent) reads the truth instead of a local flag.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingSnap {
     pub active: bool,
     pub path: Option<String>,
-}
-
-impl Default for RecordingSnap {
-    fn default() -> Self {
-        RecordingSnap {
-            active: false,
-            path: None,
-        }
-    }
 }
 
 /// The authoritative interface state — the snapshot shape the webview projects.
@@ -538,24 +528,144 @@ impl InterfaceState {
         }
     }
 
-    /// Replace the style pad wholesale — targets, cursor, AND the selection
-    /// mask in ONE mutation, so no emitted snapshot can ever pair fresh
-    /// targets with a stale mask (or vice versa). `external` records the
-    /// writer (MCP vs the webview mirror) — the projection's adoption gate
-    /// keys on it (see the `style_external` field).
-    pub fn set_style(
+    /// Add a text target at the clearest spawn slot (ADR-0020 phase B: the
+    /// add semantics — trim, length cap, dup rule, target cap, spawn
+    /// geometry — live here, one copy for UI, hardware, and MCP). Returns
+    /// whether the pad changed.
+    pub fn style_add_target(&mut self, deck: usize, text: &str) -> bool {
+        let text = text.trim();
+        if text.is_empty() || text.len() > crate::style::MAX_TARGET_TEXT {
+            return false;
+        }
+        let Some(d) = self.deck_mut(deck) else { return false };
+        if d.style_targets.len() >= crate::style::MAX_TARGETS
+            || d.style_targets.iter().any(|t| t.text == text)
+        {
+            return false;
+        }
+        let existing: Vec<(f32, f32)> = d.style_targets.iter().map(|t| (t.x, t.y)).collect();
+        let (x, y) = crate::style::spawn_position(&existing);
+        d.style_targets.push(StyleTargetSnap {
+            x,
+            y,
+            text: text.to_string(),
+            sample: None,
+        });
+        d.style_selected.push(false);
+        true
+    }
+
+    /// Add a sampled chip (ADR-0011): a session-only embedding id under a
+    /// display label; same cap/spawn rules, dup keyed on the label.
+    pub fn style_add_sample_target(&mut self, deck: usize, label: &str, sample: &str) -> bool {
+        let label = label.trim();
+        if label.is_empty() || sample.is_empty() {
+            return false;
+        }
+        let Some(d) = self.deck_mut(deck) else { return false };
+        if d.style_targets.len() >= crate::style::MAX_TARGETS
+            || d.style_targets.iter().any(|t| t.text == label)
+        {
+            return false;
+        }
+        let existing: Vec<(f32, f32)> = d.style_targets.iter().map(|t| (t.x, t.y)).collect();
+        let (x, y) = crate::style::spawn_position(&existing);
+        d.style_targets.push(StyleTargetSnap {
+            x,
+            y,
+            text: label.to_string(),
+            sample: Some(sample.to_string()),
+        });
+        d.style_selected.push(false);
+        true
+    }
+
+    /// Move a target (identified by its unique text) to a clamped position.
+    pub fn style_move_target(&mut self, deck: usize, text: &str, x: f32, y: f32) {
+        if let Some(d) = self.deck_mut(deck) {
+            if let Some(t) = d.style_targets.iter_mut().find(|t| t.text == text) {
+                t.x = crate::style::clamp01(x);
+                t.y = crate::style::clamp01(y);
+            }
+        }
+    }
+
+    /// Remove a target and its selection entry.
+    pub fn style_remove_target(&mut self, deck: usize, text: &str) {
+        if let Some(d) = self.deck_mut(deck) {
+            if let Some(index) = d.style_targets.iter().position(|t| t.text == text) {
+                d.style_targets.remove(index);
+                if index < d.style_selected.len() {
+                    d.style_selected.remove(index);
+                }
+            }
+        }
+    }
+
+    /// Rename a text target in place (position and selection kept). A rename
+    /// that empties, overflows, collides, or touches a sampled chip (whose
+    /// label names a captured moment, not a prompt) is rejected — the same
+    /// quiet rule the webview's editor applied. Returns whether it renamed.
+    pub fn style_rename_target(&mut self, deck: usize, from: &str, to: &str) -> bool {
+        let to = to.trim();
+        if to.is_empty() || to.len() > crate::style::MAX_TARGET_TEXT {
+            return false;
+        }
+        let Some(d) = self.deck_mut(deck) else { return false };
+        if to != from && d.style_targets.iter().any(|t| t.text == to) {
+            return false;
+        }
+        match d.style_targets.iter_mut().find(|t| t.text == from) {
+            Some(t) if t.sample.is_none() => {
+                t.text = to.to_string();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Toggle a target in or out of the net selection (the blend mask the
+    /// pad LEDs mirror).
+    pub fn style_toggle_selection(&mut self, deck: usize, text: &str) {
+        if let Some(d) = self.deck_mut(deck) {
+            if let Some(index) = d.style_targets.iter().position(|t| t.text == text) {
+                if index < d.style_selected.len() {
+                    d.style_selected[index] = !d.style_selected[index];
+                }
+            }
+        }
+    }
+
+    /// The tidy-up gesture: centre the cursor and fan the targets onto the
+    /// spawn circle in order.
+    pub fn style_fan_out(&mut self, deck: usize) {
+        if let Some(d) = self.deck_mut(deck) {
+            for (index, target) in d.style_targets.iter_mut().enumerate() {
+                let (x, y) = crate::style::circle_slot(index);
+                target.x = x;
+                target.y = y;
+            }
+            d.cursor = PadPointSnap { x: 0.5, y: 0.5 };
+        }
+    }
+
+    /// Replace the pad wholesale (a preset load, an MCP arrangement): text
+    /// targets only, selection cleared, cursor set. Invalid entries are
+    /// dropped at the trust boundary before this is called.
+    pub fn style_apply_preset(
         &mut self,
         deck: usize,
         targets: Vec<StyleTargetSnap>,
         cursor: PadPointSnap,
-        selected: Vec<bool>,
-        external: bool,
     ) {
         if let Some(d) = self.deck_mut(deck) {
-            d.style_targets = targets;
-            d.cursor = cursor;
-            d.style_selected = selected;
-            d.style_external = external;
+            let count = targets.len().min(crate::style::MAX_TARGETS);
+            d.style_targets = targets.into_iter().take(count).collect();
+            d.style_selected = vec![false; count];
+            d.cursor = PadPointSnap {
+                x: crate::style::clamp01(cursor.x),
+                y: crate::style::clamp01(cursor.y),
+            };
         }
     }
 
@@ -571,11 +681,12 @@ impl InterfaceState {
     }
 
     /// Set just the style-pad cursor (the blend point), leaving the targets.
-    /// An MCP-only path, so it marks the style state externally written.
     pub fn set_cursor(&mut self, deck: usize, cursor: PadPointSnap) {
         if let Some(d) = self.deck_mut(deck) {
-            d.cursor = cursor;
-            d.style_external = true;
+            d.cursor = PadPointSnap {
+                x: crate::style::clamp01(cursor.x),
+                y: crate::style::clamp01(cursor.y),
+            };
         }
     }
 
@@ -619,11 +730,20 @@ impl InterfaceState {
     /// Record the worker's health from a status event: a crash sets `died`
     /// (until a reload begins), a model switch sets `switching`, and `ready`
     /// clears both — the same transitions the webview reducer derives from
-    /// the identical events, so the two views cannot diverge.
+    /// the identical events, so the two views cannot diverge. A dead or
+    /// reloading worker drops its sample cache, so the sampled style chips
+    /// (whose embeddings lived in that cache, ADR-0011) strip with it.
     pub fn set_worker_health(&mut self, deck: usize, died: bool, switching: bool) {
         if let Some(d) = self.deck_mut(deck) {
             d.worker_died = died;
             d.switching_model = switching;
+            if died || switching {
+                let keep: Vec<bool> = d.style_targets.iter().map(|t| t.sample.is_none()).collect();
+                let mut kept = keep.iter();
+                d.style_targets.retain(|_| *kept.next().unwrap_or(&true));
+                let mut kept = keep.iter();
+                d.style_selected.retain(|_| *kept.next().unwrap_or(&true));
+            }
         }
     }
 
@@ -800,19 +920,49 @@ impl InterfaceStore {
         self.mutate(move |s| s.set_loop_labels(deck, labels));
     }
 
-    /// Mirror the realtime deck's 2D style-pad state (targets + cursor + the net
-    /// selection mask, one atomic write — see [`InterfaceState::set_style`]).
-    /// `DeckColumn` writes it up on change; MCP writes pass `external = true`
-    /// so the projection knows to adopt them (see `style_external`).
-    pub fn set_deck_style(
+    /// The style-pad intents (ADR-0020 phase B): one semantic surface for
+    /// the UI, the hardware, and MCP — the webview projects the result.
+    pub fn style_add_target(&self, deck: usize, text: &str) -> bool {
+        let mut added = false;
+        self.mutate(|s| added = s.style_add_target(deck, text));
+        added
+    }
+
+    pub fn style_add_sample_target(&self, deck: usize, label: &str, sample: &str) -> bool {
+        let mut added = false;
+        self.mutate(|s| added = s.style_add_sample_target(deck, label, sample));
+        added
+    }
+
+    pub fn style_move_target(&self, deck: usize, text: &str, x: f32, y: f32) {
+        self.mutate(|s| s.style_move_target(deck, text, x, y));
+    }
+
+    pub fn style_remove_target(&self, deck: usize, text: &str) {
+        self.mutate(|s| s.style_remove_target(deck, text));
+    }
+
+    pub fn style_rename_target(&self, deck: usize, from: &str, to: &str) -> bool {
+        let mut renamed = false;
+        self.mutate(|s| renamed = s.style_rename_target(deck, from, to));
+        renamed
+    }
+
+    pub fn style_toggle_selection(&self, deck: usize, text: &str) {
+        self.mutate(|s| s.style_toggle_selection(deck, text));
+    }
+
+    pub fn style_fan_out(&self, deck: usize) {
+        self.mutate(|s| s.style_fan_out(deck));
+    }
+
+    pub fn style_apply_preset(
         &self,
         deck: usize,
         targets: Vec<StyleTargetSnap>,
         cursor: PadPointSnap,
-        selected: Vec<bool>,
-        external: bool,
     ) {
-        self.mutate(move |s| s.set_style(deck, targets, cursor, selected, external));
+        self.mutate(move |s| s.style_apply_preset(deck, targets, cursor));
     }
 
     /// Set one hot-cue pad's point (MCP `set_hot_cue` / `clear_hot_cue`). The webview
@@ -1000,66 +1150,119 @@ mod tests {
     }
 
     #[test]
-    fn style_targets_cursor_and_selection_are_one_atomic_write() {
+    fn style_add_spawns_on_the_circle_and_enforces_trim_dup_and_cap() {
         let mut state = InterfaceState::default();
-        state.set_style(
+        // Trim; the spawn slot comes from the geometry (empty pad → slot 0).
+        assert!(state.style_add_target(0, "  dub  "));
+        assert_eq!(state.decks[0].style_targets[0].text, "dub");
+        let (x0, y0) = crate::style::circle_slot(0);
+        assert_eq!(state.decks[0].style_targets[0].x, x0);
+        assert_eq!(state.decks[0].style_targets[0].y, y0);
+        // Selection grows in step, unselected.
+        assert_eq!(state.decks[0].style_selected, vec![false]);
+        // Duplicates and empties are rejected.
+        assert!(!state.style_add_target(0, "dub"));
+        assert!(!state.style_add_target(0, "   "));
+        // The cap holds at MAX_TARGETS.
+        for i in 0..crate::style::MAX_TARGETS {
+            state.style_add_target(0, &format!("t{i}"));
+        }
+        assert_eq!(state.decks[0].style_targets.len(), crate::style::MAX_TARGETS);
+        assert!(!state.style_add_target(0, "one too many"));
+        // The other deck is untouched.
+        assert!(state.decks[1].style_targets.is_empty());
+    }
+
+    #[test]
+    fn style_move_clamps_and_remove_keeps_selection_aligned() {
+        let mut state = InterfaceState::default();
+        state.style_add_target(0, "a");
+        state.style_add_target(0, "b");
+        state.style_toggle_selection(0, "b");
+        assert_eq!(state.decks[0].style_selected, vec![false, true]);
+        // Move clamps into the unit square.
+        state.style_move_target(0, "a", -0.5, 1.5);
+        assert_eq!(state.decks[0].style_targets[0].x, 0.0);
+        assert_eq!(state.decks[0].style_targets[0].y, 1.0);
+        // Removing "a" keeps "b" selected — the mask tracks its target.
+        state.style_remove_target(0, "a");
+        assert_eq!(state.decks[0].style_targets.len(), 1);
+        assert_eq!(state.decks[0].style_targets[0].text, "b");
+        assert_eq!(state.decks[0].style_selected, vec![true]);
+    }
+
+    #[test]
+    fn style_rename_keeps_position_and_rejects_collisions_and_sample_chips() {
+        let mut state = InterfaceState::default();
+        state.style_add_target(0, "dub");
+        state.style_add_target(0, "punk");
+        state.style_add_sample_target(0, "Deck B sample 1", "sample:b:1");
+        let position = (state.decks[0].style_targets[0].x, state.decks[0].style_targets[0].y);
+        // Rename keeps the position; collisions and empties are quiet no-ops.
+        assert!(state.style_rename_target(0, "dub", "deep dub"));
+        assert_eq!(state.decks[0].style_targets[0].text, "deep dub");
+        assert_eq!(
+            (state.decks[0].style_targets[0].x, state.decks[0].style_targets[0].y),
+            position
+        );
+        assert!(!state.style_rename_target(0, "deep dub", "punk"));
+        assert!(!state.style_rename_target(0, "punk", "  "));
+        // A sampled chip's label names a captured moment — not renameable.
+        assert!(!state.style_rename_target(0, "Deck B sample 1", "nice loop"));
+    }
+
+    #[test]
+    fn style_fan_out_circles_the_targets_and_centres_the_cursor() {
+        let mut state = InterfaceState::default();
+        state.style_add_target(0, "a");
+        state.style_add_target(0, "b");
+        state.style_move_target(0, "a", 0.9, 0.9);
+        state.set_cursor(0, PadPointSnap { x: 0.1, y: 0.1 });
+        state.style_fan_out(0);
+        let (x0, y0) = crate::style::circle_slot(0);
+        let (x1, y1) = crate::style::circle_slot(1);
+        assert_eq!(state.decks[0].style_targets[0].x, x0);
+        assert_eq!(state.decks[0].style_targets[0].y, y0);
+        assert_eq!(state.decks[0].style_targets[1].x, x1);
+        assert_eq!(state.decks[0].style_targets[1].y, y1);
+        assert_eq!(state.decks[0].cursor, PadPointSnap { x: 0.5, y: 0.5 });
+    }
+
+    #[test]
+    fn style_apply_preset_replaces_wholesale_and_clears_selection() {
+        let mut state = InterfaceState::default();
+        state.style_add_target(0, "old");
+        state.style_toggle_selection(0, "old");
+        state.style_apply_preset(
             0,
             vec![StyleTargetSnap {
                 x: 0.2,
                 y: 0.8,
                 text: "dub".to_string(),
+                sample: None,
             }],
             PadPointSnap { x: 0.3, y: 0.4 },
-            vec![true],
-            false,
         );
         assert_eq!(state.decks[0].style_targets.len(), 1);
         assert_eq!(state.decks[0].style_targets[0].text, "dub");
+        assert_eq!(state.decks[0].style_selected, vec![false]);
         assert_eq!(state.decks[0].cursor, PadPointSnap { x: 0.3, y: 0.4 });
-        assert_eq!(state.decks[0].style_selected, vec![true]);
-        // The other deck is untouched.
-        assert!(state.decks[1].style_targets.is_empty());
-        assert_eq!(state.decks[1].cursor, PadPointSnap { x: 0.5, y: 0.5 });
-        // The mask replaces WITH the targets — never a stale pairing (the
-        // projection's adoption gate depends on the atomicity).
-        state.set_style(
-            0,
-            Vec::new(),
-            PadPointSnap { x: 0.5, y: 0.5 },
-            Vec::new(),
-            false,
-        );
-        assert!(state.decks[0].style_targets.is_empty());
-        assert!(state.decks[0].style_selected.is_empty());
     }
 
     #[test]
-    fn style_writes_record_their_writer_for_the_adoption_gate() {
+    fn worker_death_strips_sampled_chips_and_their_selection() {
         let mut state = InterfaceState::default();
-        // The boot default reads as a webview write — a projection must
-        // never adopt the empty default over its persisted layout.
-        assert!(!state.decks[0].style_external);
-        // An external (MCP) write flips the flag; the webview mirror
-        // reclaims it on the next local edit.
-        state.set_style(
-            0,
-            vec![StyleTargetSnap { x: 0.5, y: 0.5, text: "dub".to_string() }],
-            PadPointSnap { x: 0.5, y: 0.5 },
-            Vec::new(),
-            true,
-        );
-        assert!(state.decks[0].style_external);
-        state.set_style(
-            0,
-            vec![StyleTargetSnap { x: 0.5, y: 0.5, text: "dub".to_string() }],
-            PadPointSnap { x: 0.5, y: 0.5 },
-            Vec::new(),
-            false,
-        );
-        assert!(!state.decks[0].style_external);
-        // The MCP cursor-only path is external style state too.
-        state.set_cursor(0, PadPointSnap { x: 0.2, y: 0.2 });
-        assert!(state.decks[0].style_external);
+        state.style_add_target(0, "dub");
+        state.style_add_sample_target(0, "Deck B sample 1", "sample:b:1");
+        state.style_toggle_selection(0, "dub");
+        state.style_toggle_selection(0, "Deck B sample 1");
+        // The dying worker takes its embedding cache — the chip goes with it,
+        // the text target (and its selection) survives.
+        state.set_worker_health(0, true, false);
+        assert_eq!(state.decks[0].style_targets.len(), 1);
+        assert_eq!(state.decks[0].style_targets[0].text, "dub");
+        assert_eq!(state.decks[0].style_selected, vec![true]);
+        assert!(state.decks[0].worker_died);
     }
 
     #[test]
@@ -1155,22 +1358,15 @@ mod tests {
     #[test]
     fn set_cursor_moves_the_blend_point_leaving_targets() {
         let mut state = InterfaceState::default();
-        state.set_style(
-            0,
-            vec![StyleTargetSnap {
-                x: 0.1,
-                y: 0.2,
-                text: "a".to_string(),
-            }],
-            PadPointSnap { x: 0.5, y: 0.5 },
-            Vec::new(),
-            false,
-        );
+        state.style_add_target(0, "a");
         state.set_cursor(0, PadPointSnap { x: 0.7, y: 0.3 });
         assert_eq!(state.decks[0].cursor, PadPointSnap { x: 0.7, y: 0.3 });
         // The targets are left exactly as they were.
         assert_eq!(state.decks[0].style_targets.len(), 1);
         assert_eq!(state.decks[0].style_targets[0].text, "a");
+        // And the cursor clamps into the unit square.
+        state.set_cursor(0, PadPointSnap { x: -1.0, y: 2.0 });
+        assert_eq!(state.decks[0].cursor, PadPointSnap { x: 0.0, y: 1.0 });
     }
 
     #[test]

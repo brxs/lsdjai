@@ -24,6 +24,27 @@ pub struct ShellSettings {
     pub main_device: String,
     pub cue_device: String,
     pub recordings_folder: String,
+    /// Per-deck style-pad arrangements (ADR-0020 phase B), indexed by deck.
+    /// Text targets + cursor only — sampled chips are session-only (ADR-0011).
+    pub deck_styles: Vec<DeckStyleSetting>,
+}
+
+/// One deck's persisted style-pad arrangement. The file is user-editable, so
+/// hydration sanitises through [`crate::style::sanitize_preset_targets`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DeckStyleSetting {
+    pub targets: Vec<crate::store::StyleTargetSnap>,
+    pub cursor: crate::store::PadPointSnap,
+}
+
+impl Default for DeckStyleSetting {
+    fn default() -> Self {
+        DeckStyleSetting {
+            targets: Vec::new(),
+            cursor: crate::store::PadPointSnap { x: 0.5, y: 0.5 },
+        }
+    }
 }
 
 fn settings_file(app: &AppHandle) -> Option<PathBuf> {
@@ -83,6 +104,15 @@ mod tests {
             main_device: "DDJ-FLX4".into(),
             cue_device: "".into(),
             recordings_folder: "/tmp/takes".into(),
+            deck_styles: vec![DeckStyleSetting {
+                targets: vec![crate::store::StyleTargetSnap {
+                    x: 0.2,
+                    y: 0.8,
+                    text: "dub".into(),
+                    sample: None,
+                }],
+                cursor: crate::store::PadPointSnap { x: 0.3, y: 0.4 },
+            }],
         };
         save_to(&path, &settings);
         assert_eq!(load_from(&path), settings);
@@ -103,6 +133,7 @@ mod tests {
         assert_eq!(settings.main_device, "Speakers");
         assert_eq!(settings.cue_device, "");
         assert_eq!(settings.recordings_folder, "");
+        assert!(settings.deck_styles.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

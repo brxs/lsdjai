@@ -14,6 +14,7 @@ import {
   rotateMcpToken,
   setMcpPort,
   setRecordingsFolder,
+  styleApplyPreset,
   subscribeLoadTrack,
   subscribeLoadSample,
   subscribeDeckCommand,
@@ -43,6 +44,7 @@ import {
   deletePreset,
   loadAppSettings,
   loadPresets,
+  takeLegacyDeckStyles,
   takeLegacyShellSettings,
   updateAppSettings,
   upsertPresets,
@@ -389,15 +391,30 @@ function App() {
     if (!store || migratedShellSettingsRef.current) return
     migratedShellSettingsRef.current = true
     const legacy = takeLegacyShellSettings()
-    if (!legacy) return
-    if (legacy.outputDevice && !store.mainDevice) {
-      void engine.setMainDevice(legacy.outputDevice).catch(() => {})
+    if (legacy) {
+      if (legacy.outputDevice && !store.mainDevice) {
+        void engine.setMainDevice(legacy.outputDevice).catch(() => {})
+      }
+      if (legacy.cueDevice && !store.cueDevice) {
+        void engine.setCueDevice(legacy.cueDevice).catch(() => {})
+      }
+      if (legacy.recordingsFolder && !store.recordingsFolder) {
+        setRecordingsFolder(legacy.recordingsFolder)
+      }
     }
-    if (legacy.cueDevice && !store.cueDevice) {
-      void engine.setCueDevice(legacy.cueDevice).catch(() => {})
-    }
-    if (legacy.recordingsFolder && !store.recordingsFolder) {
-      setRecordingsFolder(legacy.recordingsFolder)
+    // The style-pad arrangements moved shell-side in phase B: replay a
+    // pre-inversion localStorage layout through the preset intent — only
+    // onto a deck the shell hydrated empty, so the settings file (once
+    // written) always wins.
+    const legacyStyles = takeLegacyDeckStyles()
+    if (legacyStyles) {
+      for (const deckId of ['a', 'b'] as const) {
+        const style = legacyStyles[deckId]
+        const deckIndex = deckId === 'a' ? 0 : 1
+        if (style && store.decks[deckIndex]?.styleTargets.length === 0) {
+          styleApplyPreset(deckIndex, style.targets, style.cursor)
+        }
+      }
     }
   }, [store, engine])
 
@@ -862,7 +879,6 @@ function App() {
           state={deckA.state}
           onPlay={() => void deckA.play()}
           onStop={deckA.stop}
-          onSetStyle={deckA.setStyle}
           onSetModel={deckA.setModel}
           onRestart={deckA.restartWorker}
           shiftedDeck={shiftedDeck}
@@ -918,7 +934,6 @@ function App() {
           state={deckB.state}
           onPlay={() => void deckB.play()}
           onStop={deckB.stop}
-          onSetStyle={deckB.setStyle}
           onSetModel={deckB.setModel}
           onRestart={deckB.restartWorker}
           shiftedDeck={shiftedDeck}

@@ -11,8 +11,6 @@ import type { PadPoint } from './deck/padWeights'
 import { clamp01, isPoint, parsePreset, type StylePreset } from './presets'
 
 export type DeckSettings = {
-  targets: (PadPoint & { text: string })[]
-  cursor: PadPoint
   volume: number
   eq: Record<EqBand, number>
   fx: { kind: FxKind | null; amount: number }
@@ -77,6 +75,56 @@ export function takeLegacyShellSettings(): {
   return legacy
 }
 
+/** The style-pad arrangement moved to shell-side persistence too (ADR-0020
+ * phase B: the store owns targets + cursor, the shell settings file persists
+ * them). Pre-inversion builds saved them per deck in localStorage; this reads
+ * them ONCE for migration and strips the keys. Null when nothing is left. */
+export function takeLegacyDeckStyles(): Partial<
+  Record<DeckId, { targets: (PadPoint & { text: string })[]; cursor: PadPoint }>
+> | null {
+  const persisted = read()
+  const decks = persisted.decks as
+    | Partial<Record<DeckId, Record<string, unknown>>>
+    | undefined
+  if (!decks) return null
+  const legacy: Partial<
+    Record<DeckId, { targets: (PadPoint & { text: string })[]; cursor: PadPoint }>
+  > = {}
+  let stripped = false
+  for (const deckId of ['a', 'b'] as const) {
+    const stored = decks[deckId]
+    if (!stored || typeof stored !== 'object') continue
+    const targets = stored.targets
+    if (
+      Array.isArray(targets) &&
+      targets.length > 0 &&
+      targets.every(
+        (target) =>
+          isPoint(target) &&
+          typeof (target as { text?: unknown }).text === 'string',
+      )
+    ) {
+      legacy[deckId] = {
+        targets: targets.map((target) => ({
+          text: target.text as string,
+          x: clamp01(target.x as number),
+          y: clamp01(target.y as number),
+        })),
+        cursor: isPoint(stored.cursor)
+          ? { x: clamp01(stored.cursor.x), y: clamp01(stored.cursor.y) }
+          : { x: 0.5, y: 0.5 },
+      }
+    }
+    if ('targets' in stored || 'cursor' in stored) {
+      delete stored.targets
+      delete stored.cursor
+      stripped = true
+    }
+  }
+  if (stripped) write(persisted)
+  return Object.keys(legacy).length ? legacy : null
+}
+
 const STORAGE_KEY = 'lsdj:v1'
 
 type Persisted = {
@@ -107,21 +155,6 @@ export function loadDeckSettings(deckId: DeckId): Partial<DeckSettings> {
   const stored = read().decks?.[deckId]
   if (!stored || typeof stored !== 'object') return {}
   const settings: Partial<DeckSettings> = {}
-  if (
-    Array.isArray(stored.targets) &&
-    stored.targets.every(
-      (target) => isPoint(target) && typeof target.text === 'string',
-    )
-  ) {
-    settings.targets = stored.targets.map((target) => ({
-      text: target.text,
-      x: clamp01(target.x),
-      y: clamp01(target.y),
-    }))
-  }
-  if (isPoint(stored.cursor)) {
-    settings.cursor = { x: clamp01(stored.cursor.x), y: clamp01(stored.cursor.y) }
-  }
   if (Number.isFinite(stored.volume)) {
     settings.volume = clamp01(stored.volume as number)
   }

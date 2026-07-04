@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { SAMPLE_RATE } from './types'
-import { createNativeEngine, setDeckStyle } from './nativeEngine'
+import {
+  createNativeEngine,
+  styleAddTarget,
+  styleMoveTarget,
+  styleSetCursor,
+} from './nativeEngine'
 
 // A controllable __TAURI__ global: records every invoke and serves a test
 // snapshot for `engine_snapshot`. rAF is stubbed so the poller can be flushed
@@ -381,36 +386,41 @@ describe('createNativeEngine — output device', () => {
   })
 })
 
-// The playing-deck prompt-revert regression: the style mirror must ship
-// targets + cursor + the net selection mask as ONE command (a split write
-// emitted a snapshot pairing stale targets with a fresh mask, which the
-// adoption gate adopted — reverting a just-added prompt), and the pending
-// window must be observable so the gate can skip mid-window snapshots.
-describe('the deck style mirror', () => {
-  const target = { x: 0.5, y: 0.5, text: 'dub techno' }
-  const cursor = { x: 0.5, y: 0.5 }
-
-  it('ships one atomic write carrying targets, cursor, and the selection mask', () => {
-    setDeckStyle(0, [target], cursor, [true])
-    // Coalesced: nothing crosses until the animation frame.
-    expect(calls.filter((c) => c.cmd === 'set_deck_style')).toHaveLength(0)
+// The style intents (ADR-0020 phase B): continuous gestures (cursor, target
+// drags) coalesce to the latest value per key in a frame — a pad drag fires
+// per pointermove and each store mutation broadcasts a full snapshot — while
+// discrete intents flush the pending map first, so a stale queued move can
+// never land after (and displace) an add or a fan-out.
+describe('the style intents', () => {
+  it('coalesces a cursor drag to the latest value in the frame', () => {
+    styleSetCursor(0, 0.1, 0.1)
+    styleSetCursor(0, 0.2, 0.9)
+    // Nothing crosses until the animation frame.
+    expect(calls.filter((c) => c.cmd === 'style_set_cursor')).toHaveLength(0)
     flushRaf()
-    const shipped = calls.filter((c) => c.cmd === 'set_deck_style')
+    const shipped = calls.filter((c) => c.cmd === 'style_set_cursor')
     expect(shipped).toHaveLength(1)
-    expect(shipped[0].args).toEqual({
-      deck: 0,
-      targets: [target],
-      cursor,
-      selected: [true],
-    })
+    expect(shipped[0].args).toEqual({ deck: 0, x: 0.2, y: 0.9 })
   })
 
-  it('coalesces rapid writes to the latest value in the frame', () => {
-    setDeckStyle(0, [target], cursor, [false])
-    setDeckStyle(0, [target, { ...target, text: 'acid' }], cursor, [false, true])
+  it('keys target moves per target so a two-dot jog reel ships both', () => {
+    styleMoveTarget(0, 'dub techno', 0.2, 0.2)
+    styleMoveTarget(0, 'acid', 0.8, 0.8)
+    styleMoveTarget(0, 'dub techno', 0.3, 0.3)
     flushRaf()
-    const shipped = calls.filter((c) => c.cmd === 'set_deck_style')
-    expect(shipped).toHaveLength(1)
-    expect((shipped[0].args as { selected: boolean[] }).selected).toEqual([false, true])
+    const shipped = calls.filter((c) => c.cmd === 'style_move_target')
+    expect(shipped).toHaveLength(2)
+    expect(shipped[0].args).toEqual({ deck: 0, text: 'dub techno', x: 0.3, y: 0.3 })
+    expect(shipped[1].args).toEqual({ deck: 0, text: 'acid', x: 0.8, y: 0.8 })
+  })
+
+  it('flushes pending moves before a discrete intent so order holds', () => {
+    styleSetCursor(0, 0.4, 0.4)
+    styleAddTarget(0, 'breakbeat')
+    // The add fired immediately AND pushed the queued cursor move out first.
+    expect(calls.map((c) => c.cmd)).toEqual(['style_set_cursor', 'style_add_target'])
+    // The already-flushed move is not re-sent on the frame.
+    flushRaf()
+    expect(calls.filter((c) => c.cmd === 'style_set_cursor')).toHaveLength(1)
   })
 })

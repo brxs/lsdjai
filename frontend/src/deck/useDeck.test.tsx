@@ -132,7 +132,6 @@ function storeDeck(): DeckSnap {
     transport: null,
     loopLabels: [],
     styleTargets: [],
-    styleExternal: false,
     styleSelected: [],
     cursor: { x: 0.5, y: 0.5 },
     primed: false,
@@ -316,18 +315,6 @@ describe('useDeck connection', () => {
     const { result } = renderDeck(makeFakeEngine().engine)
     // The native transport has no socket: the deck is operable at once.
     expect(result.current.state.connection).toBe('open')
-  })
-
-  it('forwards set_style as a native deck command', () => {
-    const { result } = renderDeck(makeFakeEngine().engine)
-
-    const style = { prompts: [{ text: 'warm disco funk', weight: 1 }] }
-    act(() => socket(0).serverOpen())
-    act(() => result.current.setStyle(style))
-    expect(native.invoke).toHaveBeenCalledWith('deck_set_style', {
-      deck: 0,
-      prompts: [{ text: 'warm disco funk', weight: 1 }],
-    })
   })
 
   it('surfaces a play() audio failure instead of swallowing it', async () => {

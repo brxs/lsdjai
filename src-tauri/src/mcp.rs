@@ -565,13 +565,14 @@ impl McpHandler {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
         }
+        // An external arrangement replaces the pad wholesale (the store owns
+        // the semantics — ADR-0020 phase B; sampled chips can't come from
+        // outside, the sanitiser drops them).
+        let targets = crate::style::sanitize_preset_targets(targets);
         let count = targets.len();
-        // An external arrangement replaces the pad wholesale; the net
-        // selection mask is webview-owned and starts empty (no net). Marked
-        // external so the projection adopts it (style_external).
         self.app
             .state::<InterfaceStore>()
-            .set_deck_style(deck, targets, cursor, Vec::new(), true);
+            .style_apply_preset(deck, targets, cursor);
         format!("deck {deck} style set ({count} target(s))")
     }
 
@@ -696,16 +697,15 @@ impl McpHandler {
             return format!("invalid deck {deck}");
         }
         let center = PadPointSnap { x: 0.5, y: 0.5 };
-        self.app.state::<InterfaceStore>().set_deck_style(
+        self.app.state::<InterfaceStore>().style_apply_preset(
             deck,
-            vec![StyleTargetSnap {
+            crate::style::sanitize_preset_targets(vec![StyleTargetSnap {
                 x: 0.5,
                 y: 0.5,
                 text: prompt.clone(),
-            }],
+                sample: None,
+            }]),
             center,
-            Vec::new(),
-            true,
         );
         format!("deck {deck} prompt set to \"{prompt}\"")
     }

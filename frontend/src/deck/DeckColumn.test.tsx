@@ -1,24 +1,44 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { StrictMode } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DeckId } from '../audio/types'
 import type { FxKind } from '../audio/fx'
 import { createControlBus, type ControlBus } from '../control/bus'
 import { ControlBusProvider } from '../control/ControlBusProvider'
-import { loadDeckSettings, updateDeckSettings } from '../persistence'
-import { setDeckStyle, type DeckSnap, type InterfaceState } from '../audio/nativeEngine'
+import {
+  styleAddSampleTarget,
+  styleAddTarget,
+  styleApplyPreset,
+  styleFanOut,
+  styleMoveTarget,
+  styleRemoveTarget,
+  styleRenameTarget,
+  styleSetCursor,
+  styleToggleSelection,
+  type DeckSnap,
+  type InterfaceState,
+} from '../audio/nativeEngine'
 import * as interfaceStore from '../audio/interfaceStore'
 import { DeckColumn } from './DeckColumn'
 
-// The style mirror is observed, not run: the net selection now rides the
-// atomic set_deck_style store write (targets + cursor + mask in one command),
-// so these tests read the mask from the mirror's calls.
+// The style intents are mocked flat (no rAF coalescing — that machinery has
+// its own tests in nativeEngine.test.ts) and wired per test to a fake pad
+// store below, so the projection tests exercise the full loop a real session
+// runs: gesture → intent → store mutation → snapshot broadcast → render.
 vi.mock('../audio/nativeEngine', async (importOriginal) => {
   const original = await importOriginal<typeof import('../audio/nativeEngine')>()
   return {
     ...original,
-    setDeckStyle: vi.fn(),
+    styleAddTarget: vi.fn(),
+    styleAddSampleTarget: vi.fn(),
+    styleMoveTarget: vi.fn(),
+    styleRemoveTarget: vi.fn(),
+    styleRenameTarget: vi.fn(),
+    styleToggleSelection: vi.fn(),
+    styleFanOut: vi.fn(),
+    styleSetCursor: vi.fn(),
+    styleApplyPreset: vi.fn(),
   }
 })
 // The store projection, driveable per test (null = pre-hydration, the app's
@@ -51,6 +71,157 @@ import type { DeckMode, LoopState, TrackState } from './useDeck'
 
 const noop = () => {}
 
+const setStore = (
+  interfaceStore as unknown as {
+    __setInterfaceStore: (next: InterfaceState | null) => void
+  }
+).__setInterfaceStore
+
+function deckSnap(over: Partial<DeckSnap> = {}): DeckSnap {
+  return {
+    volume: 1,
+    eq: { low: 0.5, mid: 0.5, high: 0.5 },
+    trimDb: 0,
+    cue: false,
+    onAir: true,
+    fx: { kind: null, amount: 0 },
+    model: null,
+    playing: false,
+    cues: [],
+    track: null,
+    transport: null,
+    loopLabels: [],
+    styleTargets: [],
+    styleSelected: [],
+    cursor: { x: 0.5, y: 0.5 },
+    primed: false,
+    performance: { armed: false, key: 0, scale: 'major', mode: 'chord' },
+    notes: null,
+    drums: null,
+    analysis: { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 },
+    workerDied: false,
+    switchingModel: false,
+    shiftHeld: false,
+    ...over,
+  }
+}
+
+function storeWith(over: Partial<DeckSnap>): InterfaceState {
+  return {
+    decks: [deckSnap(over), deckSnap()],
+    crossfade: 0.5,
+    cueMix: 0.5,
+    recording: { active: false, path: null },
+    mainDevice: '',
+    cueDevice: '',
+    recordingsFolder: '',
+  }
+}
+
+/** A webview-side twin of the Rust store's style semantics (the real rules
+ * are unit-tested in store.rs / style.rs): the mocked intents mutate it and
+ * it broadcasts a fresh snapshot, exactly like the shell store would. The
+ * spawn geometry is simplified (12 o'clock, then 6) — position-sensitive
+ * assertions seed explicit layouts instead of adding through it. */
+class FakePadStore {
+  targets: { x: number; y: number; text: string; sample?: string }[] = []
+  selected: boolean[] = []
+  cursor = { x: 0.5, y: 0.5 }
+
+  broadcast() {
+    act(() =>
+      setStore(
+        storeWith({
+          styleTargets: [...this.targets],
+          styleSelected: [...this.selected],
+          cursor: { ...this.cursor },
+        }),
+      ),
+    )
+  }
+
+  seed(
+    targets: { x: number; y: number; text: string; sample?: string }[],
+    cursor = { x: 0.5, y: 0.5 },
+  ) {
+    this.targets = targets
+    this.selected = targets.map(() => false)
+    this.cursor = cursor
+    this.broadcast()
+  }
+}
+
+/** Wire every mocked style intent to a fresh fake store for this test. */
+function wirePadStore(): FakePadStore {
+  const pad = new FakePadStore()
+  const spawn = () => (pad.targets.length === 0 ? { x: 0.5, y: 0.12 } : { x: 0.5, y: 0.88 })
+  vi.mocked(styleAddTarget).mockImplementation((_deck, text) => {
+    const trimmed = text.trim()
+    if (!trimmed || pad.targets.length >= 8 || pad.targets.some((t) => t.text === trimmed)) return
+    pad.targets = [...pad.targets, { ...spawn(), text: trimmed }]
+    pad.selected = [...pad.selected, false]
+    pad.broadcast()
+  })
+  vi.mocked(styleAddSampleTarget).mockImplementation((_deck, label, sample) => {
+    if (pad.targets.length >= 8 || pad.targets.some((t) => t.text === label)) return
+    pad.targets = [...pad.targets, { ...spawn(), text: label, sample }]
+    pad.selected = [...pad.selected, false]
+    pad.broadcast()
+  })
+  vi.mocked(styleMoveTarget).mockImplementation((_deck, text, x, y) => {
+    pad.targets = pad.targets.map((t) => (t.text === text ? { ...t, x, y } : t))
+    pad.broadcast()
+  })
+  vi.mocked(styleRemoveTarget).mockImplementation((_deck, text) => {
+    const index = pad.targets.findIndex((t) => t.text === text)
+    if (index < 0) return
+    pad.targets = pad.targets.filter((_, i) => i !== index)
+    pad.selected = pad.selected.filter((_, i) => i !== index)
+    pad.broadcast()
+  })
+  vi.mocked(styleRenameTarget).mockImplementation((_deck, from, to) => {
+    const target = pad.targets.find((t) => t.text === from)
+    if (!target || target.sample || pad.targets.some((t) => t.text === to)) return
+    pad.targets = pad.targets.map((t) => (t.text === from ? { ...t, text: to } : t))
+    pad.broadcast()
+  })
+  vi.mocked(styleToggleSelection).mockImplementation((_deck, text) => {
+    const index = pad.targets.findIndex((t) => t.text === text)
+    if (index < 0) return
+    pad.selected = pad.selected.map((on, i) => (i === index ? !on : on))
+    pad.broadcast()
+  })
+  vi.mocked(styleFanOut).mockImplementation(() => {
+    // The real circle geometry lives in style.rs; two slots are enough here.
+    pad.targets = pad.targets.map((t, i) => ({
+      ...t,
+      x: 0.5,
+      y: i === 0 ? 0.12 : 0.88,
+    }))
+    pad.cursor = { x: 0.5, y: 0.5 }
+    pad.broadcast()
+  })
+  vi.mocked(styleSetCursor).mockImplementation((_deck, x, y) => {
+    pad.cursor = { x, y }
+    pad.broadcast()
+  })
+  vi.mocked(styleApplyPreset).mockImplementation((_deck, targets, cursor) => {
+    pad.targets = targets.map((t) => ({ ...t }))
+    pad.selected = targets.map(() => false)
+    pad.cursor = { ...cursor }
+    pad.broadcast()
+  })
+  return pad
+}
+
+let pad: FakePadStore
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  pad = wirePadStore()
+  setStore(null)
+})
+
 const emptyLoop = (): LoopState => ({
   slots: Array.from({ length: 4 }, () => ({ state: 'empty' })),
   active: null,
@@ -80,7 +251,6 @@ function renderPanel(
         state={{ ...initialDeckState, ...state }}
         onPlay={handlers.onPlay ?? noop}
         onStop={handlers.onStop ?? noop}
-        onSetStyle={(handlers.onSetStyle as (s: object) => void) ?? noop}
         onSetModel={(handlers.onSetModel as (m: string) => void) ?? noop}
         onRestart={handlers.onRestart ?? noop}
         shiftedDeck={shiftedDeck}
@@ -179,39 +349,29 @@ describe('DeckColumn', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
   }
 
-  it('applies a single centred target on add', () => {
-    const onSetStyle = vi.fn()
-    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
+  it('adds a trimmed target through the add intent and projects the echo', () => {
+    renderPanel({ connection: 'open' })
     addTarget('  warm disco funk  ')
-    expect(onSetStyle).toHaveBeenCalledWith({
-      prompts: [{ text: 'warm disco funk', weight: 1 }],
-    })
+    // The add crosses as an intent (the store owns the spawn geometry and
+    // the blend — style.rs); the chip renders from the store's echo.
+    expect(styleAddTarget).toHaveBeenCalledWith(0, 'warm disco funk')
+    expect(
+      screen.getByRole('button', { name: 'Remove warm disco funk' }),
+    ).toBeInTheDocument()
   })
 
-  it('splits weights between targets from the centred cursor', () => {
-    const onSetStyle = vi.fn()
-    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
-    addTarget('funk')
-    addTarget('techno')
-    const style = onSetStyle.mock.calls.at(-1)![0]
-    expect(style.prompts.map((p: { text: string }) => p.text)).toEqual([
-      'funk',
-      'techno',
-    ])
-    const [a, b] = style.prompts.map((p: { weight: number }) => p.weight)
-    expect(a).toBeCloseTo(0.5)
-    expect(b).toBeCloseTo(0.5)
-  })
-
-  it('removes a target from its chip and resends the style', () => {
-    const onSetStyle = vi.fn()
-    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
+  it('removes a target from its chip through the remove intent', () => {
+    renderPanel({ connection: 'open' })
     addTarget('funk')
     addTarget('techno')
     fireEvent.click(screen.getByRole('button', { name: 'Remove funk' }))
-    expect(onSetStyle.mock.calls.at(-1)![0]).toEqual({
-      prompts: [{ text: 'techno', weight: 1 }],
-    })
+    expect(styleRemoveTarget).toHaveBeenCalledWith(0, 'funk')
+    expect(
+      screen.queryByRole('button', { name: 'Remove funk' }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Remove techno' }),
+    ).toBeInTheDocument()
   })
 
   function editTarget(prompt: string, replacement: string) {
@@ -221,64 +381,53 @@ describe('DeckColumn', () => {
     fireEvent.keyDown(field, { key: 'Enter' })
   }
 
-  it('edits a prompt in place, keeping its spot and resending the style', () => {
-    const onSetStyle = vi.fn()
-    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
+  it('edits a prompt in place through the rename intent, keeping its spot', () => {
+    renderPanel({ connection: 'open' })
     addTarget('fnuk')
     addTarget('techno')
-    onSetStyle.mockClear()
+    const spotBefore = pad.targets[0]
 
     editTarget('fnuk', '  funk  ')
+    expect(styleRenameTarget).toHaveBeenCalledWith(0, 'fnuk', 'funk')
     expect(
       screen.getByRole('button', { name: 'Remove funk' }),
     ).toBeInTheDocument()
     // The renamed target keeps its slot (and therefore its weight).
-    const style = onSetStyle.mock.calls.at(-1)![0]
-    expect(style.prompts.map((p: { text: string }) => p.text)).toEqual([
-      'funk',
-      'techno',
-    ])
-    expect(style.prompts[0].weight).toBeCloseTo(0.5)
+    expect(pad.targets[0]).toEqual({ ...spotBefore, text: 'funk' })
   })
 
   it('escape cancels an edit without touching the style', () => {
-    const onSetStyle = vi.fn()
-    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
+    renderPanel({ connection: 'open' })
     addTarget('funk')
-    onSetStyle.mockClear()
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit funk' }))
     const field = screen.getByRole('textbox', { name: 'Edit funk' })
     fireEvent.change(field, { target: { value: 'techno' } })
     fireEvent.keyDown(field, { key: 'Escape' })
     expect(screen.getByRole('button', { name: 'Remove funk' })).toBeInTheDocument()
-    expect(onSetStyle).not.toHaveBeenCalled()
+    expect(styleRenameTarget).not.toHaveBeenCalled()
   })
 
   it('a rename that collides with another chip cancels quietly', () => {
-    const onSetStyle = vi.fn()
-    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
+    renderPanel({ connection: 'open' })
     addTarget('funk')
     addTarget('techno')
-    onSetStyle.mockClear()
 
     editTarget('funk', 'techno')
     expect(screen.getByRole('button', { name: 'Remove funk' })).toBeInTheDocument()
-    expect(onSetStyle).not.toHaveBeenCalled()
+    expect(styleRenameTarget).not.toHaveBeenCalled()
   })
 
   it.each([
     ['an emptied draft', '   '],
     ['an unchanged draft', 'funk'],
-  ])('%s cancels quietly without a send', (_label, replacement) => {
-    const onSetStyle = vi.fn()
-    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
+  ])('%s cancels quietly without a rename intent', (_label, replacement) => {
+    renderPanel({ connection: 'open' })
     addTarget('funk')
-    onSetStyle.mockClear()
 
     editTarget('funk', replacement)
     expect(screen.getByRole('button', { name: 'Remove funk' })).toBeInTheDocument()
-    expect(onSetStyle).not.toHaveBeenCalled()
+    expect(styleRenameTarget).not.toHaveBeenCalled()
   })
 
   it('returns focus to the row after a keyboard commit or cancel', () => {
@@ -295,15 +444,9 @@ describe('DeckColumn', () => {
   })
 
   it('an edit open when the deck becomes inoperable cancels instead of committing', () => {
-    const onSetStyle = vi.fn()
     const bus = createControlBus()
-    const view = renderPanel(
-      { connection: 'open' },
-      { onSetStyle: onSetStyle as () => void },
-      bus,
-    )
+    const view = renderPanel({ connection: 'open' }, {}, bus)
     addTarget('funk')
-    onSetStyle.mockClear()
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit funk' }))
     const field = screen.getByRole('textbox', { name: 'Edit funk' })
@@ -316,7 +459,6 @@ describe('DeckColumn', () => {
           state={{ ...initialDeckState, connection: 'open', switchingModel: true }}
           onPlay={noop}
           onStop={noop}
-          onSetStyle={onSetStyle as (s: object) => void}
           onSetModel={noop as (m: string) => void}
           onRestart={noop}
           fx={{ kind: null, amount: 0 }}
@@ -357,10 +499,7 @@ describe('DeckColumn', () => {
     expect(
       screen.getByRole('button', { name: 'Remove funk' }),
     ).toBeInTheDocument()
-    expect(onSetStyle).not.toHaveBeenCalled()
-    expect(
-      (loadDeckSettings('a').targets ?? []).map((target) => target.text),
-    ).toEqual(['funk'])
+    expect(styleRenameTarget).not.toHaveBeenCalled()
   })
 
   it('a preset load closes an open edit instead of leaving a stale draft', () => {
@@ -394,28 +533,15 @@ describe('DeckColumn', () => {
   })
 
   it('blurring the edit field commits like Enter', () => {
-    const onSetStyle = vi.fn()
-    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
+    renderPanel({ connection: 'open' })
     addTarget('funk')
-    onSetStyle.mockClear()
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit funk' }))
     const field = screen.getByRole('textbox', { name: 'Edit funk' })
     fireEvent.change(field, { target: { value: 'dub' } })
     fireEvent.blur(field)
+    expect(styleRenameTarget).toHaveBeenCalledWith(0, 'funk', 'dub')
     expect(screen.getByRole('button', { name: 'Remove dub' })).toBeInTheDocument()
-    expect(onSetStyle).toHaveBeenCalledWith({
-      prompts: [{ text: 'dub', weight: 1 }],
-    })
-  })
-
-  it('a rename persists like any other pad change', () => {
-    renderPanel({ connection: 'open' })
-    addTarget('fnuk')
-    editTarget('fnuk', 'funk')
-    expect(
-      (loadDeckSettings('a').targets ?? []).map((target) => target.text),
-    ).toEqual(['funk'])
   })
 
   it('sampled chips are not editable — their label names a moment', async () => {
@@ -447,114 +573,72 @@ describe('DeckColumn', () => {
     )
   })
 
-  it('moves the cursor by keyboard and sends reweighted styles', () => {
-    vi.useFakeTimers()
-    try {
-      const onSetStyle = vi.fn()
-      renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
-      addTarget('funk')
-      addTarget('techno')
-      onSetStyle.mockClear()
+  it('moves the cursor by keyboard through the cursor intent', () => {
+    renderPanel({ connection: 'open' })
+    addTarget('funk')
+    addTarget('techno')
 
-      const pad = screen.getByLabelText('Style pad')
-      fireEvent.keyDown(pad, { key: 'ArrowUp' })
-      vi.advanceTimersByTime(300) // inside the throttle window → trailing send
-      expect(onSetStyle).toHaveBeenCalledTimes(1)
-      const style = onSetStyle.mock.calls.at(-1)![0]
-      // Two targets sit at 12 and 6 o'clock; moving up favours the first.
-      expect(style.prompts[0].weight).toBeGreaterThan(style.prompts[1].weight)
-    } finally {
-      vi.useRealTimers()
-    }
+    fireEvent.keyDown(screen.getByLabelText('Style pad'), { key: 'ArrowUp' })
+    // The gesture crosses as an intent (the blend recomputes shell-side);
+    // the projected cursor follows the echo upward.
+    expect(styleSetCursor).toHaveBeenCalled()
+    expect(pad.cursor.x).toBeCloseTo(0.5)
+    expect(pad.cursor.y).toBeLessThan(0.5)
   })
 
-  it('never resurrects a removed target via a stale trailing send', () => {
-    vi.useFakeTimers()
-    try {
-      const onSetStyle = vi.fn()
-      renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
-      addTarget('funk')
-      addTarget('techno')
+  it('drags a target dot and ships the move as a per-target intent', () => {
+    renderPanel({ connection: 'open' })
+    addTarget('funk')
+    addTarget('techno')
 
-      // Two quick cursor moves: the second lands inside the throttle window
-      // and queues a trailing send that still references both targets.
-      const pad = screen.getByLabelText('Style pad')
-      fireEvent.keyDown(pad, { key: 'ArrowUp' })
-      fireEvent.keyDown(pad, { key: 'ArrowUp' })
+    const surface = screen.getByLabelText('Style pad')
+    vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 100,
+      height: 100,
+      right: 100,
+      bottom: 100,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect)
 
-      // Remove funk before the trailing send fires.
-      fireEvent.click(screen.getByRole('button', { name: 'Remove funk' }))
-      vi.advanceTimersByTime(500)
+    // Grab the funk dot (12 o'clock) and drop it beside the centred cursor.
+    // The chip's text button also says 'funk' — address the pad dot's label.
+    fireEvent.pointerDown(
+      screen.getByText('funk', { selector: '.ui-xypad__target-label' }),
+      { clientX: 50, clientY: 12, pointerId: 1 },
+    )
+    fireEvent.pointerMove(surface, { clientX: 51, clientY: 50, pointerId: 1 })
+    fireEvent.pointerUp(surface, { pointerId: 1 })
 
-      const finalStyle = onSetStyle.mock.calls.at(-1)![0]
-      expect(
-        finalStyle.prompts.map((prompt: { text: string }) => prompt.text),
-      ).toEqual(['techno'])
-    } finally {
-      vi.useRealTimers()
-    }
+    expect(styleMoveTarget).toHaveBeenCalledWith(
+      0,
+      'funk',
+      expect.closeTo(0.51, 2),
+      expect.closeTo(0.5, 2),
+    )
+    // The projection renders the dot where the store put it.
+    expect(pad.targets[0]).toMatchObject({ text: 'funk' })
+    expect(pad.targets[0].y).toBeCloseTo(0.5, 2)
   })
 
-  it('drags a target dot under the cursor and resends its dominant weight', () => {
-    vi.useFakeTimers()
-    try {
-      const onSetStyle = vi.fn()
-      renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
-      addTarget('funk')
-      addTarget('techno')
-      onSetStyle.mockClear()
-
-      const surface = screen.getByLabelText('Style pad')
-      vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({
-        left: 0,
-        top: 0,
-        width: 100,
-        height: 100,
-        right: 100,
-        bottom: 100,
-        x: 0,
-        y: 0,
-        toJSON: () => ({}),
-      } as DOMRect)
-
-      // Grab the funk dot (12 o'clock) and drop it just beside the centred
-      // cursor — a cluster move.
-      // The chip's text button also says 'funk' now — address the
-      // pad dot's label specifically.
-      fireEvent.pointerDown(
-        screen.getByText('funk', { selector: '.ui-xypad__target-label' }),
-        { clientX: 50, clientY: 12, pointerId: 1 },
-      )
-      fireEvent.pointerMove(surface, { clientX: 51, clientY: 50, pointerId: 1 })
-      fireEvent.pointerUp(surface, { pointerId: 1 })
-      vi.advanceTimersByTime(300) // flush the throttle's trailing send
-
-      const style = onSetStyle.mock.calls.at(-1)![0]
-      expect(style.prompts[0].text).toBe('funk')
-      expect(style.prompts[0].weight).toBeGreaterThan(0.9)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('restores persisted targets and re-applies the style to a fresh worker', () => {
-    updateDeckSettings('a', {
-      targets: [
+  it('projects a shell-hydrated arrangement on mount', () => {
+    // The shell settings file hydrates the store before the webview exists
+    // (phase B); the pad renders it from the first snapshot — no local copy,
+    // no boot replay (the worker re-send is the shell sender's job now).
+    pad.seed(
+      [
         { text: 'funk', x: 0.2, y: 0.2 },
         { text: 'techno', x: 0.8, y: 0.8 },
       ],
-      cursor: { x: 0.2, y: 0.2 },
-    })
-    const onSetStyle = vi.fn()
-    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void })
+      { x: 0.2, y: 0.2 },
+    )
+    renderPanel({ connection: 'open' })
 
-    // The arrangement is restored…
     expect(screen.getByRole('button', { name: 'Remove funk' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Remove techno' })).toBeInTheDocument()
-    // …and re-sent once (cursor sits on funk, so funk dominates).
-    expect(onSetStyle).toHaveBeenCalledTimes(1)
-    const style = onSetStyle.mock.calls[0][0]
-    expect(style.prompts[0]).toEqual({ text: 'funk', weight: 1 })
   })
 
   it('shows the active blend summary', () => {
@@ -686,12 +770,13 @@ describe('DeckColumn', () => {
     addTarget('techno')
 
     act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 1 }))
-    // The mask rides the atomic style mirror (4th argument).
-    expect(vi.mocked(setDeckStyle).mock.calls.at(-1)?.[3]).toEqual([false, true])
+    // The toggle crosses as an intent; the store owns the mask.
+    expect(styleToggleSelection).toHaveBeenCalledWith(0, 'techno')
+    expect(pad.selected).toEqual([false, true])
 
     // Re-tapping the same pad deselects it.
     act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 1 }))
-    expect(vi.mocked(setDeckStyle).mock.calls.at(-1)?.[3]).toEqual([false, false])
+    expect(pad.selected).toEqual([false, false])
   })
 
   it('highlights a selected dot in the net', () => {
@@ -708,59 +793,50 @@ describe('DeckColumn', () => {
   })
 
   it('reels a selected dot toward the hub on a clockwise jog', () => {
-    vi.useFakeTimers()
-    try {
-      const onSetStyle = vi.fn()
-      const bus = createControlBus()
-      renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void }, bus)
-      addTarget('funk') // 12 o'clock
-      addTarget('techno') // 6 o'clock — symmetric about the centred cursor
-      act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 1 }))
-      onSetStyle.mockClear()
+    const bus = createControlBus()
+    renderPanel({ connection: 'open' }, {}, bus)
+    addTarget('funk') // 12 o'clock
+    addTarget('techno') // 6 o'clock — symmetric about the centred cursor
+    act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 1 }))
 
-      // Clockwise (positive steps) pulls techno in toward the cursor, so it
-      // outweighs the untouched funk.
-      act(() =>
-        bus.publish({ kind: 'track_seek', deck: 'a', steps: 1, shifted: false }),
-      )
-      vi.advanceTimersByTime(300) // flush the throttle's trailing send
-
-      const style = onSetStyle.mock.calls.at(-1)![0]
-      const weightOf = (text: string) =>
-        style.prompts.find((prompt: { text: string }) => prompt.text === text)!
-          .weight
-      expect(weightOf('techno')).toBeGreaterThan(weightOf('funk'))
-    } finally {
-      vi.useRealTimers()
-    }
+    // Clockwise (positive steps) reels ONLY the selected techno inward:
+    // one move intent, for techno, closer to the centred cursor.
+    act(() =>
+      bus.publish({ kind: 'track_seek', deck: 'a', steps: 1, shifted: false }),
+    )
+    expect(styleMoveTarget).toHaveBeenCalledTimes(1)
+    const [, text, , y] = vi.mocked(styleMoveTarget).mock.calls[0]
+    expect(text).toBe('techno')
+    expect(y).toBeLessThan(0.88) // reeled up from 6 o'clock toward the hub
+    expect(y).toBeGreaterThan(0.5)
   })
 
   it('leaves the realtime jog inert when nothing is selected', () => {
-    const onSetStyle = vi.fn()
     const bus = createControlBus()
-    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void }, bus)
+    renderPanel({ connection: 'open' }, {}, bus)
     addTarget('funk')
-    onSetStyle.mockClear()
 
     act(() =>
       bus.publish({ kind: 'track_seek', deck: 'a', steps: 1, shifted: false }),
     )
 
-    expect(onSetStyle).not.toHaveBeenCalled()
+    expect(styleMoveTarget).not.toHaveBeenCalled()
+    expect(styleSetCursor).not.toHaveBeenCalled()
   })
 
   it('centres the blue dot and fans the dots out on double-click', () => {
     // Two dots clustered, cursor parked off-centre.
-    updateDeckSettings('a', {
-      targets: [
+    pad.seed(
+      [
         { text: 'funk', x: 0.2, y: 0.2 },
         { text: 'techno', x: 0.7, y: 0.6 },
       ],
-      cursor: { x: 0.25, y: 0.8 },
-    })
+      { x: 0.25, y: 0.8 },
+    )
     const { container } = renderPanel({ connection: 'open' })
 
     fireEvent.doubleClick(container.querySelector('[data-cursor]')!)
+    expect(styleFanOut).toHaveBeenCalledWith(0)
 
     // The blue dot parks at the canvas centre…
     const cursorStyle = container
@@ -785,94 +861,43 @@ describe('DeckColumn', () => {
     addTarget('funk')
     addTarget('techno')
     act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 0 }))
-    expect(vi.mocked(setDeckStyle).mock.calls.at(-1)?.[3]).toEqual([true, false])
+    expect(pad.selected).toEqual([true, false])
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove funk' }))
-    // funk is gone; the stale selection is pruned, techno stays unselected.
-    expect(vi.mocked(setDeckStyle).mock.calls.at(-1)?.[3]).toEqual([false])
+    // funk is gone; the store realigns the mask, techno stays unselected.
+    expect(pad.selected).toEqual([false])
   })
 
-  it('a stale webview-writer snapshot never reverts a local add; external writes adopt', () => {
-    const setStore = (
-      interfaceStore as unknown as {
-        __setInterfaceStore: (next: InterfaceState | null) => void
-      }
-    ).__setInterfaceStore
-    const deckSnap = (over: Partial<DeckSnap>): DeckSnap => ({
-      volume: 1,
-      eq: { low: 0.5, mid: 0.5, high: 0.5 },
-      trimDb: 0,
-      cue: false,
-      onAir: true,
-      fx: { kind: null, amount: 0 },
-      model: null,
-      playing: true,
-      cues: [],
-      track: null,
-      transport: null,
-      loopLabels: [],
-      styleTargets: [],
-      styleExternal: false,
-      styleSelected: [],
-      cursor: { x: 0.5, y: 0.5 },
-      primed: false,
-      performance: { armed: false, key: 0, scale: 'major', mode: 'chord' },
-      notes: null,
-      drums: null,
-      analysis: { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 },
-      workerDied: false,
-      switchingModel: false,
-      shiftHeld: false,
-      ...over,
-    })
-    const storeWith = (over: Partial<DeckSnap>): InterfaceState => ({
-      decks: [deckSnap(over), deckSnap({})],
-      crossfade: 0.5,
-      cueMix: 0.5,
-      recording: { active: false, path: null },
-      mainDevice: '',
-      cueDevice: '',
-      recordingsFolder: '',
-    })
+  it('projects an external (MCP) arrangement the moment the store broadcasts it', () => {
+    // The store is the ONLY truth (phase B): there is no local pad copy to
+    // fight, no adoption gate — an agent's write replaces the pad exactly
+    // like our own echo does. (The old writer-gated mirror, and the
+    // playing-deck prompt-revert class it fenced, are gone by construction.)
+    renderPanel({ connection: 'open' })
+    addTarget('funk')
+    expect(screen.getAllByText('funk').length).toBeGreaterThan(0)
 
-    try {
-      renderPanel({ connection: 'open' })
-      addTarget('funk')
-      expect(screen.getAllByText('funk').length).toBeGreaterThan(0)
-
-      // The playing-deck race: another store writer (an analysis tick, an
-      // auto-trim write) broadcasts while our style mirror is still in
-      // flight — the snapshot carries the PRE-edit targets under
-      // styleExternal: false. Adopting it reverted the add, twice: this
-      // pins the writer gate that closes the whole class.
-      act(() => setStore(storeWith({ styleTargets: [], styleExternal: false })))
-      expect(screen.getAllByText('funk').length).toBeGreaterThan(0)
-
-      // A genuine external (MCP) write IS adopted, replacing the pad.
-      act(() =>
-        setStore(
-          storeWith({
-            styleTargets: [{ x: 0.5, y: 0.5, text: 'agent groove' }],
-            styleExternal: true,
-          }),
-        ),
-      )
-      expect(screen.getAllByText('agent groove').length).toBeGreaterThan(0)
-      expect(screen.queryAllByText('funk')).toHaveLength(0)
-    } finally {
-      setStore(null)
-    }
+    act(() =>
+      setStore(
+        storeWith({
+          styleTargets: [{ x: 0.5, y: 0.5, text: 'agent groove' }],
+          styleSelected: [false],
+        }),
+      ),
+    )
+    expect(screen.getAllByText('agent groove').length).toBeGreaterThan(0)
+    expect(screen.queryAllByText('funk')).toHaveLength(0)
   })
 
   // Deck A is the shifted deck, so its jogs steer its cursor in 2D.
   function steerPanel(bus: ControlBus) {
-    updateDeckSettings('a', {
-      targets: [
+    pad.seed(
+      [
         { text: 'funk', x: 0.2, y: 0.2 },
         { text: 'techno', x: 0.8, y: 0.8 },
       ],
-      cursor: { x: 0.5, y: 0.5 },
-    })
+      { x: 0.5, y: 0.5 },
+    )
     return renderPanel(
       { connection: 'open' },
       {},
@@ -934,97 +959,75 @@ describe('DeckColumn', () => {
   })
 
   it('sweeps the cursor around the target circle from the control bus', () => {
-    vi.useFakeTimers()
-    try {
-      const onSetStyle = vi.fn()
-      const bus = createControlBus()
-      renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void }, bus)
-      addTarget('funk') // spawns at 12 o'clock — exactly where sweep 0 lands
-      addTarget('techno')
-      onSetStyle.mockClear()
+    const bus = createControlBus()
+    renderPanel({ connection: 'open' }, {}, bus)
+    addTarget('funk') // spawns at 12 o'clock — exactly where sweep 0 lands
+    addTarget('techno')
 
-      act(() => bus.publish({ kind: 'style_sweep', deck: 'a', value: 0 }))
-      act(() => vi.advanceTimersByTime(300)) // flush the throttle's trailing send
+    act(() => bus.publish({ kind: 'style_sweep', deck: 'a', value: 0 }))
 
-      expect(onSetStyle.mock.calls.at(-1)![0]).toEqual({
-        prompts: [
-          { text: 'funk', weight: 1 },
-          { text: 'techno', weight: 0 },
-        ],
-      })
-    } finally {
-      vi.useRealTimers()
-    }
+    // Sweep 0 lands the cursor at 12 o'clock (the blend itself is Rust's).
+    expect(styleSetCursor).toHaveBeenCalledWith(
+      0,
+      expect.closeTo(0.5, 4),
+      expect.closeTo(0.12, 2),
+    )
   })
 
   it('ignores style intents addressed to the other deck', () => {
-    const onSetStyle = vi.fn()
     const bus = createControlBus()
-    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void }, bus)
+    renderPanel({ connection: 'open' }, {}, bus)
     addTarget('funk')
-    onSetStyle.mockClear()
 
     act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'b', index: 0 }))
     act(() => bus.publish({ kind: 'style_sweep', deck: 'b', value: 0.5 }))
 
-    expect(onSetStyle).not.toHaveBeenCalled()
+    expect(styleToggleSelection).not.toHaveBeenCalled()
+    expect(styleSetCursor).not.toHaveBeenCalled()
   })
 
   it('ignores hardware style intents while the deck cannot take them', () => {
-    updateDeckSettings('a', {
-      targets: [{ text: 'funk', x: 0.5, y: 0.12 }],
-      cursor: { x: 0.5, y: 0.5 },
-    })
-    const onSetStyle = vi.fn()
+    pad.seed([{ text: 'funk', x: 0.5, y: 0.12 }])
     const bus = createControlBus()
-    renderPanel(
-      { connection: 'open', switchingModel: true },
-      { onSetStyle: onSetStyle as () => void },
-      bus,
-    )
+    renderPanel({ connection: 'open', switchingModel: true }, {}, bus)
 
     act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 0 }))
 
-    expect(onSetStyle).not.toHaveBeenCalled()
+    expect(styleToggleSelection).not.toHaveBeenCalled()
   })
 
-  it('samples the other deck onto the pad and sends the blend', async () => {
+  it('samples the other deck onto the pad through the sample-add intent', async () => {
     const onSampleOtherDeck = vi.fn(async () => ({
       label: '⏺ B·1',
       sample: 'sample:b:1',
     }))
-    const onSetStyle = vi.fn()
     renderPanel(
       { connection: 'open' },
-      {
-        onSampleOtherDeck: onSampleOtherDeck as unknown as () => void,
-        onSetStyle: onSetStyle as () => void,
-      },
+      { onSampleOtherDeck: onSampleOtherDeck as unknown as () => void },
     )
     fireEvent.click(screen.getByRole('button', { name: 'Sample deck B' }))
     expect(
       await screen.findByRole('button', { name: 'Remove ⏺ B·1' }),
     ).toBeInTheDocument()
-    expect(onSetStyle).toHaveBeenCalledWith({
-      prompts: [{ text: '⏺ B·1', weight: 1, sample: 'sample:b:1' }],
-    })
+    // The intent fires AFTER the embed resolved (the control socket's FIFO
+    // keeps the shell's blend send behind the embedding it references).
+    expect(styleAddSampleTarget).toHaveBeenCalledWith(0, '⏺ B·1', 'sample:b:1')
   })
 
-  it('sends the sampled blend exactly once under StrictMode', async () => {
-    // Guards the updater-purity fix: a sendStyle smuggled into a
-    // setTargets updater double-fires when StrictMode replays it.
+  it('fires the sample-add intent exactly once under StrictMode', async () => {
+    // Guards the updater-purity rule: an intent smuggled into a state
+    // updater (or an effect without a gate) double-fires when StrictMode
+    // replays it — a second add is a quiet Rust-side dup no-op, but the
+    // discipline matters for every intent that is not idempotent.
     const onSampleOtherDeck = vi.fn(async () => ({
       label: '⏺ B·1',
       sample: 'sample:b:1',
     }))
-    const onSetStyle = vi.fn()
     render(
       <StrictMode>
         <ControlBusProvider bus={createControlBus()}>
           <DeckColumn
             deckId="a"
-            // activeStyle set: keeps the reload-resend effect quiet so
-            // the only sender under test is the sampling handler.
             state={{
               ...initialDeckState,
               connection: 'open',
@@ -1032,7 +1035,6 @@ describe('DeckColumn', () => {
             }}
             onPlay={noop}
             onStop={noop}
-            onSetStyle={onSetStyle as (s: object) => void}
             onSetModel={noop as (m: string) => void}
             onRestart={noop}
             fx={{ kind: null, amount: 0 }}
@@ -1069,7 +1071,7 @@ describe('DeckColumn', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: 'Sample deck B' }))
     await screen.findByRole('button', { name: 'Remove ⏺ B·1' })
-    expect(onSetStyle).toHaveBeenCalledTimes(1)
+    expect(styleAddSampleTarget).toHaveBeenCalledTimes(1)
   })
 
   it('reports an honest reason when the other deck has not played enough', async () => {
@@ -1113,7 +1115,11 @@ describe('DeckColumn', () => {
     ).toBeInTheDocument()
   })
 
-  it('keeps sampled targets out of persistence', async () => {
+  // Persistence (text targets + cursor only) and the worker-death chip strip
+  // moved into the Rust store with the arrangement itself (phase B) — both
+  // are covered by store.rs / style_send.rs tests; here the projection just
+  // renders whatever snapshot the store broadcasts.
+  it('drops a sampled chip the moment the store broadcasts without it', async () => {
     const onSampleOtherDeck = vi.fn(async () => ({
       label: '⏺ B·1',
       sample: 'sample:b:1',
@@ -1122,66 +1128,11 @@ describe('DeckColumn', () => {
       { connection: 'open' },
       { onSampleOtherDeck: onSampleOtherDeck as unknown as () => void },
     )
-    addTarget('funk')
-    fireEvent.click(screen.getByRole('button', { name: 'Sample deck B' }))
-    await screen.findByRole('button', { name: 'Remove ⏺ B·1' })
-    const persisted = loadDeckSettings('a').targets ?? []
-    expect(persisted.map((target) => target.text)).toEqual(['funk'])
-  })
-
-  it('drops sampled targets when the worker dies', async () => {
-    const onSampleOtherDeck = vi.fn(async () => ({
-      label: '⏺ B·1',
-      sample: 'sample:b:1',
-    }))
-    const { rerender } = renderPanel(
-      { connection: 'open' },
-      { onSampleOtherDeck: onSampleOtherDeck as unknown as () => void },
-    )
     fireEvent.click(screen.getByRole('button', { name: 'Sample deck B' }))
     await screen.findByRole('button', { name: 'Remove ⏺ B·1' })
 
-    rerender(
-      <ControlBusProvider bus={createControlBus()}>
-        <DeckColumn
-          deckId="a"
-          state={{ ...initialDeckState, connection: 'open', workerDied: true }}
-          onPlay={noop}
-          onStop={noop}
-          onSetStyle={noop as (s: object) => void}
-          onSetModel={noop as (m: string) => void}
-          onRestart={noop}
-          fx={{ kind: null, amount: 0 }}
-          onSetFx={noop as (k: unknown) => void}
-          onSetFxAmount={noop as (v: number) => void}
-          loop={emptyLoop()}
-          onGenerateToPad={noop as (prompt: string, kind: string) => void}
-          generateError={null}
-          onLoopPad={noop as (slot: number) => void}
-          onClearLoopPad={noop as (slot: number) => void}
-          onSetLoopSeconds={noop as (seconds: number) => void}
-          bpm={null}
-          onSampleOtherDeck={async () => null}
-          canSample
-          onSavePreset={noop as (preset: object) => void}
-          mode="realtime"
-          track={null}
-          onLeavePlayback={noop}
-          onSeekTrack={noop as (s: number) => void}
-          onSetTrackRate={noop as (r: number) => void}
-          onSyncTrack={() => 'synced' as const}
-          onHotCuePad={noop}
-          onClearHotCue={noop}
-          onLoopIn={noop}
-          onLoopOut={noop}
-          onLoopExit={noop}
-          onBeatLoop={noop}
-          onHalveLoop={noop}
-          onDoubleLoop={noop}
-          getTrackPeaks={() => null}
-        />
-      </ControlBusProvider>,
-    )
+    // The shell strips the chip on worker death; the projection follows.
+    pad.seed([])
     expect(
       screen.queryByRole('button', { name: 'Remove ⏺ B·1' }),
     ).not.toBeInTheDocument()
@@ -1237,12 +1188,10 @@ describe('DeckColumn', () => {
     expect(screen.getByRole('button', { name: 'Save preset' })).toBeDisabled()
   })
 
-  it('applies a loaded preset wholesale and sends its style', () => {
-    const onSetStyle = vi.fn()
+  it('applies a loaded preset wholesale through the preset intent', () => {
     const bus = createControlBus()
-    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void }, bus)
+    renderPanel({ connection: 'open' }, {}, bus)
     addTarget('old target')
-    onSetStyle.mockClear()
 
     act(() =>
       bus.publish({
@@ -1259,24 +1208,27 @@ describe('DeckColumn', () => {
         },
       }),
     )
+    expect(styleApplyPreset).toHaveBeenCalledWith(
+      0,
+      [
+        { text: 'warm disco funk', x: 0.2, y: 0.3 },
+        { text: 'soul breaks', x: 0.8, y: 0.7 },
+      ],
+      { x: 0.2, y: 0.3 },
+    )
+    // The pad is replaced wholesale (the blend re-send is the shell's).
     expect(
       screen.getByRole('button', { name: 'Remove warm disco funk' }),
     ).toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: 'Remove old target' }),
     ).not.toBeInTheDocument()
-    const style = onSetStyle.mock.calls.at(-1)![0]
-    expect(style.prompts[0]).toMatchObject({ text: 'warm disco funk' })
-    // Cursor sits on the first target: full weight there.
-    expect(style.prompts[0].weight).toBeCloseTo(1)
   })
 
   it('ignores preset loads addressed to the other deck', () => {
-    const onSetStyle = vi.fn()
     const bus = createControlBus()
-    renderPanel({ connection: 'open' }, { onSetStyle: onSetStyle as () => void }, bus)
+    renderPanel({ connection: 'open' }, {}, bus)
     addTarget('mine')
-    onSetStyle.mockClear()
     act(() =>
       bus.publish({
         kind: 'preset_load',
@@ -1289,10 +1241,10 @@ describe('DeckColumn', () => {
         },
       }),
     )
+    expect(styleApplyPreset).not.toHaveBeenCalled()
     expect(
       screen.queryByRole('button', { name: 'Remove theirs' }),
     ).not.toBeInTheDocument()
-    expect(onSetStyle).not.toHaveBeenCalled()
   })
 
   it('fires a loop pad on click and a clear on shift-click', () => {

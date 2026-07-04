@@ -1125,17 +1125,6 @@ pub fn track_peaks(state: tauri::State<'_, Host>, deck: usize, buckets: usize) -
 
 // --- Deck inference control (forwarded to the Python sidecars, part 4) ---
 
-/// A style-prompt entry the webview sends for `set_style` — text (or a sampled
-/// style id, M15) plus its blend weight. Validated/normalised here before it
-/// crosses to the sidecar (`worker.py` `set_style`).
-#[derive(Debug, Clone, Deserialize)]
-pub struct PromptEntryArg {
-    pub text: String,
-    pub weight: f32,
-    #[serde(default)]
-    pub sample: Option<String>,
-}
-
 #[tauri::command]
 pub fn deck_play(
     state: tauri::State<'_, Sidecars>,
@@ -1235,24 +1224,6 @@ pub fn deck_embed_sample(
         state.embed(deck, id, &payload[id_end..]);
     }
     Ok(())
-}
-
-#[tauri::command]
-pub fn deck_set_style(state: tauri::State<'_, Sidecars>, deck: usize, prompts: Vec<PromptEntryArg>) {
-    if !valid_deck(deck) {
-        return;
-    }
-    let entries: Vec<_> = prompts
-        .into_iter()
-        .map(|p| {
-            let mut entry = json!({ "text": p.text, "weight": p.weight });
-            if let Some(sample) = p.sample {
-                entry["sample"] = json!(sample);
-            }
-            entry
-        })
-        .collect();
-    state.send(deck, &json!({ "type": "set_style", "prompts": entries }).to_string());
 }
 
 /// Set a deck's performance-surface config (issue #48): arm/disarm, key,
@@ -1417,25 +1388,100 @@ pub fn set_deck_loop_labels(
     }
 }
 
-/// Mirror a realtime deck's 2D style-pad state into the store: targets, cursor,
-/// AND the net selection mask (the LED painter's bright/dim input) in ONE store
-/// mutation — a split write would emit a snapshot pairing stale targets with a
-/// fresh mask, and the webview's adoption gate would read that as an external
-/// change and clobber a just-added prompt (found on the device: adding a prompt
-/// to a playing deck reverted). A read-back the webview writes up on change; no
-/// engine effect (the blended prompt still goes via deck_set_style).
+// --- Style-pad intents (ADR-0020 phase B: the store owns the arrangement;
+// the webview projects and emits these; the shell style sender drives the
+// worker). Validation lives in the store mutations — one copy of the rules
+// for UI, hardware, and MCP; a rejected intent is a silent no-op here (the
+// UI disables invalid gestures; MCP tools report through their own path).
+
 #[tauri::command]
-pub fn set_deck_style(
+pub fn style_add_target(store: tauri::State<'_, InterfaceStore>, deck: usize, text: String) {
+    if valid_deck(deck) {
+        store.style_add_target(deck, &text);
+    }
+}
+
+#[tauri::command]
+pub fn style_add_sample_target(
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    label: String,
+    sample: String,
+) {
+    if valid_deck(deck) {
+        store.style_add_sample_target(deck, &label, &sample);
+    }
+}
+
+#[tauri::command]
+pub fn style_move_target(
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    text: String,
+    x: f32,
+    y: f32,
+) {
+    if valid_deck(deck) && x.is_finite() && y.is_finite() {
+        store.style_move_target(deck, &text, x, y);
+    }
+}
+
+#[tauri::command]
+pub fn style_remove_target(store: tauri::State<'_, InterfaceStore>, deck: usize, text: String) {
+    if valid_deck(deck) {
+        store.style_remove_target(deck, &text);
+    }
+}
+
+#[tauri::command]
+pub fn style_rename_target(
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    from: String,
+    to: String,
+) {
+    if valid_deck(deck) {
+        store.style_rename_target(deck, &from, &to);
+    }
+}
+
+#[tauri::command]
+pub fn style_toggle_selection(
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    text: String,
+) {
+    if valid_deck(deck) {
+        store.style_toggle_selection(deck, &text);
+    }
+}
+
+#[tauri::command]
+pub fn style_fan_out(store: tauri::State<'_, InterfaceStore>, deck: usize) {
+    if valid_deck(deck) {
+        store.style_fan_out(deck);
+    }
+}
+
+#[tauri::command]
+pub fn style_set_cursor(store: tauri::State<'_, InterfaceStore>, deck: usize, x: f32, y: f32) {
+    if valid_deck(deck) && x.is_finite() && y.is_finite() {
+        store.set_deck_cursor(deck, crate::store::PadPointSnap { x, y });
+    }
+}
+
+/// Load a preset's arrangement (text targets + cursor) wholesale — the crate
+/// browser's and hardware's load path; entries were validated when the
+/// preset was parsed, and sampled chips never enter a preset.
+#[tauri::command]
+pub fn style_apply_preset(
     store: tauri::State<'_, InterfaceStore>,
     deck: usize,
     targets: Vec<crate::store::StyleTargetSnap>,
     cursor: crate::store::PadPointSnap,
-    selected: Vec<bool>,
 ) {
     if valid_deck(deck) {
-        // The webview's own mirror: NOT an external write — the projection
-        // must never adopt its own (possibly in-flight-stale) style state.
-        store.set_deck_style(deck, targets, cursor, selected, false);
+        store.style_apply_preset(deck, crate::style::sanitize_preset_targets(targets), cursor);
     }
 }
 

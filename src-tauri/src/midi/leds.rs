@@ -249,8 +249,8 @@ mod tests {
         // Realtime deck (no track): style targets paint the bank.
         let mut snap = deck_snap();
         snap.style_targets = vec![
-            crate::store::StyleTargetSnap { x: 0.0, y: 0.0, text: "a".into() },
-            crate::store::StyleTargetSnap { x: 1.0, y: 1.0, text: "b".into() },
+            crate::store::StyleTargetSnap { x: 0.0, y: 0.0, text: "a".into(), sample: None },
+            crate::store::StyleTargetSnap { x: 1.0, y: 1.0, text: "b".into(), sample: None },
         ];
         let frame = deck_frame(0, &snap, &[]);
         assert_eq!(frame[0][0], [0x97, 0x00, 0x7f]);

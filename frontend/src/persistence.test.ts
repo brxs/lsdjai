@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   loadAppSettings,
   loadDeckSettings,
+  takeLegacyDeckStyles,
   takeLegacyShellSettings,
   updateAppSettings,
   updateDeckSettings,
@@ -12,14 +13,10 @@ beforeEach(() => localStorage.clear())
 
 describe('persistence', () => {
   it('round-trips deck settings and merges partial updates', () => {
-    updateDeckSettings('a', {
-      targets: [{ text: 'funk', x: 0.5, y: 0.12 }],
-      cursor: { x: 0.4, y: 0.6 },
-    })
+    updateDeckSettings('a', { loopSeconds: 8 })
     updateDeckSettings('a', { volume: 0.6 })
     expect(loadDeckSettings('a')).toEqual({
-      targets: [{ text: 'funk', x: 0.5, y: 0.12 }],
-      cursor: { x: 0.4, y: 0.6 },
+      loopSeconds: 8,
       volume: 0.6,
     })
   })
@@ -178,15 +175,56 @@ describe('persistence', () => {
       JSON.stringify({
         decks: {
           a: {
-            targets: [{ text: 42, x: 'left', y: 0 }],
-            cursor: { x: 0.5, y: 0.5 },
             volume: 'loud',
+            loopSeconds: 8,
           },
         },
         app: { crossfade: 'middle' },
       }),
     )
-    expect(loadDeckSettings('a')).toEqual({ cursor: { x: 0.5, y: 0.5 } })
+    expect(loadDeckSettings('a')).toEqual({ loopSeconds: 8 })
     expect(loadAppSettings()).toEqual({})
+  })
+
+  it('migrates legacy deck-style layouts ONCE, stripping the keys (ADR-0020 phase B)', () => {
+    // A blob saved by a pre-inversion build: the pad arrangement still in
+    // localStorage beside the surviving webview deck settings.
+    localStorage.setItem(
+      'lsdj:v1',
+      JSON.stringify({
+        decks: {
+          a: {
+            targets: [{ text: 'funk', x: 0.5, y: 1.7 }],
+            cursor: { x: 0.4, y: 0.6 },
+            volume: 0.6,
+          },
+          b: { cursor: { x: 0.1, y: 0.1 } },
+        },
+      }),
+    )
+    // Deck A migrates (coordinates clamped); deck B has no targets, so its
+    // orphan cursor is stripped without producing a migration entry.
+    expect(takeLegacyDeckStyles()).toEqual({
+      a: {
+        targets: [{ text: 'funk', x: 0.5, y: 1 }],
+        cursor: { x: 0.4, y: 0.6 },
+      },
+    })
+    // The keys are gone; the surviving settings are untouched; a second take
+    // finds nothing (the shell settings file owns the layout now).
+    expect(loadDeckSettings('a')).toEqual({ volume: 0.6 })
+    expect(takeLegacyDeckStyles()).toBeNull()
+  })
+
+  it('ignores malformed legacy style targets during migration', () => {
+    localStorage.setItem(
+      'lsdj:v1',
+      JSON.stringify({
+        decks: { a: { targets: [{ text: 42, x: 'left', y: 0 }] } },
+      }),
+    )
+    // Nothing valid to migrate — and the garbage keys are still stripped.
+    expect(takeLegacyDeckStyles()).toBeNull()
+    expect(localStorage.getItem('lsdj:v1')).not.toContain('targets')
   })
 })

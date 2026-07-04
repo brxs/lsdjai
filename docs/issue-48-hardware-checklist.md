@@ -105,6 +105,23 @@ before the port (and the monitor shows the documented bytes).
 - [ ] MCP `set_notes` still steers by ear (rerun the issue-46 checklist's
       C-major item) — now through the shell service, no webview relay.
 
+## The store-owned style pad (ADR-0020 phase B — the pad is a projection now)
+
+- [ ] Add a prompt while the deck is PLAYING — it stays (the historical
+      revert bug class; the store is the only writer now, so there is no
+      mirror to race).
+- [ ] Drag a dot and the cursor with the mouse — both track smoothly (each
+      gesture round-trips through the shell store; no visible lag/jitter).
+- [ ] Relaunch the app — the pad layout (prompts + cursor) comes back from
+      the shell settings file, and the deck resumes that blend on play
+      (the shell sender re-sends on worker ready).
+- [ ] Sample the other deck, then switch the model — the chip disappears
+      (shell-side strip), the text prompts survive, and after the reload
+      the blend is re-sent without the dead chip.
+- [ ] MCP `set_style`/`set_prompt` on a playing deck — the pad updates
+      immediately; a local edit right after is kept (last writer wins, no
+      revert).
+
 ## Regression sweeps
 
 - [ ] `just check` green; the app boots with sidecars and no MIDI-related

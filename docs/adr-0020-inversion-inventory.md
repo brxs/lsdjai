@@ -84,16 +84,21 @@ picker enumerations, `previewingId` row mapping, throttle/coalescer instances.
 
 ## Phasing (proposed)
 
-- **Phase A — shell-truth quick wins (no webview semantics move):**
+- **Phase A — shell-truth quick wins (no webview semantics move):** DONE.
   operability → store (relay-fed), recording → store (recorder-fed),
-  shiftHeld → store (translator-fed), devices/accent/recordingsFolder →
-  shell-persisted settings in the store. Each deletes a blind spot; none
-  needs an echo gate afterwards.
-- **Phase B — the style pad:** full inversion of targets/cursor/selection
-  with store intents (`add/move/remove/rename_style_target`, `set_cursor`,
-  `toggle_selection`, `apply_preset`); geometry/caps/dedup to Rust;
-  persistence shell-side; delete the `styleExternal` gate and the mirror.
-  The proven bleeder; biggest single payoff.
+  shiftHeld → store (translator-fed), devices/recordingsFolder →
+  shell-persisted settings in the store (accent/beatView stayed webview-side:
+  presentation-only, the shell never consumes them). Each deletes a blind
+  spot; none needs an echo gate afterwards.
+- **Phase B — the style pad:** DONE. Full inversion of
+  targets/cursor/selection with store intents (`style_add_target`,
+  `style_add_sample_target`, `style_move_target`, `style_remove_target`,
+  `style_rename_target`, `style_toggle_selection`, `style_fan_out`,
+  `style_set_cursor`, `style_apply_preset`); geometry/caps/dedup in
+  `style.rs`; the worker blend send + restart re-send in `style_send.rs`
+  (the shell sender); persistence + boot hydration in the shell settings;
+  the `styleExternal` gate, the atomic mirror, and the webview
+  `deck_set_style` path deleted. The proven bleeder; biggest single payoff.
 - **Phase C — mixer fields + boot hydration:** volume/eq/cue/fx/trim render
   from the store; persistence + hydration shell-side; delete
   `mixerSyncedRef` and the boot replay. Trim needs the auto-gain decision

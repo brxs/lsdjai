@@ -289,15 +289,11 @@ export type DeckSnap = {
   /** Freeze/sample loop-slot labels, one per pad (null for an empty/unlabelled
    * slot) — a read-back the store mirrors. */
   loopLabels: (string | null)[]
-  /** The realtime deck's 2D style-pad targets (prompt + position), mirrored from
-   * DeckColumn (sampled-target embedding ids stay out). */
-  styleTargets: { x: number; y: number; text: string }[]
-  /** Whether the LAST style write came from an external controller (MCP)
-   * rather than this webview's mirror. The adoption gate keys on it: only
-   * external writes are adopted, so a snapshot emitted by another store
-   * writer while our own mirror is in flight (still carrying pre-edit
-   * style) can never revert a local edit. */
-  styleExternal: boolean
+  /** The realtime deck's 2D style-pad targets (prompt + position). The store
+   * OWNS the arrangement (ADR-0020 phase B) — the webview projects it and
+   * mutates through the style_* intents. A sampled chip (M15) carries its
+   * session embedding key. */
+  styleTargets: { x: number; y: number; text: string; sample?: string }[]
   /** Which style targets are in the active blend (the net mask, one bool per
    * target; empty = no mask) — mirrored up for the native pad LEDs (ADR-0031). */
   styleSelected: boolean[]
@@ -472,41 +468,85 @@ export function setDeckPerformance(
   void invoke('set_deck_performance', { deck, perf }).catch(() => {})
 }
 
-// Coalesce high-rate mirror writes to ~one invoke per animation frame, like the
-// engine's control coalescer. The style-pad mirror fires per pointermove (and the
-// 14-bit jog can drive cursor changes at 200-600/s); the write-only mirror must not
-// flood the store with full-state broadcasts (each re-renders every projection
-// consumer). Only the latest value per key in a frame is shipped.
-const mirrorPending = new Map<string, () => void>()
-let mirrorFlushScheduled = false
-function coalesceMirror(key: string, run: () => void): void {
-  mirrorPending.set(key, run)
-  if (mirrorFlushScheduled) return
-  mirrorFlushScheduled = true
+// Coalesce high-rate style intents to ~one invoke per animation frame, like the
+// engine's control coalescer. A pad drag fires per pointermove (and the 14-bit
+// jog can drive cursor changes at 200-600/s); each store mutation broadcasts a
+// full snapshot, so the continuous intents must not flood it. Only the latest
+// value per key in a frame is shipped; discrete intents flush the pending map
+// first so a queued stale move can never land after (and undo) them.
+const intentPending = new Map<string, () => void>()
+let intentFlushScheduled = false
+function flushStyleIntents(): void {
+  const due = [...intentPending.values()]
+  intentPending.clear()
+  for (const run of due) run()
+}
+function coalesceStyleIntent(key: string, run: () => void): void {
+  intentPending.set(key, run)
+  if (intentFlushScheduled) return
+  intentFlushScheduled = true
   requestAnimationFrame(() => {
-    mirrorFlushScheduled = false
-    const due = [...mirrorPending.values()]
-    mirrorPending.clear()
-    for (const r of due) r()
+    intentFlushScheduled = false
+    flushStyleIntents()
   })
 }
 
-/** Mirror a realtime deck's 2D style-pad state into the store: targets, cursor,
- * AND the net selection mask in ONE command (a split write would emit a snapshot
- * pairing stale targets with a fresh mask, which the adoption gate reads as an
- * external change — the playing-deck prompt-revert bug). The blended prompt
- * still goes to the worker via deck_set_style; this records the UI source.
- * Coalesced to ~one invoke per frame (a style-pad drag fires per pointermove).
- * Fire-and-forget. */
-export function setDeckStyle(
+// --- Style-pad intents (ADR-0020 phase B): the store owns the arrangement; the
+// --- webview emits gestures and projects the result. All fire-and-forget — the
+// --- projection reflects whatever the store accepted (a dup add, an over-cap
+// --- add, or a colliding rename is a quiet Rust-side no-op).
+
+export function styleAddTarget(deck: number, text: string): void {
+  flushStyleIntents()
+  void invoke('style_add_target', { deck, text }).catch(() => {})
+}
+
+export function styleAddSampleTarget(deck: number, label: string, sample: string): void {
+  flushStyleIntents()
+  void invoke('style_add_sample_target', { deck, label, sample }).catch(() => {})
+}
+
+/** Continuous (drag) — coalesced per target. */
+export function styleMoveTarget(deck: number, text: string, x: number, y: number): void {
+  coalesceStyleIntent(`style_move_target:${deck}:${text}`, () => {
+    void invoke('style_move_target', { deck, text, x, y }).catch(() => {})
+  })
+}
+
+export function styleRemoveTarget(deck: number, text: string): void {
+  flushStyleIntents()
+  void invoke('style_remove_target', { deck, text }).catch(() => {})
+}
+
+export function styleRenameTarget(deck: number, from: string, to: string): void {
+  flushStyleIntents()
+  void invoke('style_rename_target', { deck, from, to }).catch(() => {})
+}
+
+export function styleToggleSelection(deck: number, text: string): void {
+  flushStyleIntents()
+  void invoke('style_toggle_selection', { deck, text }).catch(() => {})
+}
+
+export function styleFanOut(deck: number): void {
+  flushStyleIntents()
+  void invoke('style_fan_out', { deck }).catch(() => {})
+}
+
+/** Continuous (drag / sweep / jog steer) — coalesced per deck. */
+export function styleSetCursor(deck: number, x: number, y: number): void {
+  coalesceStyleIntent(`style_set_cursor:${deck}`, () => {
+    void invoke('style_set_cursor', { deck, x, y }).catch(() => {})
+  })
+}
+
+export function styleApplyPreset(
   deck: number,
   targets: { x: number; y: number; text: string }[],
   cursor: { x: number; y: number },
-  selected: boolean[],
 ): void {
-  coalesceMirror(`set_deck_style:${deck}`, () => {
-    void invoke('set_deck_style', { deck, targets, cursor, selected }).catch(() => {})
-  })
+  flushStyleIntents()
+  void invoke('style_apply_preset', { deck, targets, cursor }).catch(() => {})
 }
 
 const DECK_INDEX: Record<DeckId, number> = { a: 0, b: 1 }

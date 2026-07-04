@@ -55,7 +55,6 @@ import { TRACK_OVERVIEW_BUCKETS } from '../ui/TrackOverview'
 import {
   deckReducer,
   initialDeckState,
-  type ActiveStyle,
   type DeckState,
   type ServerEvent,
 } from './deckState'
@@ -283,7 +282,6 @@ export type DeckControls = {
   prime: () => Promise<void>
   play: () => Promise<void>
   stop: () => void
-  setStyle: (style: ActiveStyle) => void
   setModel: (model: string) => void
   restartWorker: () => void
   setVolume: (volume: number) => void
@@ -919,13 +917,6 @@ export function useDeck(deckId: DeckId): DeckControls {
     // pending guard must not wedge the transport — STOP always re-arms it.
     playPendingRef.current = false
   }, [send, setPrimed, setLoop, resetStreamMeasurements, silenceLayers])
-
-  const setStyle = useCallback(
-    (style: ActiveStyle) => {
-      send({ type: 'set_style', prompts: style.prompts })
-    },
-    [send],
-  )
 
   const loadTrack = useCallback(
     async (source: TrackSource, title: string) => {
@@ -1692,7 +1683,6 @@ export function useDeck(deckId: DeckId): DeckControls {
     prime,
     play,
     stop,
-    setStyle,
     setModel,
     restartWorker,
     setVolume,
