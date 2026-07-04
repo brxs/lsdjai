@@ -323,7 +323,13 @@
   display: flex;
   gap: var(--space-2);
   align-items: flex-end;
-  flex-wrap: wrap;
+}
+
+/* Key + Scale share a line (the compact config): the fields split the row
+   instead of wrapping, and the native select may shrink below its
+   intrinsic width. */
+.deck__perform-row .ui-field {
+  min-width: 0;
 }
 
 /* The dark field modules read as stickers on the accent slab; their

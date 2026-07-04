@@ -64,20 +64,20 @@ beforeEach(() => {
 })
 
 describe('PerformanceDrawer', () => {
-  it('starts parked: rail as the Steer tab, content untabbable, LED off', () => {
+  it('starts parked: rail as the Config tab, content untabbable, LED off', () => {
     const { container } = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
     const door = screen.getByRole('group', { name: 'Play the deck' })
     expect(door.className).not.toContain('deck__perform-door--open')
-    const rail = screen.getByRole('button', { name: 'Steer' })
+    const rail = screen.getByRole('button', { name: 'Config' })
     expect(rail).toHaveAttribute('aria-expanded', 'false')
     // The parked door body is hidden from the tree — only the rail remains.
-    expect(screen.queryByRole('button', { name: 'MIDI steering' })).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'MIDI steering' })).toBeNull()
     expect(container.querySelector('.deck__perform-rail-led--on')).toBeNull()
   })
 
   it('the rail slides the door open and becomes the close chevron — no arm write', () => {
     render(<PerformanceDrawer deckId="a" deckIndex={0} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Steer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
     const door = screen.getByRole('group', { name: 'Play the deck' })
     expect(door.className).toContain('deck__perform-door--open')
     // The same button now reads as the close control (the rail travelled).
@@ -88,8 +88,8 @@ describe('PerformanceDrawer', () => {
 
   it('the MIDI steer toggle arms and disarms through the shell service', () => {
     const first = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Steer' }))
-    fireEvent.click(screen.getByRole('button', { name: 'MIDI steering' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'MIDI steering' }))
     expect(setDeckPerformance).toHaveBeenCalledWith(1, {
       armed: true,
       key: 0,
@@ -104,8 +104,8 @@ describe('PerformanceDrawer', () => {
       }),
     )
     render(<PerformanceDrawer deckId="b" deckIndex={1} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Steer' }))
-    fireEvent.click(screen.getByRole('button', { name: 'MIDI steering' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'MIDI steering' }))
     expect(setDeckPerformance).toHaveBeenLastCalledWith(
       1,
       expect.objectContaining({ armed: false }),
@@ -161,7 +161,7 @@ describe('PerformanceDrawer', () => {
       }),
     )
     render(<PerformanceDrawer deckId="b" deckIndex={1} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Steer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
     fireEvent.change(screen.getByLabelText('Key'), { target: { value: 'D' } })
     expect(setDeckPerformance).toHaveBeenLastCalledWith(
       1,
@@ -178,7 +178,7 @@ describe('PerformanceDrawer', () => {
 
   it('the HUD strip reads off / live / holding', () => {
     const first = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Steer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
     expect(screen.getByRole('status')).toHaveTextContent(
       'Steering off — flip MIDI steering to play',
     )
@@ -190,7 +190,7 @@ describe('PerformanceDrawer', () => {
       }),
     )
     const second = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Steer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
     expect(screen.getByRole('status')).toHaveTextContent('Live — waiting for notes')
     second.unmount()
 
@@ -201,7 +201,7 @@ describe('PerformanceDrawer', () => {
       }),
     )
     render(<PerformanceDrawer deckId="b" deckIndex={1} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Steer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
     expect(screen.getByRole('status')).toHaveTextContent('Holding C4 E4 G4')
   })
 })

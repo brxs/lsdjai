@@ -4,8 +4,8 @@ import { useTranslation } from 'react-i18next'
 import { useInterfaceStore } from '../audio/interfaceStore'
 import { setDeckPerformance, type DeckSnap } from '../audio/nativeEngine'
 import type { DeckId } from '../audio/types'
-import { Button } from '../ui/Button'
 import { Select } from '../ui/Select'
+import { Switch } from '../ui/Switch'
 
 /** Pitch-class names for the key picker and the held-note readout. */
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
@@ -100,13 +100,12 @@ export function PerformanceDrawer({
       <div className="deck__perform-content" aria-hidden={!open}>
         <header className="deck__perform-head">
           <h3 className="deck__perform-title">{t('deck.perform.title')}</h3>
-          <Button
+          <Switch
+            label={t('deck.perform.steer')}
+            on={perf.armed}
+            accent={deckId}
             onClick={toggleSteer}
-            aria-pressed={perf.armed}
-            lit={perf.armed}
-          >
-            {t('deck.perform.steer')}
-          </Button>
+          />
         </header>
         <p className="deck__perform-hint">{t('deck.perform.hint')}</p>
         <div className="deck__perform-row">
@@ -122,6 +121,8 @@ export function PerformanceDrawer({
             options={scaleOptions}
             onChange={onScale}
           />
+        </div>
+        <div className="deck__perform-row">
           <Select
             label={t('deck.perform.mode')}
             value={perf.mode}
