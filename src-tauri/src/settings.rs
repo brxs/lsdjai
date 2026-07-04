@@ -110,18 +110,28 @@ pub fn load_from(path: &Path) -> ShellSettings {
 
 /// Save to a concrete path, creating the parent dir; best-effort by design
 /// (a read-only disk must not break a device switch). Written to a sibling
-/// temp file and renamed into place, so a crash mid-write can never leave a
-/// truncated settings.json (which `load_from` would silently read as "reset
-/// everything to defaults").
+/// temp file, fsynced, and renamed into place: a process crash OR a power
+/// cut mid-write leaves the old settings.json intact instead of a truncated
+/// one (which `load_from` would silently read as "reset everything to
+/// defaults"). A failed attempt removes its temp file rather than stranding
+/// it.
 pub fn save_to(path: &Path, settings: &ShellSettings) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(json) = serde_json::to_string_pretty(settings) {
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(&tmp, path);
-        }
+    let Ok(json) = serde_json::to_string_pretty(settings) else {
+        return;
+    };
+    let tmp = path.with_extension("json.tmp");
+    let written = std::fs::File::create(&tmp)
+        .and_then(|mut file| {
+            use std::io::Write;
+            file.write_all(json.as_bytes())?;
+            file.sync_all()
+        })
+        .is_ok();
+    if !written || std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 

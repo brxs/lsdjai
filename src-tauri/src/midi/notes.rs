@@ -5,11 +5,11 @@
 //! tools, and any UI surface all land here. The service owns the held-note
 //! set, the key/scale snap, the pitches→multihot mapping (ported from the
 //! retired `frontend/src/audio/notes.ts`), and the on-grid onset timing; it
-//! queues `set_notes` onto its own send lane (one thread draining to
-//! [`Sidecars::send`] in FIFO order — a wedged control socket must never
-//! stall the CoreMIDI callback that enqueued, the same discipline as the
-//! style sender) and mirrors the authored state into the store — the
-//! webview only displays. The old path (MCP writes the store, the webview
+//! queues `set_notes` onto per-deck send lanes (a thread per deck draining
+//! to [`Sidecars::send`] in FIFO order — a wedged control socket must never
+//! stall the CoreMIDI callback that enqueued, nor the other deck's sends;
+//! the style sender's discipline) and mirrors the authored state into the
+//! store — the webview only displays. The old path (MCP writes the store, the webview
 //! adopts and relays to the worker) retired with this module: the sender now
 //! sits beside the beat clock (ADR-0025), which is what lets onset mode
 //! quantise without crossing a process boundary.
@@ -21,7 +21,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use tauri::{AppHandle, Manager};
@@ -276,34 +276,53 @@ pub struct NoteSteering {
     /// Global schedule stamp — pairs with each deck's `generation` so a
     /// sleeping onset thread can tell its send is stale.
     stamp: AtomicU64,
-    /// The send lane: every control-socket write is enqueued here and
-    /// drained by one thread, so callers — the CoreMIDI input callback
-    /// above all — never block on a wedged sidecar socket, and sends stay
-    /// FIFO across every entry point.
-    sends: mpsc::Sender<(usize, String)>,
+    /// The send lanes, one per deck: every control-socket write is enqueued
+    /// and drained by that deck's thread, so callers — the CoreMIDI input
+    /// callback above all — never block on a wedged sidecar socket, sends
+    /// stay FIFO per deck across every entry point, and one deck's dead
+    /// socket cannot head-of-line block the other's.
+    sends: Vec<mpsc::Sender<String>>,
+    /// The onset scheduler lane: `(deck, stamp, due)` — one thread sleeps
+    /// until the earliest deadline and fires the send, replacing a spawned
+    /// thread per press. A newer schedule for a deck supersedes the queued
+    /// one; the generation stamp still guards the fire, exactly as the
+    /// per-press sleepers checked.
+    schedules: mpsc::Sender<(usize, u64, Instant)>,
 }
 
 impl NoteSteering {
     pub fn new(app: AppHandle) -> Self {
-        let (sends, inbox) = mpsc::channel::<(usize, String)>();
+        let sends = (0..DECK_COUNT)
+            .map(|deck| {
+                let (lane, inbox) = mpsc::channel::<String>();
+                let app = app.clone();
+                std::thread::Builder::new()
+                    .name(format!("lsdj-note-send-{deck}"))
+                    .spawn(move || {
+                        while let Ok(json) = inbox.recv() {
+                            if let Some(sidecars) = app.try_state::<Sidecars>() {
+                                sidecars.send(deck, &json);
+                            }
+                        }
+                    })
+                    .expect("failed to spawn lsdj note-send thread");
+                lane
+            })
+            .collect();
+        let (schedules, inbox) = mpsc::channel::<(usize, u64, Instant)>();
         {
             let app = app.clone();
             std::thread::Builder::new()
-                .name("lsdj-note-send".into())
-                .spawn(move || {
-                    while let Ok((deck, json)) = inbox.recv() {
-                        if let Some(sidecars) = app.try_state::<Sidecars>() {
-                            sidecars.send(deck, &json);
-                        }
-                    }
-                })
-                .expect("failed to spawn lsdj note-send thread");
+                .name("lsdj-note-onset".into())
+                .spawn(move || run_onset_scheduler(app, inbox))
+                .expect("failed to spawn lsdj onset-scheduler thread");
         }
         NoteSteering {
             app,
             decks: Mutex::new((0..DECK_COUNT).map(|_| DeckState::default()).collect()),
             stamp: AtomicU64::new(0),
             sends,
+            schedules,
         }
     }
 
@@ -491,9 +510,9 @@ impl NoteSteering {
         )
     }
 
-    /// Schedule (or reschedule) the deck's send onto the next beat. The
-    /// stamped generation cancels the sleeper if a reset lands first; a
-    /// newer press simply reschedules and the older sleeper no-ops.
+    /// Schedule (or reschedule) the deck's send onto the next beat via the
+    /// scheduler lane. The stamped generation cancels the fire if a reset
+    /// lands first; a newer press supersedes the queued deadline.
     fn schedule(&self, deck: usize, delay: Duration) {
         let stamp = self.stamp.fetch_add(1, Ordering::SeqCst) + 1;
         {
@@ -501,25 +520,25 @@ impl NoteSteering {
             decks[deck].pending = true;
             decks[deck].generation = stamp;
         }
-        let app = self.app.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(delay);
-            if let Some(service) = app.try_state::<NoteSteering>() {
-                let due = {
-                    let mut decks = service.lock();
-                    let state = &mut decks[deck];
-                    if state.generation == stamp && state.pending {
-                        state.pending = false;
-                        true
-                    } else {
-                        false
-                    }
-                };
-                if due {
-                    service.send_now(deck);
-                }
+        let _ = self.schedules.send((deck, stamp, Instant::now() + delay));
+    }
+
+    /// A due deadline from the scheduler lane: send only if the stamp still
+    /// owns the deck (a reset or a newer press invalidated it otherwise).
+    fn fire_scheduled(&self, deck: usize, stamp: u64) {
+        let due = {
+            let mut decks = self.lock();
+            let state = &mut decks[deck];
+            if state.generation == stamp && state.pending {
+                state.pending = false;
+                true
+            } else {
+                false
             }
-        });
+        };
+        if due {
+            self.send_now(deck);
+        }
     }
 
     /// Build and send the deck's current full state, mirror the store, and
@@ -558,11 +577,52 @@ impl NoteSteering {
         }
     }
 
-    /// Enqueue a control-socket write onto the send lane. Never blocks —
-    /// callers include the CoreMIDI input callback, whose contract is
-    /// translate-route-return (midi/mod.rs).
+    /// Enqueue a control-socket write onto the deck's send lane. Never
+    /// blocks — callers include the CoreMIDI input callback, whose contract
+    /// is translate-route-return (midi/mod.rs).
     fn send_control(&self, deck: usize, jsons: &str) {
-        let _ = self.sends.send((deck, jsons.to_owned()));
+        if let Some(lane) = self.sends.get(deck) {
+            let _ = lane.send(jsons.to_owned());
+        }
+    }
+}
+
+/// The onset scheduler loop: hold at most one pending deadline per deck
+/// (a newer schedule supersedes — the stamp check at fire time makes the
+/// superseded entry harmless anyway, dropping it just keeps the queue at
+/// deck-count size), sleep until the earliest, then fire through the
+/// service. Exits when the channel closes with its `NoteSteering`.
+fn run_onset_scheduler(app: AppHandle, inbox: mpsc::Receiver<(usize, u64, Instant)>) {
+    let mut pending: Vec<(Instant, usize, u64)> = Vec::new();
+    loop {
+        let now = Instant::now();
+        pending.sort_by_key(|&(due, ..)| due);
+        while let Some(&(due, deck, stamp)) = pending.first() {
+            if due > now {
+                break;
+            }
+            pending.remove(0);
+            if let Some(service) = app.try_state::<NoteSteering>() {
+                service.fire_scheduled(deck, stamp);
+            }
+        }
+        let message = match pending.first() {
+            Some(&(due, ..)) => {
+                match inbox.recv_timeout(due.saturating_duration_since(Instant::now())) {
+                    Ok(message) => Some(message),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+            None => match inbox.recv() {
+                Ok(message) => Some(message),
+                Err(_) => return,
+            },
+        };
+        if let Some((deck, stamp, due)) = message {
+            pending.retain(|&(_, entry_deck, _)| entry_deck != deck);
+            pending.push((due, deck, stamp));
+        }
     }
 }
 
