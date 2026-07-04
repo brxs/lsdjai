@@ -109,13 +109,19 @@ pub fn load_from(path: &Path) -> ShellSettings {
 }
 
 /// Save to a concrete path, creating the parent dir; best-effort by design
-/// (a read-only disk must not break a device switch).
+/// (a read-only disk must not break a device switch). Written to a sibling
+/// temp file and renamed into place, so a crash mid-write can never leave a
+/// truncated settings.json (which `load_from` would silently read as "reset
+/// everything to defaults").
 pub fn save_to(path: &Path, settings: &ShellSettings) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(json) = serde_json::to_string_pretty(settings) {
-        let _ = std::fs::write(path, json);
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, json).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
     }
 }
 
@@ -123,18 +129,35 @@ pub fn load(app: &AppHandle) -> ShellSettings {
     settings_file(app).map(|p| load_from(&p)).unwrap_or_default()
 }
 
-pub fn save(app: &AppHandle, settings: &ShellSettings) {
-    if let Some(path) = settings_file(app) {
-        save_to(&path, settings);
-    }
+/// One writer at a time: `update` runs from the main thread (the device /
+/// folder commands) AND the persistence debounce thread, and an unguarded
+/// load→mutate→save pair interleaved across threads saves its own stale
+/// read — a device pick landing under a mixer flush would vanish from the
+/// file until the next pick. The lock covers the whole read-modify-write.
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Read-modify-write at a concrete path (the testable core), serialised
+/// through [`WRITE_LOCK`].
+pub fn update_at(path: &Path, mutate: impl FnOnce(&mut ShellSettings)) -> ShellSettings {
+    let _guard = WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut settings = load_from(path);
+    mutate(&mut settings);
+    save_to(path, &settings);
+    settings
 }
 
 /// Read-modify-write one field; the single mutation path the commands use.
 pub fn update(app: &AppHandle, mutate: impl FnOnce(&mut ShellSettings)) -> ShellSettings {
-    let mut settings = load(app);
-    mutate(&mut settings);
-    save(app, &settings);
-    settings
+    match settings_file(app) {
+        Some(path) => update_at(&path, mutate),
+        // No data dir (boot-path edge): mutate the defaults so the caller
+        // still gets the value it wrote, exactly as before — just unsaved.
+        None => {
+            let mut settings = ShellSettings::default();
+            mutate(&mut settings);
+            settings
+        }
+    }
 }
 
 /// The settings-write debounce: a fader ride or a pad drag settles before it
@@ -278,6 +301,37 @@ mod tests {
         // Corrupt file → defaults, not a crash.
         std::fs::write(&path, "not json").unwrap();
         assert_eq!(load_from(&path), ShellSettings::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two writers hammering different fields through `update_at` must both
+    /// land: the WRITE_LOCK serialises the read-modify-write, so a device
+    /// pick can no longer vanish under a persistence flush. (Without the
+    /// lock this interleaves and flakes — the regression it pins.)
+    #[test]
+    fn concurrent_updates_lose_neither_writers_field() {
+        let dir = std::env::temp_dir().join(format!("lsdj-settings-race-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        const ROUNDS: usize = 50;
+        std::thread::scope(|s| {
+            let device = &path;
+            let folder = &path;
+            s.spawn(move || {
+                for i in 0..ROUNDS {
+                    update_at(device, |settings| settings.main_device = format!("device-{i}"));
+                }
+            });
+            s.spawn(move || {
+                for i in 0..ROUNDS {
+                    update_at(folder, |settings| {
+                        settings.recordings_folder = format!("folder-{i}")
+                    });
+                }
+            });
+        });
+        let settled = load_from(&path);
+        assert_eq!(settled.main_device, format!("device-{}", ROUNDS - 1));
+        assert_eq!(settled.recordings_folder, format!("folder-{}", ROUNDS - 1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

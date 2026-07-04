@@ -6,6 +6,11 @@ import type { EqBand } from '../audio/eq'
 import type { DeckId } from '../audio/types'
 import type { StylePreset } from '../presets'
 
+/* A cross-language contract: the Rust translator's `Intent`
+ * (src-tauri/src/midi/translate.rs) serialises to exactly these shapes and
+ * feeds `bus.publish` over `midi://intent`. Its
+ * `intents_serialise_to_the_webview_controlintent_shape` test pins that
+ * side; MidiControls.test.tsx pins this one. Change them in lock-step. */
 export type ControlIntent =
   | { kind: 'play_toggle'; deck: DeckId }
   | { kind: 'volume'; deck: DeckId; value: number }

@@ -91,8 +91,10 @@ pub struct MonitorEntryDto {
 enum Paint {
     /// The store changed — recompute from this snapshot.
     Snapshot(Box<InterfaceState>),
-    /// Force a full repaint (a fresh bind cleared the diff baseline).
-    Repaint,
+    /// A fresh bind: clear the diff baseline AND forget the tracked pad
+    /// banks — the device (re)powered on in HOT CUE, whatever was active
+    /// before the unplug.
+    Rebind,
     /// A pad-mode switch: adopt the deck's active selector note (the mode
     /// LEDs paint from it), then repaint — the device cleared its pad LEDs
     /// on the switch.
@@ -386,8 +388,15 @@ fn scan_once(
                     *shared.translator.lock().unwrap_or_else(|p| p.into_inner()) =
                         Flx4Translator::default();
                     bind_output(shared, driver, name);
-                    // A freshly bound device powered up dark / stale.
-                    let _ = shared.paint_tx.send(Paint::Repaint);
+                    // A freshly bound device powered up dark / stale — and in
+                    // HOT CUE, so a pre-unplug KEYBOARD arm (200 ms chunks,
+                    // held steering) must not survive the replug.
+                    if let Some(notes) = shared.app.try_state::<NoteSteering>() {
+                        for deck in 0..DECK_COUNT {
+                            notes.pad_mode_selected(deck, false);
+                        }
+                    }
+                    let _ = shared.paint_tx.send(Paint::Rebind);
                 }
                 Err(e) => eprintln!("lsdj-app: midi connect '{name}' failed: {e}"),
             }
@@ -496,12 +505,14 @@ fn run_painter(shared: Arc<Shared>, paint_rx: Receiver<Paint>) {
     while let Ok(paint) = paint_rx.recv() {
         match paint {
             Paint::Snapshot(state) => snapshot = Some(*state),
-            Paint::Repaint => {
+            Paint::Rebind => {
                 // Wait out the device's own LED clear (see REPAINT_SETTLE) —
                 // painting first means painting into the wipe. Blocking the
                 // painter briefly is fine: queued paints just batch behind.
                 std::thread::sleep(REPAINT_SETTLE);
                 last_frame.clear();
+                // The fresh device is in HOT CUE, not wherever the old one was.
+                banks = [translate::PAD_MODE_PAIRS[0].0; DECK_COUNT];
             }
             Paint::Bank { deck, note } => {
                 if let Some(bank) = banks.get_mut(deck) {

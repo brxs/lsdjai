@@ -5,8 +5,10 @@
 //! tools, and any UI surface all land here. The service owns the held-note
 //! set, the key/scale snap, the pitches→multihot mapping (ported from the
 //! retired `frontend/src/audio/notes.ts`), and the on-grid onset timing; it
-//! sends `set_notes` straight over the deck control socket
-//! ([`Sidecars::send`]) and mirrors the authored state into the store — the
+//! queues `set_notes` onto its own send lane (one thread draining to
+//! [`Sidecars::send`] in FIFO order — a wedged control socket must never
+//! stall the CoreMIDI callback that enqueued, the same discipline as the
+//! style sender) and mirrors the authored state into the store — the
 //! webview only displays. The old path (MCP writes the store, the webview
 //! adopts and relays to the worker) retired with this module: the sender now
 //! sits beside the beat clock (ADR-0025), which is what lets onset mode
@@ -18,7 +20,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{mpsc, Mutex};
 use std::time::Duration;
 
 use serde_json::json;
@@ -274,14 +276,34 @@ pub struct NoteSteering {
     /// Global schedule stamp — pairs with each deck's `generation` so a
     /// sleeping onset thread can tell its send is stale.
     stamp: AtomicU64,
+    /// The send lane: every control-socket write is enqueued here and
+    /// drained by one thread, so callers — the CoreMIDI input callback
+    /// above all — never block on a wedged sidecar socket, and sends stay
+    /// FIFO across every entry point.
+    sends: mpsc::Sender<(usize, String)>,
 }
 
 impl NoteSteering {
     pub fn new(app: AppHandle) -> Self {
+        let (sends, inbox) = mpsc::channel::<(usize, String)>();
+        {
+            let app = app.clone();
+            std::thread::Builder::new()
+                .name("lsdj-note-send".into())
+                .spawn(move || {
+                    while let Ok((deck, json)) = inbox.recv() {
+                        if let Some(sidecars) = app.try_state::<Sidecars>() {
+                            sidecars.send(deck, &json);
+                        }
+                    }
+                })
+                .expect("failed to spawn lsdj note-send thread");
+        }
         NoteSteering {
             app,
             decks: Mutex::new((0..DECK_COUNT).map(|_| DeckState::default()).collect()),
             stamp: AtomicU64::new(0),
+            sends,
         }
     }
 
@@ -536,10 +558,11 @@ impl NoteSteering {
         }
     }
 
+    /// Enqueue a control-socket write onto the send lane. Never blocks —
+    /// callers include the CoreMIDI input callback, whose contract is
+    /// translate-route-return (midi/mod.rs).
     fn send_control(&self, deck: usize, jsons: &str) {
-        if let Some(sidecars) = self.app.try_state::<Sidecars>() {
-            sidecars.send(deck, jsons);
-        }
+        let _ = self.sends.send((deck, jsons.to_owned()));
     }
 }
 

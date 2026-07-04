@@ -50,7 +50,10 @@ before the port (and the monitor shows the documented bytes).
       multi-step); rotary press cycles tabs; LOAD loads onto each deck.
 - [ ] Jog: paused fine-seek, playing phase-nudge, SHIFT+jog scrub
       (CC `0x29`); realtime net reel/steer still works, including the
-      cross-deck SHIFT+jog cursor steering.
+      cross-deck SHIFT+jog cursor steering. Spin the jog FAST while reeling
+      and steering: every tick must land (the specific failure mode is lost
+      steps — the reel/cursor advancing less than the spin; the emitted-
+      position overlay in DeckColumn is the guard).
 - [ ] Tempo sliders varispeed a playback deck (low = slow end); LOOP
       IN/OUT, 4 BEAT/EXIT toggle, CUE/LOOP CALL halve/double.
 - [ ] BEAT FX ON/OFF toggles recording; channel CUE toggles PFL; transport
@@ -69,6 +72,10 @@ before the port (and the monitor shows the documented bytes).
       (`0x69`) — if that button stays dark, the shifted-note echo is wrong:
       measure and remap the shifted banks to their plain-layer siblings in
       `PAD_MODE_PAIRS` (`src-tauri/src/midi/translate.rs`).
+- [ ] Arm KEYBOARD, then unplug/replug the controller: on rebind the HOT
+      CUE selector is the lit one (the device repowered in that bank), the
+      performance surface is DISARMED (door LED off, chunks back to 1 s),
+      and no stale bank LED survives from before the unplug.
 - [ ] The net's bright/dim distinction reads on the pads; if `0x20` is not
       visibly dim-but-on, measure a better value and update `PAD_LED_DIM`
       in `src-tauri/src/midi/leds.rs` (it was provisional before the port

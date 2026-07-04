@@ -55,6 +55,14 @@ const MAX_TARGETS = MAX_PRESET_TARGETS
 // Pad units a single jog tick steers the cursor under SHIFT (tunable on the
 // device — see the net hardware checklist).
 const CURSOR_JOG_STEP = 0.01
+// The delta-gesture overlay (jog reel / cursor steer): how long a pending
+// emitted position outlives a disagreeing snapshot before the store's word
+// wins, and how close an echo must land to count as caught-up (the f32
+// round-trip quantises; same epsilon as the mixer adoption).
+const PENDING_SETTLE_MS = 120
+function nearPending(a: number, b: number) {
+  return Math.abs(a - b) < 1e-3
+}
 
 function clamp01(value: number) {
   return Math.min(1, Math.max(0, value))
@@ -216,6 +224,37 @@ export function DeckColumn({
       ),
     [deckSnap, targets],
   )
+  // Delta gestures (jog reel, SHIFT-jog cursor steer) accumulate on the last
+  // EMITTED position, not the projection: the intent coalescer keeps only
+  // the last write per frame and the store echo lags a frame or two, so two
+  // jog ticks computed from the same snapshot would swallow each other
+  // (lost steps at fast rates). Every cursor/target emit records its value
+  // here; an entry drains when the snapshot catches up to it, or after the
+  // settle window when it never will (an external writer — MCP, a fan-out —
+  // moved the thing mid-gesture and the store's word wins).
+  const pendingCursorRef = useRef<{ x: number; y: number; at: number } | null>(null)
+  const pendingMovesRef = useRef(
+    new Map<string, { x: number; y: number; at: number }>(),
+  )
+  useEffect(() => {
+    const caughtUp = (
+      pending: { x: number; y: number; at: number },
+      x: number,
+      y: number,
+    ) =>
+      (nearPending(pending.x, x) && nearPending(pending.y, y)) ||
+      Date.now() - pending.at > PENDING_SETTLE_MS
+    const cursorPending = pendingCursorRef.current
+    if (cursorPending && caughtUp(cursorPending, cursor.x, cursor.y)) {
+      pendingCursorRef.current = null
+    }
+    for (const [text, pending] of pendingMovesRef.current) {
+      const target = targets.find((candidate) => candidate.text === text)
+      if (!target || caughtUp(pending, target.x, target.y)) {
+        pendingMovesRef.current.delete(text)
+      }
+    }
+  }, [cursor.x, cursor.y, targets])
   const [sampling, setSampling] = useState(false)
   const [sampleError, setSampleError] = useState<string | null>(null)
   // Generated pads (M18): the prompt, engine, and behaviour for the
@@ -383,6 +422,7 @@ export function DeckColumn({
   }
 
   function handleCursor(x: number, y: number) {
+    pendingCursorRef.current = { x, y, at: Date.now() }
     styleSetCursor(deckIndex, x, y)
   }
 
@@ -434,10 +474,11 @@ export function DeckColumn({
           // deck's jog reaches us because shiftedDeck routes by held SHIFT,
           // not by the jog's own deck.
           const delta = intent.steps * CURSOR_JOG_STEP
+          const base = pendingCursorRef.current ?? cursor
           if (intent.deck === 'a') {
-            handleCursor(clamp01(cursor.x + delta), cursor.y)
+            handleCursor(clamp01(base.x + delta), base.y)
           } else {
-            handleCursor(cursor.x, clamp01(cursor.y + delta))
+            handleCursor(base.x, clamp01(base.y + delta))
           }
         } else if (
           shiftedDeck == null &&
@@ -446,10 +487,12 @@ export function DeckColumn({
         ) {
           // No SHIFT: this deck's own jog reels its selected dots radially
           // about the cursor — CW pulls inward (more weight), CCW pushes out.
+          const centre = pendingCursorRef.current ?? cursor
           for (const target of targets) {
             if (!selected.has(target.text)) continue
-            const moved = moveRadial(target, cursor, intent.steps)
-            styleMoveTarget(deckIndex, target.text, moved.x, moved.y)
+            const base = pendingMovesRef.current.get(target.text) ?? target
+            const moved = moveRadial({ ...target, x: base.x, y: base.y }, centre, intent.steps)
+            handleTargetMove(target.text, moved.x, moved.y)
           }
         }
         // Otherwise another deck is being steered — leave this one alone.
@@ -461,6 +504,9 @@ export function DeckColumn({
   )
 
   function handleTargetMove(id: string, x: number, y: number) {
+    // Record the emit so the next jog tick in the echo window builds on it
+    // (mouse drags too — a drag mid-reel must not leave a stale base).
+    pendingMovesRef.current.set(id, { x, y, at: Date.now() })
     styleMoveTarget(deckIndex, id, x, y)
   }
 

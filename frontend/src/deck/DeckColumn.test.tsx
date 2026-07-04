@@ -959,6 +959,49 @@ describe('DeckColumn', () => {
     ).toContain('left: 60%')
   })
 
+  it('fast jog ticks inside one echo window accumulate — no lost reel steps', () => {
+    const bus = createControlBus()
+    renderPanel({ connection: 'open' }, {}, bus)
+    addTarget('funk') // 12 o'clock
+    addTarget('techno') // 6 o'clock
+    act(() => bus.publish({ kind: 'hot_cue_pad', deck: 'a', index: 1 }))
+    // The real store's echo lags a fast burst (the coalescer keeps one write
+    // per frame): apply each move but hold the snapshot back.
+    vi.mocked(styleMoveTarget).mockImplementation((_deck, text, x, y) => {
+      pad.targets = pad.targets.map((t) => (t.text === text ? { ...t, x, y } : t))
+    })
+    act(() =>
+      bus.publish({ kind: 'track_seek', deck: 'a', steps: 1, shifted: false }),
+    )
+    act(() =>
+      bus.publish({ kind: 'track_seek', deck: 'a', steps: 1, shifted: false }),
+    )
+
+    expect(styleMoveTarget).toHaveBeenCalledTimes(2)
+    const [, , , firstY] = vi.mocked(styleMoveTarget).mock.calls[0]
+    const [, , , secondY] = vi.mocked(styleMoveTarget).mock.calls[1]
+    // Each tick reels techno (6 o'clock) further hubward. Recomputing from
+    // the stale projection would send the same position twice — a lost step.
+    expect(secondY).toBeLessThan(firstY)
+  })
+
+  it('fast SHIFT-jog steer ticks accumulate before the echo lands', () => {
+    const bus = createControlBus()
+    steerPanel(bus)
+    vi.mocked(styleSetCursor).mockImplementation((_deck, x, y) => {
+      pad.cursor = { x, y } // echo held back, as above
+    })
+    act(() =>
+      bus.publish({ kind: 'track_seek', deck: 'a', steps: 10, shifted: true }),
+    )
+    act(() =>
+      bus.publish({ kind: 'track_seek', deck: 'a', steps: 10, shifted: true }),
+    )
+    // 0.5 → 0.6 → 0.7: the second tick builds on the first EMIT, not the
+    // stale projection (which would send 0.6 twice).
+    expect(vi.mocked(styleSetCursor).mock.calls[1][1]).toBeCloseTo(0.7, 5)
+  })
+
   it('sweeps the cursor around the target circle from the control bus', () => {
     const bus = createControlBus()
     renderPanel({ connection: 'open' }, {}, bus)
