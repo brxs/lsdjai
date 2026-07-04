@@ -273,8 +273,12 @@ export type DeckSnap = {
   model: string | null
   /** Whether the realtime deck is generating (a derived read-back the store mirrors). */
   playing: boolean
+  /** Which source the deck plays (M19): the realtime model stream or a loaded
+   * track. Written by the load flow's mirror; agents read it natively. */
+  mode: 'realtime' | 'playback'
   /** Hot-cue points on the loaded track in track seconds, one per pad (empty with
-   * no track). ADR-0015's cue state, mirrored here per ADR-0020. */
+   * no track). The store OWNS them (phase D): pads reset with the track identity,
+   * mutate through setDeckCuePoint / the MCP cue tools, and project down. */
   cues: (number | null)[]
   /** The loaded track's identity on a playback deck (a read-back the store
    * mirrors), or null on a realtime deck / with no track. */
@@ -409,11 +413,21 @@ export function setDeckModel(deck: number, model: string | null): void {
   void invoke('set_deck_model', { deck, model }).catch(() => {})
 }
 
-/** Mirror a playback deck's hot-cue points into the store (ADR-0015 → ADR-0020).
- * The webview owns the set/jump logic; this writes the current points up.
- * Fire-and-forget. */
-export function setDeckCues(deck: number, cues: (number | null)[]): void {
-  void invoke('set_deck_cues', { deck, cues }).catch(() => {})
+/** Set or clear one hot-cue pad (ADR-0020 phase D): a store intent — the UI
+ * computes the snapped position, the store owns the points, the pads project
+ * the snapshot. Fire-and-forget. */
+export function setDeckCuePoint(
+  deck: number,
+  index: number,
+  seconds: number | null,
+): void {
+  void invoke('set_deck_cue_point', { deck, index, seconds }).catch(() => {})
+}
+
+/** Record which source a deck plays (M19, phase D): the load flow writes it so
+ * an agent sees playback vs realtime natively. Fire-and-forget. */
+export function setDeckMode(deck: number, mode: 'realtime' | 'playback'): void {
+  void invoke('set_deck_mode', { deck, mode }).catch(() => {})
 }
 
 /** Mirror a playback deck's live transport (playhead / rate / loop) into the store

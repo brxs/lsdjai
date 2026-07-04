@@ -21,11 +21,12 @@ import { useAudioEngine } from '../audio/engineContext'
 import {
   getApiBaseUrl,
   setDeckCue,
-  setDeckCues,
+  setDeckCuePoint,
   setDeckEq,
   setDeckFx,
   setDeckFxAmount,
   setDeckLoopLabels,
+  setDeckMode,
   setDeckModel,
   setDeckPrimed,
   setDeckTrack,
@@ -345,10 +346,16 @@ export function useDeck(deckId: DeckId): DeckControls {
   const [bpm, setBpm] = useState<number | null>(null)
   const [mode, setModeState] = useState<DeckMode>('realtime')
   const modeRef = useRef(mode)
-  const setMode = useCallback((next: DeckMode) => {
-    setModeState(next)
-    modeRef.current = next
-  }, [])
+  const setMode = useCallback(
+    (next: DeckMode) => {
+      setModeState(next)
+      modeRef.current = next
+      // Record it in the store (phase D) so an agent sees playback vs
+      // realtime natively; the load orchestration itself stays here.
+      setDeckMode(deckIndex, next)
+    },
+    [deckIndex],
+  )
   const [track, setTrack] = useState<TrackState | null>(null)
   const trackLoadRef = useRef(0)
   // Fresh mirrors for the beat clocks and sync (state would be stale
@@ -361,10 +368,6 @@ export function useDeck(deckId: DeckId): DeckControls {
   // Hot cues and the pending loop IN (M21): refs beside the state so
   // bus-driven callbacks read fresh values without re-subscribing.
   const trackCuesRef = useRef<(number | null)[]>([])
-  // Gate for adopting EXTERNAL store cue changes (an MCP set/clear): armed once the
-  // store reflects THIS track's own pushed cues, so a pre-push stale snapshot (the
-  // previous track's cues) is never adopted. Reset on every track load/unload.
-  const cuesSyncedRef = useRef(false)
   const pendingLoopInRef = useRef<number | null>(null)
   const statsRef = useRef<{
     playing: boolean
@@ -494,33 +497,20 @@ export function useDeck(deckId: DeckId): DeckControls {
     setDeckModel(deckIndex, state.model)
   }, [deckIndex, state.model])
 
-  // Mirror the loaded track's hot-cue points UP into the store (ADR-0015 →
-  // ADR-0020): the cue STATE LOCATION moves to the store, while the webview keeps
-  // the set/jump logic (jump is a plain seek). Empty with no track.
-  useEffect(() => {
-    setDeckCues(deckIndex, track?.cues ?? [])
-  }, [deckIndex, track?.cues])
-
-  // Adopt EXTERNAL hot-cue changes from the store (an MCP set_hot_cue / clear_hot_cue)
-  // into the rendered pads — the read side the write-only mirror above pairs with
-  // (ADR-0020, Phase 2). Our own pushes echo back value-equal and just arm the gate; a
-  // genuine external change updates the ref and the track's cues so the pads relight.
-  // Track-scoped (skipped with no track) and gated until the store reflects THIS
-  // track's own cues, so a stale pre-push snapshot is never adopted.
+  // Project the store-owned hot cues into the rendered track (phase D). The
+  // store resets the bank with the track identity (set_deck_track) and applies
+  // the set/clear intents — ours and an MCP agent's alike — so the pads light
+  // only through this echo; there is no local cue write left to fence, and the
+  // cuesSyncedRef gate died with the mirror it guarded.
   useEffect(() => {
     const storeCues = storeState?.decks[deckIndex]?.cues
     if (!storeCues) return
     const current = trackCuesRef.current
-    if (current.length === 0) return
     const sameCues =
       storeCues.length === current.length &&
       storeCues.every((point, i) => point === current[i])
-    if (sameCues) {
-      cuesSyncedRef.current = true
-      return
-    }
-    if (!cuesSyncedRef.current) return
-    const next = current.map((_, i) => storeCues[i] ?? null)
+    if (sameCues) return
+    const next = [...storeCues]
     trackCuesRef.current = next
     setTrack((track) => track && { ...track, cues: next })
   }, [storeState, deckIndex])
@@ -638,13 +628,11 @@ export function useDeck(deckId: DeckId): DeckControls {
   // no echo can loop, and the store's emit order is the total order. On a play we
   // also ensure the deck channel exists (idempotent — applies the current params
   // and starts the stats poll, no ring reset), so the buffer/BPM/underrun meters
-  // populate for an agent-started deck too. `playPendingRef` is play()/prime()'s
-  // in-flight guard, armed ONLY for an intent that starts the transport (stopped
-  // → playing): a re-play/re-prime on a playing deck is a store no-op the dedupe
-  // never echoes, so arming there would wedge the guard until STOP.
-  // `playingRef` mirrors the projected transport for those callbacks (they keep
-  // stable deps on purpose).
-  const playPendingRef = useRef(false)
+  // populate for an agent-started deck too. `playingRef` mirrors the projected
+  // transport for the stable-dep callbacks. (The old `playPendingRef` in-flight
+  // guard is gone, phase D: deck_play's atomic start_transport in the Rust
+  // store is the ordering now — a second tap is a shell-side no-op, and the
+  // webview's own pre-send work is idempotent.)
   const playingRef = useRef(false)
   useEffect(() => {
     playingRef.current = state.playing
@@ -652,15 +640,6 @@ export function useDeck(deckId: DeckId): DeckControls {
   useEffect(() => {
     const storePlaying = storeState?.decks[deckIndex]?.playing
     if (storePlaying === undefined) return
-    // Only a snapshot with the transport RUNNING re-arms the intents — before
-    // the equality return, since the value-change dedupe can keep the write
-    // itself silent. The guard arms only on stopped → playing intents, so a
-    // running snapshot is its round-trip landing. A stopped snapshot must not
-    // clear it: the tap's own analysis blank (the shell publishes on reset,
-    // ADR-0025) lands before deck_play writes the transport, and clearing on
-    // it would wave a second tap through mid-flight. stop() stays the
-    // recovery valve for a write that never lands.
-    if (storePlaying) playPendingRef.current = false
     if (storePlaying === state.playing) return
     if (storePlaying) void ensureChannel().catch(() => {})
     dispatch({ type: 'playing_changed', playing: storePlaying })
@@ -786,24 +765,18 @@ export function useDeck(deckId: DeckId): DeckControls {
       setPrimed(false)
       return
     }
-    // In-flight guard: the button lights only when the store round-trip lands,
-    // so a second tap inside that window would re-run the ring reset on a
-    // just-started stream. Armed only when this intent STARTS the transport —
-    // a replay on a playing deck round-trips as a store no-op (no snapshot to
-    // clear on). The projection re-arms it; stop() is the recovery valve.
-    if (playPendingRef.current) return
-    if (!playingRef.current) playPendingRef.current = true
     try {
       const channel = await ensureChannel()
       await engine.resume()
       // Drop whatever an earlier session left in the ring buffer, so the
       // first thing heard is the new stream, not stale chunks. The beat
-      // tracker starts over with the stream.
+      // tracker starts over with the stream. All of this is idempotent —
+      // a second tap racing the round-trip re-runs it harmlessly, and the
+      // deck_play it re-sends is a shell-side no-op (start_transport).
       channel.reset()
       resetStreamMeasurements()
       channel.setOnAir(true)
     } catch (error) {
-      playPendingRef.current = false
       dispatch({
         type: 'local_error',
         error: error instanceof Error ? error.message : String(error),
@@ -849,10 +822,6 @@ export function useDeck(deckId: DeckId): DeckControls {
       return
     }
     if (primedRef.current) return
-    // Same in-flight guard as play(); a re-prime of an already-playing deck
-    // (CUE after a drop) is a store no-op, so it must not arm the guard.
-    if (playPendingRef.current) return
-    if (!playingRef.current) playPendingRef.current = true
     try {
       const channel = await ensureChannel()
       await engine.resume()
@@ -860,7 +829,6 @@ export function useDeck(deckId: DeckId): DeckControls {
       resetStreamMeasurements()
       channel.setOnAir(false)
     } catch (error) {
-      playPendingRef.current = false
       dispatch({
         type: 'local_error',
         error: error instanceof Error ? error.message : String(error),
@@ -913,9 +881,6 @@ export function useDeck(deckId: DeckId): DeckControls {
     }
     resetStreamMeasurements()
     setPrimed(false)
-    // Recovery valve: if a play's round-trip never landed (dropped IPC), the
-    // pending guard must not wedge the transport — STOP always re-arms it.
-    playPendingRef.current = false
   }, [send, setPrimed, setLoop, resetStreamMeasurements, silenceLayers])
 
   const loadTrack = useCallback(
@@ -960,8 +925,9 @@ export function useDeck(deckId: DeckId): DeckControls {
       )
       trackMetaRef.current = { bpm: trackTempo, grid }
       trackRateRef.current = 1
+      // The local seed matches the fresh bank the set_deck_track mirror
+      // opens store-side (the store owns the points, phase D).
       trackCuesRef.current = Array<number | null>(HOT_CUE_COUNT).fill(null)
-      cuesSyncedRef.current = false
       pendingLoopInRef.current = null
       setMode('playback')
       if (wasPlaying) channel.playTrack()
@@ -994,7 +960,6 @@ export function useDeck(deckId: DeckId): DeckControls {
     trackBandsRef.current = null
     trackRateRef.current = 1
     trackCuesRef.current = []
-    cuesSyncedRef.current = false
     pendingLoopInRef.current = null
     setMode('realtime')
     setTrack(null)
@@ -1045,25 +1010,23 @@ export function useDeck(deckId: DeckId): DeckControls {
       const status = channelRef.current?.getTrackStatus()
       if (!status) return
       // Empty pad: capture the playhead, on the lattice when the grid
-      // is confident, free when not (the consumer rule).
+      // is confident, free when not (the consumer rule) — then hand the
+      // point to the store; the pad lights when the snapshot echoes.
       const grid = trackMetaRef.current?.grid ?? null
       const cue = Math.min(snapToGrid(status.position, grid), status.duration)
-      const next = [...trackCuesRef.current]
-      next[index] = cue
-      trackCuesRef.current = next
-      setTrack((current) => current && { ...current, cues: next })
+      setDeckCuePoint(deckIndex, index, cue)
     },
-    [seekTrack],
+    [seekTrack, deckIndex],
   )
 
-  const clearHotCue = useCallback((index: number) => {
-    if (modeRef.current !== 'playback') return
-    if (trackCuesRef.current[index] == null) return
-    const next = [...trackCuesRef.current]
-    next[index] = null
-    trackCuesRef.current = next
-    setTrack((current) => current && { ...current, cues: next })
-  }, [])
+  const clearHotCue = useCallback(
+    (index: number) => {
+      if (modeRef.current !== 'playback') return
+      if (trackCuesRef.current[index] == null) return
+      setDeckCuePoint(deckIndex, index, null)
+    },
+    [deckIndex],
+  )
 
   const loopIn = useCallback(() => {
     if (modeRef.current !== 'playback') return

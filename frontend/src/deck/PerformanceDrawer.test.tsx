@@ -26,6 +26,7 @@ function deckSnap(over: Partial<DeckSnap> = {}): DeckSnap {
     fx: { kind: null, amount: 0 },
     model: null,
     playing: false,
+    mode: 'realtime',
     cues: [],
     track: null,
     transport: null,

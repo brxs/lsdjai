@@ -54,6 +54,11 @@ const native: {
    * snapshot never carries stale mixer values the gate-free adoption would
    * take for an external move. */
   storeMixer: ReturnType<typeof hydratedMixer>
+  /** The harness store's hot-cue bank + track identity for deck 'a' (phase D):
+   * set_deck_track opens/drops the bank with the identity, set_deck_cue_point
+   * mutates one pad — the pads light only through this echo. */
+  storeCues: (number | null)[]
+  storeTrackKey: string | null
 } = {
   invoke: vi.fn(),
   statusCb: null,
@@ -62,6 +67,8 @@ const native: {
   storePlaying: false,
   storeAnalysis: { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 },
   storeMixer: hydratedMixer(),
+  storeCues: [],
+  storeTrackKey: null,
 }
 
 function installNativeTauri() {
@@ -71,6 +78,8 @@ function installNativeTauri() {
   native.storePlaying = false
   native.storeAnalysis = { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 }
   native.storeMixer = hydratedMixer()
+  native.storeCues = []
+  native.storeTrackKey = null
   native.invoke = vi.fn((cmd: string, args?: unknown) => {
     // The Rust deck_play/deck_stop commands write the store's transport and the
     // store echoes a snapshot — with the real dedupe (a no-change mutation emits
@@ -102,6 +111,32 @@ function installNativeTauri() {
     if (cmd === 'clear_fx') fireStore({ fx: { kind: null, amount: 0 } })
     if (cmd === 'set_fx_amount' && a.amount !== undefined) {
       fireStore({ fx: { ...native.storeMixer.fx, amount: a.amount } })
+    }
+    // The store owns the hot cues (phase D): the bank lives and dies with the
+    // track identity, and the pads light only through the echo.
+    const cueArgs = (args ?? {}) as {
+      index?: number
+      seconds?: number | null
+      track?: { title: string } | null
+      deck?: number
+    }
+    if (cmd === 'set_deck_track' && cueArgs.deck === 0) {
+      const key = cueArgs.track ? cueArgs.track.title : null
+      if (key === null) {
+        native.storeCues = []
+      } else if (key !== native.storeTrackKey) {
+        native.storeCues = Array<number | null>(8).fill(null)
+      }
+      native.storeTrackKey = key
+      fireStore({ cues: [...native.storeCues] })
+    }
+    if (cmd === 'set_deck_cue_point' && cueArgs.index !== undefined) {
+      if (cueArgs.index < native.storeCues.length) {
+        const next = [...native.storeCues]
+        next[cueArgs.index] = cueArgs.seconds ?? null
+        native.storeCues = next
+      }
+      fireStore({ cues: [...native.storeCues] })
     }
     // app_info feeds getApiBaseUrl(); null port → '' (relative fetches).
     return cmd === 'app_info'
@@ -172,7 +207,8 @@ function storeDeck(): DeckSnap {
     fx: { ...native.storeMixer.fx },
     model: null,
     playing: false,
-    cues: [],
+    mode: 'realtime',
+    cues: [...native.storeCues],
     track: null,
     transport: null,
     loopLabels: [],
@@ -203,6 +239,7 @@ function fireStore(mix: Partial<DeckSnap>) {
   if (mix.fx !== undefined) native.storeMixer.fx = mix.fx
   if (mix.trimDb !== undefined) native.storeMixer.trimDb = mix.trimDb
   if (mix.cue !== undefined) native.storeMixer.cue = mix.cue
+  if (mix.cues !== undefined) native.storeCues = mix.cues
   const payload: InterfaceState = {
     decks: [
       {
@@ -695,14 +732,16 @@ describe('useDeck trim (auto-gain)', () => {
 
   it('seeds the shell-hydrated trim value without stealing the persisted mode', async () => {
     // The MODE stays webview-persisted (the auto tracker is TS); the VALUE
-    // hydrates from the store. The first snapshot must seed the value
-    // without flipping the deck to manual — it is boot, not a gesture.
+    // hydrates from the store — the shell wrote it before the webview
+    // existed, so the FIRST snapshot the deck sees already carries it and
+    // must seed without flipping the deck to manual (boot, not a gesture).
     updateDeckSettings('a', { trimMode: 'manual' })
+    native.storeMixer.trimDb = -4.5
     const { engine } = makeFakeEngine()
     const { result } = renderDeck(engine)
     expect(result.current.trim.mode).toBe('manual')
 
-    act(() => fireStore({ trimDb: -4.5 }))
+    act(() => fireStore({}))
     expect(result.current.trim).toEqual({ mode: 'manual', db: -4.5 })
 
     act(() => socket(0).serverOpen())
@@ -713,11 +752,11 @@ describe('useDeck trim (auto-gain)', () => {
   })
 
   it('boot seeding keeps auto mode; a later external trim flips to manual', () => {
+    native.storeMixer.trimDb = -3
     const { result } = renderDeck(makeFakeEngine().engine)
-    expect(result.current.trim.mode).toBe('auto')
 
     // First snapshot = hydration: the value seeds, auto survives.
-    act(() => fireStore({ trimDb: -3 }))
+    act(() => fireStore({}))
     expect(result.current.trim).toEqual({ mode: 'auto', db: -3 })
 
     // A later differing trim is a deliberate external (MCP/MIDI) move.
@@ -1926,8 +1965,8 @@ describe('useDeck realtime mirror + transport projection (ADR-0020)', () => {
     expect(result.current.state.playing).toBe(true)
   })
 
-  it('ignores a second play tap while the store round-trip is in flight', async () => {
-    const { engine, channel } = makeFakeEngine()
+  it('a second play tap racing the round-trip is safe — the shell dedups it', async () => {
+    const { engine } = makeFakeEngine()
     const { result } = renderDeck(engine)
     act(() => socket(0).serverOpen())
     // Sever the echo: the first tap's round-trip has not landed yet.
@@ -1940,12 +1979,16 @@ describe('useDeck realtime mirror + transport projection (ADR-0020)', () => {
     await act(() => result.current.play())
     await act(() => result.current.play())
 
-    // One intent, one ring reset — the second tap must not flush the
-    // just-started stream while the button is still dark.
-    expect(deckInvokes()).toEqual([['deck_play', { deck: 0 }]])
-    expect(vi.mocked(channel.reset).mock.calls.length).toBe(1)
+    // Both taps send the intent (there is no webview in-flight guard any
+    // more, phase D): the pre-send work is idempotent — channel.reset is a
+    // native no-op — and Rust deck_play's atomic start_transport makes the
+    // second intent a shell-side no-op (store.rs pins that).
+    expect(deckInvokes()).toEqual([
+      ['deck_play', { deck: 0 }],
+      ['deck_play', { deck: 0 }],
+    ])
 
-    // The snapshot lands: the transport lights and the guard re-arms.
+    // The snapshot lands: the transport lights through the projection.
     act(() => fireStore({ playing: true }))
     expect(result.current.state.playing).toBe(true)
   })

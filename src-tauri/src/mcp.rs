@@ -442,14 +442,18 @@ impl McpHandler {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
         }
-        // Open the engine gate, then tell the worker to generate — the same order
-        // the `deck_play` command takes — and write the transport to the store,
-        // which owns `playing` (ADR-0020); the webview's button projects it.
+        // The same flow as the `deck_play` command: the store's atomic
+        // start_transport is the idempotence guard (phase D) — a play on an
+        // already-running deck is a no-op that must not reset held steering.
+        if !self.app.state::<InterfaceStore>().start_transport(deck) {
+            return format!("deck {deck} already playing");
+        }
         self.app.state::<Host>().set_deck_playing(deck, true);
         self.app
             .state::<Sidecars>()
             .send(deck, &json!({ "type": "play" }).to_string());
-        self.app.state::<InterfaceStore>().set_playing(deck, true);
+        // A fresh stream starts unsteered (ADR-0023).
+        self.app.state::<crate::midi::notes::NoteSteering>().reset(deck);
         format!("deck {deck} playing")
     }
 

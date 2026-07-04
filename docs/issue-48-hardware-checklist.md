@@ -136,6 +136,17 @@ before the port (and the monitor shows the documented bytes).
 - [ ] Ride the FLX4 EQ/fader while an MCP agent moves the same deck's FX —
       both land; neither control snaps back.
 
+## Store-owned hot cues + the transport guard (ADR-0020 phase D)
+
+- [ ] Load a track, set two hot cues, load a DIFFERENT track — the pads
+      clear (the bank lives and dies with the track identity, shell-side);
+      re-loading the same track keeps them for the session.
+- [ ] Hammer PLAY twice quickly from stopped — one clean stream start, no
+      restart glitch, and held MIDI steering survives a redundant tap on a
+      playing deck (the shell's atomic start_transport is the guard now).
+- [ ] MCP `set_hot_cue`/`clear_hot_cue` light/clear the on-screen pads
+      immediately; a pad set on-screen right after is kept.
+
 ## Regression sweeps
 
 - [ ] `just check` green; the app boots with sidecars and no MIDI-related

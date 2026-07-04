@@ -1134,13 +1134,18 @@ pub fn deck_play(
     deck: usize,
 ) {
     if valid_deck(deck) {
+        // The store owns the transport (ADR-0020) AND the ordering (phase D):
+        // start_transport flips stopped→playing atomically under the store
+        // lock, so a second tap racing the first one's round-trip is a plain
+        // no-op — it must not re-arm the worker or reset held note steering
+        // (the webview's playPendingRef guard, retired).
+        if !store.start_transport(deck) {
+            return;
+        }
         // Open the engine gate first, so the sidecar's PCM drains the moment it
         // arrives, then tell the worker to start generating.
         engine.set_deck_playing(deck, true);
         state.send(deck, &json!({ "type": "play" }).to_string());
-        // The store owns the transport (ADR-0020): every controller's play lands
-        // here, and the webview's button projects the snapshot back down.
-        store.set_playing(deck, true);
         // A fresh stream starts unsteered (ADR-0023): the worker just reset its
         // conditioning, so the note service drops the matching held state.
         notes.reset(deck);
@@ -1334,17 +1339,33 @@ pub fn set_deck_model(
     }
 }
 
-/// Mirror a playback deck's hot-cue points into the store (ADR-0015 → ADR-0020).
-/// The webview owns the set/jump logic (jump is a plain seek) and writes the
-/// current points up; no engine effect.
+/// Set or clear one hot-cue pad (ADR-0020 phase D): the store owns the
+/// points — the UI computes the snapped position and emits this intent, the
+/// MCP cue tools write the same mutation, and the pads project the snapshot.
+/// A no-track deck or an out-of-range pad is a silent store no-op.
 #[tauri::command]
-pub fn set_deck_cues(
+pub fn set_deck_cue_point(
     store: tauri::State<'_, InterfaceStore>,
     deck: usize,
-    cues: Vec<Option<f64>>,
+    index: usize,
+    seconds: Option<f64>,
+) {
+    if valid_deck(deck) && seconds.is_none_or(f64::is_finite) {
+        store.set_deck_cue(deck, index, seconds);
+    }
+}
+
+/// Record which source a deck plays (M19, ADR-0020 phase D): the webview's
+/// load flow writes it (the load orchestration stays webview-side until the
+/// transport inverts), so an agent sees playback vs realtime natively.
+#[tauri::command]
+pub fn set_deck_mode(
+    store: tauri::State<'_, InterfaceStore>,
+    deck: usize,
+    mode: crate::store::PlayModeSnap,
 ) {
     if valid_deck(deck) {
-        store.set_deck_cues(deck, cues);
+        store.set_deck_mode(deck, mode);
     }
 }
 

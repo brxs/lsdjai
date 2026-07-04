@@ -83,6 +83,18 @@ impl From<FxKindSnap> for FxKind {
     }
 }
 
+/// Which source a deck plays (M19, ADR-0013): the realtime model stream or a
+/// loaded track.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlayModeSnap {
+    Realtime,
+    Playback,
+}
+
+/// Hot-cue pads per loaded track (mirrors the webview's `HOT_CUE_COUNT`).
+pub const HOT_CUE_COUNT: usize = 8;
+
 /// A deck's three-band EQ in the snapshot (each 0..1, mirroring the frontend
 /// `Record<EqBand, number>`). `Deserialize` too — it round-trips through the
 /// shell settings file (ADR-0020 phase C).
@@ -284,9 +296,16 @@ pub struct DeckSnap {
     /// Whether the realtime deck is generating — a derived read-back the store
     /// mirrors (set by play/stop, cleared on model-load / worker-death).
     pub playing: bool,
+    /// Which source the deck plays (M19, ADR-0013): the realtime model stream
+    /// or a loaded track. Written by the webview's load flow (the load
+    /// orchestration stays webview-side until the transport inverts, phase E);
+    /// recorded here so an agent sees the mode without a webview round-trip.
+    pub mode: PlayModeSnap,
     /// Hot-cue points on the loaded track, in track seconds, one per pad (empty
-    /// with no track). ADR-0015's cue state moves here per ADR-0020; the webview
-    /// owns the set/jump logic (jump is a plain seek) and mirrors the points up.
+    /// with no track). OWNED here since ADR-0020 phase D: pads reset with the
+    /// track identity (`set_track`), mutate through the `set_deck_cue_point`
+    /// intent (UI) and the MCP cue tools, and the webview projects them. The
+    /// jump itself stays a plain seek.
     pub cues: Vec<Option<f64>>,
     /// The loaded track's identity on a playback deck (a read-back the store
     /// mirrors), or `None` on a realtime deck / with no track.
@@ -357,6 +376,7 @@ impl Default for DeckSnap {
             },
             model: None,
             playing: false,
+            mode: PlayModeSnap::Realtime,
             cues: Vec::new(),
             track: None,
             transport: None,
@@ -522,14 +542,43 @@ impl InterfaceState {
         }
     }
 
-    pub fn set_cues(&mut self, deck: usize, cues: Vec<Option<f64>>) {
+    /// Start the transport if it is stopped; returns whether THIS call
+    /// started it. `deck_play`'s idempotence guard (ADR-0020 phase D): the
+    /// store lock is the ordering, so a second tap racing the first one's
+    /// round-trip can never re-arm the worker or reset the note steering —
+    /// the job the webview's `playPendingRef` used to do with a local flag.
+    pub fn start_transport(&mut self, deck: usize) -> bool {
+        match self.deck_mut(deck) {
+            Some(d) if !d.playing => {
+                d.notes = None;
+                d.drums = None;
+                d.playing = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Record which source the deck plays (M19; webview-written until the
+    /// transport inverts, phase E).
+    pub fn set_mode(&mut self, deck: usize, mode: PlayModeSnap) {
         if let Some(d) = self.deck_mut(deck) {
-            d.cues = cues;
+            d.mode = mode;
         }
     }
 
     pub fn set_track(&mut self, deck: usize, track: Option<TrackIdentitySnap>) {
         if let Some(d) = self.deck_mut(deck) {
+            // The cue pads live and die with the track identity (phase D):
+            // a different pressing gets fresh pads IN THE SAME WRITE, so no
+            // snapshot can ever pair a new track with the previous track's
+            // points (the stale window the webview's cuesSyncedRef gate used
+            // to fence). A redundant push of the same identity keeps them.
+            if track.is_none() {
+                d.cues = Vec::new();
+            } else if d.track != track {
+                d.cues = vec![None; HOT_CUE_COUNT];
+            }
             d.track = track;
         }
     }
@@ -913,10 +962,18 @@ impl InterfaceStore {
         self.mutate(move |s| s.set_playing(deck, playing));
     }
 
-    /// Mirror the loaded track's hot-cue points (ADR-0015 → ADR-0020). The webview
-    /// owns the set/jump logic and writes the current points up.
-    pub fn set_deck_cues(&self, deck: usize, cues: Vec<Option<f64>>) {
-        self.mutate(move |s| s.set_cues(deck, cues));
+    /// Start the transport if stopped; returns whether THIS call started it
+    /// (the `deck_play` idempotence guard, phase D).
+    pub fn start_transport(&self, deck: usize) -> bool {
+        let mut started = false;
+        self.mutate(|s| started = s.start_transport(deck));
+        started
+    }
+
+    /// Record which source the deck plays (M19; the webview's load flow
+    /// writes it until the transport inverts).
+    pub fn set_deck_mode(&self, deck: usize, mode: PlayModeSnap) {
+        self.mutate(move |s| s.set_mode(deck, mode));
     }
 
     /// Mirror the loaded track's identity (a playback-deck read-back). The webview
@@ -1348,11 +1405,31 @@ mod tests {
         assert!(!state.decks[1].playing);
     }
 
+    fn pressing(title: &str) -> TrackIdentitySnap {
+        TrackIdentitySnap {
+            title: title.to_string(),
+            bpm: Some(128.0),
+            duration_seconds: 120.0,
+        }
+    }
+
     #[test]
-    fn hot_cues_are_mirrored_per_deck() {
+    fn cue_pads_live_and_die_with_the_track_identity() {
         let mut state = InterfaceState::default();
-        state.set_cues(0, vec![Some(1.5), None, Some(3.0)]);
-        assert_eq!(state.decks[0].cues, vec![Some(1.5), None, Some(3.0)]);
+        // A load opens a fresh bank in the same write as the identity.
+        state.set_track(0, Some(pressing("Warehouse Anthem")));
+        assert_eq!(state.decks[0].cues, vec![None; HOT_CUE_COUNT]);
+        state.set_cue_point(0, 1, Some(12.5));
+        // A redundant identity push (the webview mirror re-fires) keeps them…
+        state.set_track(0, Some(pressing("Warehouse Anthem")));
+        assert_eq!(state.decks[0].cues[1], Some(12.5));
+        // …a DIFFERENT pressing resets them in the same write (no snapshot can
+        // pair the new track with the old points)…
+        state.set_track(0, Some(pressing("Second Pressing")));
+        assert_eq!(state.decks[0].cues, vec![None; HOT_CUE_COUNT]);
+        // …and an unload drops the bank.
+        state.set_track(0, None);
+        assert!(state.decks[0].cues.is_empty());
         assert!(state.decks[1].cues.is_empty());
     }
 
@@ -1362,15 +1439,31 @@ mod tests {
         // A no-track deck (empty cue vec) is a silent no-op — the MCP tool reports it.
         state.set_cue_point(0, 0, Some(4.0));
         assert!(state.decks[0].cues.is_empty());
-        // With a cue bank, set one pad and clear it; the neighbours are untouched.
-        state.set_cues(0, vec![None, None, None]);
+        // With a loaded track, set one pad and clear it; the neighbours are untouched.
+        state.set_track(0, Some(pressing("Warehouse Anthem")));
         state.set_cue_point(0, 1, Some(12.5));
-        assert_eq!(state.decks[0].cues, vec![None, Some(12.5), None]);
+        assert_eq!(state.decks[0].cues[1], Some(12.5));
         state.set_cue_point(0, 1, None);
-        assert_eq!(state.decks[0].cues, vec![None, None, None]);
+        assert_eq!(state.decks[0].cues, vec![None; HOT_CUE_COUNT]);
         // An out-of-range pad on a loaded deck is a no-op too.
-        state.set_cue_point(0, 9, Some(1.0));
-        assert_eq!(state.decks[0].cues, vec![None, None, None]);
+        state.set_cue_point(0, 99, Some(1.0));
+        assert_eq!(state.decks[0].cues, vec![None; HOT_CUE_COUNT]);
+    }
+
+    #[test]
+    fn start_transport_starts_once_and_records_the_mode() {
+        let mut state = InterfaceState::default();
+        assert_eq!(state.decks[0].mode, PlayModeSnap::Realtime);
+        state.set_mode(0, PlayModeSnap::Playback);
+        assert_eq!(state.decks[0].mode, PlayModeSnap::Playback);
+        assert_eq!(state.decks[1].mode, PlayModeSnap::Realtime);
+        // The idempotence guard: only the first start reports true — a second
+        // tap must not re-arm the worker or reset held steering.
+        assert!(state.start_transport(1));
+        assert!(state.decks[1].playing);
+        assert!(!state.start_transport(1));
+        state.set_playing(1, false);
+        assert!(state.start_transport(1));
     }
 
     #[test]

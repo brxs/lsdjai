@@ -111,9 +111,19 @@ picker enumerations, `previewingId` row mapping, throttle/coalescer instances.
   trim decision (constraint 4): the loudness tracker stays TS — auto-trim
   remains a webview intent stream, and only the auto/manual MODE persists
   webview-side (`trimMode`).
-- **Phase D — transport & mode:** deck mode into the store, hot-cue logic to
-  intents (delete `cuesSyncedRef`), retire the `mcp://deck-command` relay,
-  then remove `playPendingRef` (the store round-trip becomes the only
-  ordering).
+- **Phase D — transport & mode:** DONE (except the relay — see below). Deck
+  mode is in the store (`set_deck_mode`, written by the webview's load flow);
+  the hot cues are store-OWNED — the bank opens/drops with the track identity
+  in `set_track` (the same-write rule that killed the stale-cue window
+  `cuesSyncedRef` fenced), pads mutate through the `set_deck_cue_point`
+  intent and the MCP cue tools, and the webview projects them.
+  `playPendingRef` is gone: `deck_play` guards itself with the store's
+  atomic `start_transport` (stopped→playing under the lock), so a racing
+  second tap is a shell-side no-op that cannot re-arm the worker or reset
+  held steering. The `mcp://deck-command` relay REMAINS for
+  seek/rate/sync/beatloop/onair: those semantics (transport wrappers,
+  quantise, sync, the prime flow) are exactly Phase E's items, and the relay
+  dies with them (constraint 5) rather than half-moving now.
 - **Phase E — the long tail (own issues):** loop-slot semantics, beatgrid/
-  quantise/sync, generate flow, media/browse state + presets.
+  quantise/sync, the playback transport (retiring `mcp://deck-command`),
+  generate flow, media/browse state + presets.
