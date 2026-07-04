@@ -318,10 +318,12 @@
   align-items: flex-end;
 }
 
-/* Key + Scale share a line (the compact config): the fields split the row
-   instead of wrapping, and the native select may shrink below its
-   intrinsic width. */
+/* Key + Scale share a line (the compact config), and the fields hug their
+   content instead of taking the kit's stretch-to-fill default (`.ui-field`
+   is flex: 1): the native select sizes to its longest option, which is the
+   right width for a two-up config row on the door. */
 .deck__perform-row .ui-field {
+  flex: 0 1 auto;
   min-width: 0;
 }
 
