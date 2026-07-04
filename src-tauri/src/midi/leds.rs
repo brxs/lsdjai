@@ -3,8 +3,8 @@
 //! The byte builders port the FLX4/DDJ-400 scheme from the retired
 //! `frontend/src/control/flx4.ts` `flx4Leds`: Pioneer buttons/pads light by
 //! echoing their own status/note back, velocity 0x7F on / 0x00 off; pad
-//! velocity doubles as brightness (bright 0x7F / dim 0x20 — the dim level is
-//! provisional until the hardware pass measures it, docs/midi-ddj-flx4.md).
+//! velocity doubles as brightness (bright 0x7F / dim 0x20 — confirmed on the
+//! device by the issue-48 hardware pass, docs/midi-ddj-flx4.md).
 //!
 //! The painter replaces the webview's App-side LED effects: it recomputes
 //! every group from the [`InterfaceState`] snapshot (plus the engine's
