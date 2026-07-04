@@ -21,7 +21,7 @@ use crate::store::{DeckSnap, FxKindSnap, InterfaceState};
 use super::notes::pad_pitches;
 use super::translate::{
     CHANNEL_CUE_NOTE, KEYBOARD_NOTE_BASE, LOOP_NOTE_BASE, NOTE_ON_STATUS, PAD_COUNT,
-    PAD_FX_NOTE_BASE, PAD_STATUS, TRANSPORT_CUE_NOTE,
+    PAD_FX_NOTE_BASE, PAD_MODE_PAIRS, PAD_STATUS, TRANSPORT_CUE_NOTE,
 };
 
 const PAD_LED_BRIGHT: u8 = 0x7f;
@@ -107,6 +107,26 @@ pub fn keyboard_pads(deck: usize, snap: &DeckSnap) -> Vec<[u8; 3]> {
         .collect()
 }
 
+/// The pad-mode selector LEDs: the active bank's button lit, the other three
+/// dark. The device leaves these to the host (only the power-on HOT CUE
+/// default is lit until we paint), and the shell is the only party that
+/// knows the tracked bank. One message per PHYSICAL button: the active
+/// bank's own note (plain or shifted layer) when it owns the button, the
+/// plain note dark otherwise — so a dark shifted-layer write can never land
+/// after (and clear) a lit plain-layer sibling on the same button.
+pub fn mode_selectors(deck: usize, active: u8) -> Vec<[u8; 3]> {
+    PAD_MODE_PAIRS
+        .iter()
+        .map(|&(plain, shifted)| {
+            if active == shifted {
+                echo(NOTE_ON_STATUS[deck], shifted, true)
+            } else {
+                echo(NOTE_ON_STATUS[deck], plain, active == plain)
+            }
+        })
+        .collect()
+}
+
 /// Channel (headphone) CUE button LED for a deck.
 pub fn channel_cue(deck: usize, on: bool) -> Vec<[u8; 3]> {
     vec![echo(NOTE_ON_STATUS[deck], CHANNEL_CUE_NOTE, on)]
@@ -131,8 +151,9 @@ fn fx_index(kind: FxKindSnap) -> usize {
 }
 
 /// One deck's LED groups, computed from the snapshot + the engine's loop
-/// slots. Pure, so the semantics port is testable without a device.
-pub fn deck_frame(deck: usize, snap: &DeckSnap, loop_filled: &[bool]) -> Vec<Vec<[u8; 3]>> {
+/// slots + the deck's tracked pad bank (the active selector's note). Pure,
+/// so the semantics port is testable without a device.
+pub fn deck_frame(deck: usize, snap: &DeckSnap, loop_filled: &[bool], bank: u8) -> Vec<Vec<[u8; 3]>> {
     // Exactly one painter per pad bank: cues on a playback deck (a track is
     // loaded), style targets on a realtime deck — the App.tsx rule.
     let hot_cue_bank = if snap.track.is_some() {
@@ -148,17 +169,29 @@ pub fn deck_frame(deck: usize, snap: &DeckSnap, loop_filled: &[bool]) -> Vec<Vec
         keyboard_pads(deck, snap),
         channel_cue(deck, snap.cue),
         transport_cue(deck, snap.primed),
+        mode_selectors(deck, bank),
     ]
 }
 
 /// The full LED frame for both decks — what the painter diffs and sends.
-pub fn full_frame(state: &InterfaceState, loop_filled: &[Vec<bool>]) -> Vec<Vec<[u8; 3]>> {
+/// `banks` is the painter's per-deck tracked selector note (missing decks
+/// fall back to the HOT CUE power-on default).
+pub fn full_frame(
+    state: &InterfaceState,
+    loop_filled: &[Vec<bool>],
+    banks: &[u8],
+) -> Vec<Vec<[u8; 3]>> {
     state
         .decks
         .iter()
         .enumerate()
         .map(|(deck, snap)| {
-            deck_frame(deck, snap, loop_filled.get(deck).map_or(&[][..], |f| &f[..]))
+            deck_frame(
+                deck,
+                snap,
+                loop_filled.get(deck).map_or(&[][..], |f| &f[..]),
+                banks.get(deck).copied().unwrap_or(PAD_MODE_PAIRS[0].0),
+            )
         })
         .collect::<Vec<_>>()
         .concat()
@@ -245,6 +278,34 @@ mod tests {
     }
 
     #[test]
+    fn mode_selectors_light_one_physical_button() {
+        // A plain bank: its button lit, the other three dark via their
+        // plain notes — one message per physical button, nothing more.
+        let msgs = mode_selectors(0, 0x1e);
+        assert_eq!(
+            msgs,
+            vec![
+                [0x90, 0x1b, 0x00],
+                [0x90, 0x1e, 0x7f],
+                [0x90, 0x20, 0x00],
+                [0x90, 0x22, 0x00],
+            ]
+        );
+        // A shifted bank (KEYBOARD): addressed by its OWN note on the same
+        // physical button — no dark plain-layer write may follow it.
+        let msgs = mode_selectors(1, 0x69);
+        assert_eq!(
+            msgs,
+            vec![
+                [0x91, 0x69, 0x7f],
+                [0x91, 0x1e, 0x00],
+                [0x91, 0x20, 0x00],
+                [0x91, 0x22, 0x00],
+            ]
+        );
+    }
+
+    #[test]
     fn the_hot_cue_bank_follows_the_deck_mode() {
         // Realtime deck (no track): style targets paint the bank.
         let mut snap = deck_snap();
@@ -252,7 +313,7 @@ mod tests {
             crate::store::StyleTargetSnap { x: 0.0, y: 0.0, text: "a".into(), sample: None },
             crate::store::StyleTargetSnap { x: 1.0, y: 1.0, text: "b".into(), sample: None },
         ];
-        let frame = deck_frame(0, &snap, &[]);
+        let frame = deck_frame(0, &snap, &[], 0x1b);
         assert_eq!(frame[0][0], [0x97, 0x00, 0x7f]);
         assert_eq!(frame[0][2], [0x97, 0x02, 0x00]);
         // Playback deck (track loaded): filled cues paint the bank.
@@ -262,7 +323,7 @@ mod tests {
             duration_seconds: 1.0,
         });
         snap.cues = vec![Some(1.0), None];
-        let frame = deck_frame(0, &snap, &[]);
+        let frame = deck_frame(0, &snap, &[], 0x1b);
         assert_eq!(frame[0][0], [0x97, 0x00, 0x7f]);
         assert_eq!(frame[0][1], [0x97, 0x01, 0x00]);
     }
@@ -271,7 +332,7 @@ mod tests {
     fn the_fx_group_reads_the_snapshot_kind() {
         let mut snap = deck_snap();
         snap.fx = FxSnap { kind: Some(FxKindSnap::Space), amount: 0.4 };
-        let frame = deck_frame(1, &snap, &[]);
+        let frame = deck_frame(1, &snap, &[], 0x1b);
         // Group 1 is PAD FX; Space is pad index 2 (the fx.ts order).
         assert_eq!(frame[1][2], [0x99, 0x12, 0x7f]);
         assert_eq!(frame[1][0], [0x99, 0x10, 0x00]);

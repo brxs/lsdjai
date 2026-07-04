@@ -95,10 +95,11 @@ pub enum Translated {
     /// A KEYBOARD-bank pad edge (issue #48): `down` is true on press. Handled
     /// natively by the note-steering service.
     PerformancePad { deck: DeckId, pad: u8, down: bool },
-    /// A pad-mode selector press; `keyboard` when the KEYBOARD mode was
-    /// chosen. The device clears its pad LEDs on a mode switch, so this is
-    /// also the repaint cue.
-    PadModeSwitch { deck: DeckId, keyboard: bool },
+    /// A pad-mode selector press, carrying the selector's own note (the
+    /// KEYBOARD note arms the performance surface; the note also addresses
+    /// the selector's LED). The device clears its pad LEDs on a mode switch,
+    /// so this is also the repaint cue.
+    PadModeSwitch { deck: DeckId, note: u8 },
 }
 
 /// Per-deck Note On status bytes, shared with the cue LEDs.
@@ -139,8 +140,14 @@ const LOOP_SLOT_COUNT: u8 = lsdj_engine::LOOP_SLOT_COUNT as u8;
 /// Pad-mode selector notes (HOT CUE 0x1B, PAD FX1 0x1E, BEAT JUMP 0x20,
 /// SAMPLER 0x22, KEYBOARD 0x69, PAD FX2 0x6B, BEAT LOOP 0x6D, KEY SHIFT 0x6F).
 const PAD_MODE_NOTES: [u8; 8] = [0x1b, 0x1e, 0x20, 0x22, 0x69, 0x6b, 0x6d, 0x6f];
+/// The same selectors as the four PHYSICAL buttons, `(plain, shifted)` per
+/// button — the LED side of the scheme: a shifted bank (KEYBOARD, PAD FX2,
+/// BEAT LOOP, KEY SHIFT) lights the same physical button as its plain-layer
+/// sibling, addressed by its own note.
+pub const PAD_MODE_PAIRS: [(u8, u8); 4] =
+    [(0x1b, 0x69), (0x1e, 0x6b), (0x20, 0x6d), (0x22, 0x6f)];
 /// The KEYBOARD selector — choosing that bank arms the performance surface.
-const KEYBOARD_MODE_NOTE: u8 = 0x69;
+pub const KEYBOARD_MODE_NOTE: u8 = 0x69;
 
 /// Jog wheel turn CCs, relative around 0x40 (side, platter vinyl-on/off).
 const JOG_CCS: [u8; 3] = [0x21, 0x22, 0x23];
@@ -298,10 +305,7 @@ impl Flx4Translator {
             // the KEYBOARD selector arms the performance surface).
             if PAD_MODE_NOTES.contains(&number) {
                 if value > 0 {
-                    return Translated::PadModeSwitch {
-                        deck,
-                        keyboard: number == KEYBOARD_MODE_NOTE,
-                    };
+                    return Translated::PadModeSwitch { deck, note: number };
                 }
                 return Translated::None;
             }
@@ -889,15 +893,15 @@ mod tests {
         let mut t = translator();
         assert_eq!(
             t.translate(&[0x90, 0x1b, PRESS]),
-            Translated::PadModeSwitch { deck: DeckId::A, keyboard: false }
+            Translated::PadModeSwitch { deck: DeckId::A, note: 0x1b }
         );
         assert_eq!(
             t.translate(&[0x91, 0x1e, PRESS]),
-            Translated::PadModeSwitch { deck: DeckId::B, keyboard: false }
+            Translated::PadModeSwitch { deck: DeckId::B, note: 0x1e }
         );
         assert_eq!(
             t.translate(&[0x90, 0x6b, PRESS]),
-            Translated::PadModeSwitch { deck: DeckId::A, keyboard: false }
+            Translated::PadModeSwitch { deck: DeckId::A, note: 0x6b }
         );
         assert_eq!(t.translate(&[0x90, 0x1b, RELEASE]), Translated::None);
         // PLAY is not a selector; the pad channel's 0x1B is a pad, not a mode.
@@ -914,11 +918,11 @@ mod tests {
         let mut t = translator();
         assert_eq!(
             t.translate(&[0x90, 0x69, PRESS]),
-            Translated::PadModeSwitch { deck: DeckId::A, keyboard: true }
+            Translated::PadModeSwitch { deck: DeckId::A, note: KEYBOARD_MODE_NOTE }
         );
         assert_eq!(
             t.translate(&[0x91, 0x69, PRESS]),
-            Translated::PadModeSwitch { deck: DeckId::B, keyboard: true }
+            Translated::PadModeSwitch { deck: DeckId::B, note: KEYBOARD_MODE_NOTE }
         );
     }
 

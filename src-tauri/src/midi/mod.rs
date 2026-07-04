@@ -91,8 +91,12 @@ pub struct MonitorEntryDto {
 enum Paint {
     /// The store changed — recompute from this snapshot.
     Snapshot(Box<InterfaceState>),
-    /// Force a full repaint (fresh bind / pad-mode switch cleared the pads).
+    /// Force a full repaint (a fresh bind cleared the diff baseline).
     Repaint,
+    /// A pad-mode switch: adopt the deck's active selector note (the mode
+    /// LEDs paint from it), then repaint — the device cleared its pad LEDs
+    /// on the switch.
+    Bank { deck: usize, note: u8 },
     /// Periodic tick: refresh the engine-owned inputs (loop slots).
     Tick,
 }
@@ -157,12 +161,14 @@ impl Shared {
                     notes.pad_event(deck.index(), pad as usize, down);
                 }
             }
-            Translated::PadModeSwitch { deck, keyboard } => {
+            Translated::PadModeSwitch { deck, note } => {
                 if let Some(notes) = self.app.try_state::<NoteSteering>() {
-                    notes.pad_mode_selected(deck.index(), keyboard);
+                    notes.pad_mode_selected(deck.index(), note == translate::KEYBOARD_MODE_NOTE);
                 }
-                // The device cleared its pad LEDs on the switch — repaint.
-                let _ = self.paint_tx.send(Paint::Repaint);
+                // The device cleared its pad LEDs on the switch — hand the
+                // painter the fresh bank (it lights the selector's LED) and
+                // repaint.
+                let _ = self.paint_tx.send(Paint::Bank { deck: deck.index(), note });
             }
         }
     }
@@ -484,6 +490,9 @@ fn bind_output(shared: &Arc<Shared>, driver: &Driver, name: &str) {
 fn run_painter(shared: Arc<Shared>, paint_rx: Receiver<Paint>) {
     let mut snapshot: Option<InterfaceState> = None;
     let mut last_frame: Vec<Vec<[u8; 3]>> = Vec::new();
+    // Each deck's active pad bank (the selector's note) — the device powers
+    // on in HOT CUE, and every switch flows through Paint::Bank.
+    let mut banks = [translate::PAD_MODE_PAIRS[0].0; DECK_COUNT];
     while let Ok(paint) = paint_rx.recv() {
         match paint {
             Paint::Snapshot(state) => snapshot = Some(*state),
@@ -491,6 +500,14 @@ fn run_painter(shared: Arc<Shared>, paint_rx: Receiver<Paint>) {
                 // Wait out the device's own LED clear (see REPAINT_SETTLE) —
                 // painting first means painting into the wipe. Blocking the
                 // painter briefly is fine: queued paints just batch behind.
+                std::thread::sleep(REPAINT_SETTLE);
+                last_frame.clear();
+            }
+            Paint::Bank { deck, note } => {
+                if let Some(bank) = banks.get_mut(deck) {
+                    *bank = note;
+                }
+                // Same settle as a plain repaint: the switch wiped the pads.
                 std::thread::sleep(REPAINT_SETTLE);
                 last_frame.clear();
             }
@@ -507,7 +524,7 @@ fn run_painter(shared: Arc<Shared>, paint_rx: Receiver<Paint>) {
                 .collect(),
             None => vec![vec![false; LOOP_SLOT_COUNT]; DECK_COUNT],
         };
-        let frame = leds::full_frame(state, &loop_filled);
+        let frame = leds::full_frame(state, &loop_filled, &banks);
         for (index, group) in frame.iter().enumerate() {
             if last_frame.get(index) == Some(group) {
                 continue;

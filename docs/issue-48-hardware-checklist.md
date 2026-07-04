@@ -62,6 +62,13 @@ before the port (and the monitor shows the documented bytes).
       loop slots, channel/transport CUE) without touching anything.
 - [ ] Switching pad mode on the device repaints the freshly-selected bank
       (the device clears pad LEDs on a switch; the shell repaints).
+- [ ] The mode selector LEDs follow the active bank: press PAD FX1 / BEAT
+      JUMP / SAMPLER and the lit button moves with the choice (HOT CUE no
+      longer stays lit); both decks track independently. SHIFT + HOT CUE
+      (KEYBOARD) should light the HOT CUE button via its shifted note
+      (`0x69`) — if that button stays dark, the shifted-note echo is wrong:
+      measure and remap the shifted banks to their plain-layer siblings in
+      `PAD_MODE_PAIRS` (`src-tauri/src/midi/translate.rs`).
 - [ ] The net's bright/dim distinction reads on the pads; if `0x20` is not
       visibly dim-but-on, measure a better value and update `PAD_LED_DIM`
       in `src-tauri/src/midi/leds.rs` (it was provisional before the port
