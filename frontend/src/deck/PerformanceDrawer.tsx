@@ -98,8 +98,9 @@ export function PerformanceDrawer({
       aria-label={t('deck.perform.title')}
     >
       <div className="deck__perform-content" aria-hidden={!open}>
+        {/* No printed title — the group keeps its accessible name from the
+            section's aria-label; the switch alone heads the door. */}
         <header className="deck__perform-head">
-          <h3 className="deck__perform-title">{t('deck.perform.title')}</h3>
           <Switch
             label={t('deck.perform.steer')}
             on={perf.armed}

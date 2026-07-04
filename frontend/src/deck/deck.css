@@ -238,7 +238,8 @@
 .deck__perform-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  /* Title removed: the steering switch alone keeps the top-right corner. */
+  justify-content: flex-end;
   gap: var(--space-2);
 }
 
@@ -303,14 +304,6 @@
 
 .deck__perform-door--open .deck__perform-rail-chevron {
   display: block;
-}
-
-.deck__perform-title {
-  margin: 0;
-  font: var(--silkscreen);
-  font-size: var(--text-s);
-  letter-spacing: var(--silkscreen-spacing);
-  text-transform: uppercase;
 }
 
 .deck__perform-hint {
