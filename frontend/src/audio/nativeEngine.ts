@@ -326,8 +326,9 @@ export type DeckSnap = {
    * re-asserts it to the worker on the play edge. */
   drums: boolean | null
   /** The drum-conditioning strength (issue #50): the `cfg_drums` guidance
-   * scale the worker applies while `drums` is set. Deck config like `drums`;
-   * the shell defaults it to the measured sweet spot. */
+   * scale the worker applies every chunk regardless of `drums` (like the
+   * reference). Deck config like `drums`; the shell defaults it to the
+   * measured sweet spot. */
   drumsStrength: number
   /** The deck's live beat analysis (ADR-0025), written by the shell's analysis
    * thread at most ~once per second. `bpm` is the honesty-gated readout (null =
@@ -494,8 +495,8 @@ export function setDeckPerformance(
  * auto), matching the magenta-realtime reference's `drumless` toggle. */
 export type DrumMode = 'suppress' | 'auto'
 
-/** Set a deck's drum conditioning (issue #50): suppress ("sit beside"),
- * auto (the model decides), or force. Routed through the shell
+/** Set a deck's drum conditioning (issue #50): suppress ("sit beside") or
+ * auto (the model decides). Routed through the shell
  * note-steering service — the same single sender the MCP tool uses; the
  * authored state sticks across play/stop (re-asserted on the play edge).
  * Fire-and-forget; the store projection (`drums`) reflects it. */

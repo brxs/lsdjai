@@ -1288,9 +1288,12 @@ pub fn set_deck_drums(notes: tauri::State<'_, NoteSteering>, deck: usize, mode: 
 }
 
 /// Set a deck's drum-conditioning strength (issue #50): the `cfg_drums`
-/// guidance scale behind the drum-sit control. Clamped to the model's
-/// [-1.0, 7.0] range at this trust boundary (the engine validates too);
-/// routed through the note-steering service like the mode. A bad deck is a
+/// guidance scale behind the drum-sit control. Clamped to the product/reference
+/// range [0.0, 5.0] at this trust boundary — the UI slider already caps there,
+/// and `cfg_drums` above ~5 drifts out of distribution (docs/spike-mrt2.md), so
+/// no caller (a future MCP strength setter included) can reach the OOD zone.
+/// The engine's own valid bound is wider ([-1, 7]) but 5 is the exposed max.
+/// Routed through the note-steering service like the mode. A bad deck is a
 /// silent no-op.
 #[tauri::command]
 pub fn set_deck_drums_strength(
@@ -1299,7 +1302,7 @@ pub fn set_deck_drums_strength(
     strength: f32,
 ) {
     if valid_deck(deck) {
-        notes.set_drums_strength(deck, strength.clamp(-1.0, 7.0));
+        notes.set_drums_strength(deck, strength.clamp(0.0, 5.0));
     }
 }
 

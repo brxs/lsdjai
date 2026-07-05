@@ -231,10 +231,11 @@ class DeckEngine:
         1 forces them, None returns to masked — the model decides.
 
         `cfg` is the classifier-free-guidance strength (issue #50): how hard
-        the model binds to the flag, a float in [MIN_DRUM_CFG, MAX_DRUM_CFG]
-        (None falls back to the library default). It is applied only when a
-        flag is set — masked conditioning has nothing to guide toward. Takes
-        effect on the next generate_chunk() and persists until changed."""
+        the model binds to the drum conditioning, a float in
+        [MIN_DRUM_CFG, MAX_DRUM_CFG] (None falls back to the constructor
+        baseline). It guides every generate_chunk() regardless of the flag
+        (like the reference — see generate_chunk), not only while suppressing.
+        Takes effect on the next generate_chunk() and persists until changed."""
         if flag is not None and flag not in (0, 1):
             raise ValueError("drum flag must be 0, 1, or None")
         if cfg is not None and not MIN_DRUM_CFG <= cfg <= MAX_DRUM_CFG:

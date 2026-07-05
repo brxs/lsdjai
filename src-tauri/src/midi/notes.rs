@@ -204,8 +204,8 @@ struct DrumConditioning {
     /// still encodes but no LSDJ surface emits.
     mode: Option<bool>,
     /// The `cfg_drums` guidance scale (docs/spike-mrt2.md), applied by the
-    /// worker only when `mode` is set — masked conditioning has nothing to
-    /// guide toward.
+    /// worker every chunk regardless of `mode` (like the reference), not only
+    /// while suppressing.
     strength: f32,
 }
 
@@ -851,8 +851,8 @@ mod tests {
         assert_eq!(suppress["drums"].as_i64(), Some(0));
         assert_eq!(suppress["cfg"].as_f64(), Some(4.0));
 
-        // Auto masks the flag but still carries the strength (the engine gates
-        // it — masked conditioning has nothing to guide toward).
+        // Auto masks the flag but still carries the strength — the worker
+        // always guides with it (like the reference), independent of the flag.
         let auto = parse(DrumConditioning { mode: None, strength: 4.0 });
         assert!(auto["drums"].is_null());
         assert_eq!(auto["cfg"].as_f64(), Some(4.0));
@@ -873,5 +873,28 @@ mod tests {
         assert!(state.held_pitches().is_empty());
         assert_eq!(state.drums.mode, Some(false));
         assert_eq!(state.drums.strength, 3.0);
+    }
+
+    #[test]
+    fn reassert_drums_re_emits_the_authored_sit_after_a_discontinuity() {
+        // The play edge re-sends `drums_wire(deck.drums)` (reassert_drums) right
+        // after the worker's reset. This locks the value it carries: an authored
+        // sit survives the discontinuity clear and re-emits as suppress + the
+        // authored strength — NOT the constructor baseline the fresh stream reset
+        // to. (The send plumbing — the per-deck lane, deck_play's call — has no
+        // test harness and rides the manual checklist; this is the pure data
+        // contract beneath it.)
+        let parse = |c| serde_json::from_str::<serde_json::Value>(&drums_wire(c)).unwrap();
+        let mut state = DeckState::default();
+        state.drums.mode = Some(false); // performer sits this deck's drums out
+        state.drums.strength = 3.0; // at a non-default adherence
+        state.pad_down(0);
+        state.clear_holds(); // the discontinuity: holds drop, drum config stays
+
+        let reasserted = parse(state.drums);
+        assert_eq!(reasserted["drums"].as_i64(), Some(0)); // still suppressing
+        assert_eq!(reasserted["cfg"].as_f64(), Some(3.0)); // authored, not baseline
+        // And it differs from the default a bare fresh stream would otherwise keep.
+        assert_ne!(reasserted, parse(DrumConditioning::default()));
     }
 }

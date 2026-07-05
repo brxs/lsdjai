@@ -243,8 +243,7 @@ struct SetNotesArgs {
 struct SetDrumsArgs {
     /// Deck index: 0 = A, 1 = B.
     deck: usize,
-    /// 'suppress' keeps drums out, 'force' asks for them, 'auto' hands the
-    /// choice back to the model.
+    /// 'suppress' keeps drums out, 'auto' hands the choice back to the model.
     mode: DrumModeArg,
 }
 

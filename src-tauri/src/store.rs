@@ -354,9 +354,9 @@ pub struct DeckSnap {
     /// transitions — the steering service re-asserts it on the play edge.
     pub drums: Option<bool>,
     /// The drum-conditioning strength (issue #50): the `cfg_drums` guidance
-    /// scale the worker applies while `drums` is set. Deck config like
-    /// `drums`; defaults to `DEFAULT_DRUM_STRENGTH` (the measured sweet spot,
-    /// not the library's weaker default).
+    /// scale the worker applies every chunk regardless of `drums` (like the
+    /// reference). Deck config like `drums`; defaults to `DEFAULT_DRUM_STRENGTH`
+    /// (the measured sweet spot, not the library's weaker default).
     pub drums_strength: f32,
     /// The deck's live beat analysis (ADR-0025) — a shell-written measurement,
     /// blank until the honesty gate acquires.
