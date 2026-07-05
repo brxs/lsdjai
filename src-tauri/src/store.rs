@@ -42,6 +42,13 @@ use lsdj_engine::{EqBand, FxKind, DECK_COUNT};
 /// than diffing and the projection just replaces its cache).
 pub const STORE_CHANGED_EVENT: &str = "store://changed";
 
+/// The default drum-conditioning strength (issue #50): the `cfg_drums`
+/// guidance scale a deck starts with. 4.0 matches the `magenta-realtime`
+/// reference's `DEFAULT_CFG_DRUMS` (its UI caps the scale at [0, 5]); the
+/// model's own default of 1.0 barely bites (docs/spike-mrt2.md). Shared with
+/// the note-steering service, whose `DrumConditioning::default` lands here.
+pub const DEFAULT_DRUM_STRENGTH: f32 = 4.0;
+
 /// A Color FX kind as it appears in the snapshot — a serde camelCase enum mirroring
 /// the frontend `FxKind` (the six `fx.ts` effects), so the projection names the
 /// effect by intent rather than a magic index. `Deserialize` too — it
@@ -340,8 +347,17 @@ pub struct DeckSnap {
     /// Cleared on transport transitions — a discontinuity resets conditioning.
     pub notes: Option<NoteSteeringSnap>,
     /// Drum conditioning (ADR-0023): `None` = the model decides, `false` =
-    /// suppress drums, `true` = force them. Cleared like `notes`.
+    /// suppress drums ("sit beside"). The product is binary (suppress vs auto,
+    /// like the `magenta-realtime` `drumless` toggle); `Some(true)` (force) is
+    /// a valid model flag the engine still accepts but no LSDJ surface emits.
+    /// Unlike `notes` this is deck config (issue #50): it survives transport
+    /// transitions — the steering service re-asserts it on the play edge.
     pub drums: Option<bool>,
+    /// The drum-conditioning strength (issue #50): the `cfg_drums` guidance
+    /// scale the worker applies while `drums` is set. Deck config like
+    /// `drums`; defaults to `DEFAULT_DRUM_STRENGTH` (the measured sweet spot,
+    /// not the library's weaker default).
+    pub drums_strength: f32,
     /// The deck's live beat analysis (ADR-0025) — a shell-written measurement,
     /// blank until the honesty gate acquires.
     pub analysis: AnalysisSnap,
@@ -388,6 +404,7 @@ impl Default for DeckSnap {
             performance: PerformanceSnap::default(),
             notes: None,
             drums: None,
+            drums_strength: DEFAULT_DRUM_STRENGTH,
             analysis: AnalysisSnap::default(),
             worker_died: false,
             switching_model: false,
@@ -532,11 +549,13 @@ impl InterfaceState {
         if let Some(d) = self.deck_mut(deck) {
             if d.playing != playing {
                 // A transport transition is a stream discontinuity: held
-                // note/drum steering resets with it (ADR-0023) — the worker
+                // note steering resets with it (ADR-0023) — the worker
                 // clears its engine state on the play/stop commands, and the
                 // store must never keep claiming steering the worker dropped.
+                // Drum conditioning is deck config, not a held gesture
+                // (issue #50): the mirror persists, and the steering service
+                // re-asserts it to the worker on the play edge.
                 d.notes = None;
-                d.drums = None;
             }
             d.playing = playing;
         }
@@ -551,7 +570,6 @@ impl InterfaceState {
         match self.deck_mut(deck) {
             Some(d) if !d.playing => {
                 d.notes = None;
-                d.drums = None;
                 d.playing = true;
                 true
             }
@@ -776,6 +794,12 @@ impl InterfaceState {
     pub fn set_notes(&mut self, deck: usize, notes: Option<NoteSteeringSnap>) {
         if let Some(d) = self.deck_mut(deck) {
             d.notes = notes;
+        }
+    }
+
+    pub fn set_drums_strength(&mut self, deck: usize, strength: f32) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.drums_strength = strength;
         }
     }
 
@@ -1108,6 +1132,12 @@ impl InterfaceStore {
         self.mutate(move |s| s.set_drums(deck, drums));
     }
 
+    /// Set a deck's drum-conditioning strength (issue #50): the `cfg_drums`
+    /// guidance scale mirrored for the webview slider.
+    pub fn set_deck_drums_strength(&self, deck: usize, strength: f32) {
+        self.mutate(move |s| s.set_drums_strength(deck, strength));
+    }
+
     /// Record a deck's live beat analysis (ADR-0025) — written by the shell's
     /// analysis thread at the estimate cadence; the no-change suppression in
     /// [`InterfaceStore::mutate`] keeps a held (or blank) reading silent.
@@ -1169,6 +1199,7 @@ mod tests {
             assert_eq!(deck.cursor, PadPointSnap { x: 0.5, y: 0.5 });
             assert_eq!(deck.notes, None);
             assert_eq!(deck.drums, None);
+            assert_eq!(deck.drums_strength, DEFAULT_DRUM_STRENGTH);
         }
     }
 
@@ -1183,6 +1214,9 @@ mod tests {
             }),
         );
         state.set_drums(0, Some(false));
+        state.set_drums_strength(0, 3.0);
+        assert_eq!(state.decks[0].drums_strength, 3.0);
+        assert_eq!(state.decks[1].drums_strength, DEFAULT_DRUM_STRENGTH);
         assert_eq!(state.decks[0].notes.as_ref().unwrap().pitches, vec![60, 64, 67]);
         assert_eq!(state.decks[0].drums, Some(false));
         // The other deck is untouched.
@@ -1226,7 +1260,7 @@ mod tests {
     }
 
     #[test]
-    fn transport_transitions_reset_note_and_drum_steering() {
+    fn transport_transitions_reset_notes_but_keep_drum_conditioning() {
         let mut state = InterfaceState::default();
         state.set_playing(0, true);
         state.set_notes(
@@ -1236,16 +1270,20 @@ mod tests {
                 mode: NoteModeSnap::Onset,
             }),
         );
-        state.set_drums(0, Some(true));
+        state.set_drums(0, Some(false));
+        state.set_drums_strength(0, 3.0);
         // Re-asserting the same transport state is not a discontinuity.
         state.set_playing(0, true);
         assert!(state.decks[0].notes.is_some());
-        // A stop is: steering resets with the stream (ADR-0023).
+        // A stop is: held note steering resets with the stream (ADR-0023),
+        // but drum conditioning is deck config (issue #50) — mode AND strength
+        // persist, and the steering service re-asserts them on the play edge.
         state.set_playing(0, false);
         assert_eq!(state.decks[0].notes, None);
-        assert_eq!(state.decks[0].drums, None);
-        // Steering set while stopped dies at the next play — a fresh
-        // stream starts unsteered, exactly like the worker's engine.
+        assert_eq!(state.decks[0].drums, Some(false));
+        assert_eq!(state.decks[0].drums_strength, 3.0);
+        // Notes set while stopped die at the next play — a fresh stream
+        // starts unsteered, exactly like the worker's engine. Drums stick.
         state.set_notes(
             0,
             Some(NoteSteeringSnap {
@@ -1255,6 +1293,7 @@ mod tests {
         );
         state.set_playing(0, true);
         assert_eq!(state.decks[0].notes, None);
+        assert_eq!(state.decks[0].drums, Some(false));
     }
 
     #[test]

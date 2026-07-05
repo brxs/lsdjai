@@ -143,6 +143,9 @@
       "key": "Key",
       "scale": "Scale",
       "mode": "Note mode",
+      "noDrums": "No drums — sit beside",
+      "drumsStrength": "Suppression strength — {{value}}",
+      "drumsStrengthHint": "How hard the model is pushed to keep drums out (0–5): higher holds them out more strictly, lower lets them drift back in. ~4 is the tuned default.",
       "scales": {
         "major": "Major",
         "minor": "Minor",

@@ -2,7 +2,11 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DeckSnap, InterfaceState } from '../audio/nativeEngine'
-import { setDeckPerformance } from '../audio/nativeEngine'
+import {
+  setDeckDrums,
+  setDeckDrumsStrength,
+  setDeckPerformance,
+} from '../audio/nativeEngine'
 import { useInterfaceStore } from '../audio/interfaceStore'
 import { PerformanceDrawer } from './PerformanceDrawer'
 
@@ -11,7 +15,12 @@ vi.mock('../audio/interfaceStore', () => ({
 }))
 vi.mock('../audio/nativeEngine', async (importOriginal) => {
   const original = await importOriginal<typeof import('../audio/nativeEngine')>()
-  return { ...original, setDeckPerformance: vi.fn() }
+  return {
+    ...original,
+    setDeckPerformance: vi.fn(),
+    setDeckDrums: vi.fn(),
+    setDeckDrumsStrength: vi.fn(),
+  }
 })
 
 const CLOSE_LABEL = 'Close performance controls — back to prompts'
@@ -38,6 +47,7 @@ function deckSnap(over: Partial<DeckSnap> = {}): DeckSnap {
     performance: { armed: false, key: 0, scale: 'major', mode: 'chord' },
     notes: null,
     drums: null,
+    drumsStrength: 4,
     analysis: { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 },
     workerDied: false,
     switchingModel: false,
@@ -61,6 +71,8 @@ function storeWith(deck1: Partial<DeckSnap>): InterfaceState {
 beforeEach(() => {
   vi.mocked(useInterfaceStore).mockReturnValue(null)
   vi.mocked(setDeckPerformance).mockClear()
+  vi.mocked(setDeckDrums).mockClear()
+  vi.mocked(setDeckDrumsStrength).mockClear()
 })
 
 describe('PerformanceDrawer', () => {
@@ -174,6 +186,73 @@ describe('PerformanceDrawer', () => {
       1,
       expect.objectContaining({ scale: 'pentatonicMinor', armed: true }),
     )
+  })
+
+  it('the drums toggle writes suppress/auto through the shell without arming', () => {
+    // Steering stays disarmed on purpose: drum conditioning (issue #50) is
+    // independent of the performance arm and must not touch it. Off by default
+    // (auto) → toggling on suppresses.
+    render(<PerformanceDrawer deckId="b" deckIndex={1} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
+    const drums = screen.getByRole('switch', { name: 'No drums — sit beside' })
+    expect(drums).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(drums)
+    expect(setDeckDrums).toHaveBeenCalledWith(1, 'suppress')
+    expect(setDeckPerformance).not.toHaveBeenCalled()
+  })
+
+  it('the drums toggle reflects the store mirror and toggles back to auto', () => {
+    // Suppressing: the toggle reads on, and clicking it hands drums back.
+    vi.mocked(useInterfaceStore).mockReturnValue(storeWith({ drums: false }))
+    const first = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
+    const on = screen.getByRole('switch', { name: 'No drums — sit beside' })
+    expect(on).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(on)
+    expect(setDeckDrums).toHaveBeenCalledWith(1, 'auto')
+    first.unmount()
+
+    // null (auto) with a real snapshot present, not just the no-store fallback.
+    vi.mocked(useInterfaceStore).mockReturnValue(storeWith({ drums: null }))
+    render(<PerformanceDrawer deckId="b" deckIndex={1} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
+    expect(
+      screen.getByRole('switch', { name: 'No drums — sit beside' }),
+    ).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('reveals the suppression-strength slider only when suppressing', () => {
+    // Auto: no strength control — it would have nothing to bias.
+    const first = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
+    expect(screen.queryByRole('slider')).toBeNull()
+    first.unmount()
+
+    // Suppress: the slider appears at the store's strength and writes changes
+    // over the reference range (0-5, step 0.1).
+    vi.mocked(useInterfaceStore).mockReturnValue(
+      storeWith({ drums: false, drumsStrength: 4 }),
+    )
+    render(<PerformanceDrawer deckId="b" deckIndex={1} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
+    const slider = screen.getByLabelText('Suppression strength — 4') as HTMLInputElement
+    expect(slider.value).toBe('4')
+    expect(slider.min).toBe('0')
+    expect(slider.max).toBe('5')
+    // A hint explains what the value means (the number alone is opaque).
+    expect(screen.getByText(/how hard the model is pushed/i)).toBeInTheDocument()
+    fireEvent.change(slider, { target: { value: '3.5' } })
+    expect(setDeckDrumsStrength).toHaveBeenCalledWith(1, 3.5)
+  })
+
+  it('the strength slider projects a fractional store value', () => {
+    vi.mocked(useInterfaceStore).mockReturnValue(
+      storeWith({ drums: false, drumsStrength: 2.5 }),
+    )
+    render(<PerformanceDrawer deckId="b" deckIndex={1} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
+    const slider = screen.getByLabelText('Suppression strength — 2.5') as HTMLInputElement
+    expect(slider.value).toBe('2.5')
   })
 
   it('the HUD strip reads off / live / holding', () => {

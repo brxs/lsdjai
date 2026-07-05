@@ -34,7 +34,7 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio_util::sync::CancellationToken;
 
-use crate::commands::{valid_deck, EqBandArg, FxKindArg};
+use crate::commands::{valid_deck, DrumModeArg, EqBandArg, FxKindArg};
 use crate::generation::GenerationServer;
 use crate::samples::{NewSample, SampleLibrary};
 use crate::sidecar::Sidecars;
@@ -239,23 +239,13 @@ struct SetNotesArgs {
     mode: Option<NoteModeSnap>,
 }
 
-/// The drum-conditioning intent an agent authors (maps to the store's
-/// tri-state: suppress = false, force = true, auto = None/masked).
-#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "lowercase")]
-enum DrumSteerArg {
-    Suppress,
-    Force,
-    Auto,
-}
-
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct SetDrumsArgs {
     /// Deck index: 0 = A, 1 = B.
     deck: usize,
     /// 'suppress' keeps drums out, 'force' asks for them, 'auto' hands the
     /// choice back to the model.
-    mode: DrumSteerArg,
+    mode: DrumModeArg,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -654,9 +644,10 @@ impl McpHandler {
     /// service as `set_notes` (it sends the wire flag and mirrors the store).
     #[tool(
         description = "Set a realtime deck's drum conditioning: 'suppress' keeps \
-                       drums out (sit beside another deck), 'force' asks for them, \
-                       'auto' hands the choice back to the model. Resets on \
-                       play/stop/model switch like note steering. deck 0 = A, 1 = B."
+                       drums out (sit beside another deck), 'auto' hands the choice \
+                       back to the model. Deck config (issue #50): it sticks across \
+                       play/stop/model switch — the shell re-asserts it over each \
+                       fresh stream — until 'auto' hands it back. deck 0 = A, 1 = B."
     )]
     async fn set_drums(
         &self,
@@ -665,18 +656,12 @@ impl McpHandler {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
         }
-        let flag = match mode {
-            DrumSteerArg::Suppress => Some(false),
-            DrumSteerArg::Force => Some(true),
-            DrumSteerArg::Auto => None,
-        };
-        self.app.state::<NoteSteering>().set_drums(deck, flag);
+        self.app.state::<NoteSteering>().set_drums(deck, mode.into());
         format!(
             "deck {deck} drums {}",
             match mode {
-                DrumSteerArg::Suppress => "suppressed",
-                DrumSteerArg::Force => "forced",
-                DrumSteerArg::Auto => "back to the model",
+                DrumModeArg::Suppress => "suppressed",
+                DrumModeArg::Auto => "back to the model",
             }
         )
     }

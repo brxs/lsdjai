@@ -320,8 +320,15 @@ export type DeckSnap = {
    * (hardware pads/keyboard, MCP); cleared on transport transitions. */
   notes: { pitches: number[]; mode: 'chord' | 'onset' } | null
   /** Drum conditioning (ADR-0023): null = the model decides, false = suppress
-   * drums, true = force them. Cleared like `notes`. */
+   * drums ("sit beside"). The product is binary (suppress vs auto); `true`
+   * (force) is a valid model flag no LSDJ surface emits. Unlike `notes` this
+   * is deck config (issue #50): it survives transport transitions — the shell
+   * re-asserts it to the worker on the play edge. */
   drums: boolean | null
+  /** The drum-conditioning strength (issue #50): the `cfg_drums` guidance
+   * scale the worker applies while `drums` is set. Deck config like `drums`;
+   * the shell defaults it to the measured sweet spot. */
+  drumsStrength: number
   /** The deck's live beat analysis (ADR-0025), written by the shell's analysis
    * thread at most ~once per second. `bpm` is the honesty-gated readout (null =
    * blank, the feature); `liveBeat` the phase clock (anchor in pushed frames
@@ -480,6 +487,29 @@ export function setDeckPerformance(
   perf: DeckSnap['performance'],
 ): void {
   void invoke('set_deck_performance', { deck, perf }).catch(() => {})
+}
+
+/** The drum-conditioning vocabulary the IPC boundary speaks (issue #50) —
+ * mirrors the shell's `DrumModeArg` and the MCP tool. Binary (suppress vs
+ * auto), matching the magenta-realtime reference's `drumless` toggle. */
+export type DrumMode = 'suppress' | 'auto'
+
+/** Set a deck's drum conditioning (issue #50): suppress ("sit beside"),
+ * auto (the model decides), or force. Routed through the shell
+ * note-steering service — the same single sender the MCP tool uses; the
+ * authored state sticks across play/stop (re-asserted on the play edge).
+ * Fire-and-forget; the store projection (`drums`) reflects it. */
+export function setDeckDrums(deck: number, mode: DrumMode): void {
+  void invoke('set_deck_drums', { deck, mode }).catch(() => {})
+}
+
+/** Set a deck's drum-conditioning strength (issue #50): the `cfg_drums`
+ * guidance scale behind the drum-sit control. Routed through the shell
+ * note-steering service like the mode; the shell clamps to the model's
+ * range and re-asserts it on the play edge. Fire-and-forget; the store
+ * projection (`drumsStrength`) reflects it. */
+export function setDeckDrumsStrength(deck: number, strength: number): void {
+  void invoke('set_deck_drums_strength', { deck, strength }).catch(() => {})
 }
 
 // Coalesce high-rate intents to ~one invoke per animation frame, like the

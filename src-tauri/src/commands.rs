@@ -1149,6 +1149,11 @@ pub fn deck_play(
         // A fresh stream starts unsteered (ADR-0023): the worker just reset its
         // conditioning, so the note service drops the matching held state.
         notes.reset(deck);
+        // Drum-sit is deck config, not a held gesture (issue #50): re-assert
+        // the authored tri-state over the fresh stream. Ordering holds — the
+        // play command was written above, and the service's per-deck lane is
+        // FIFO behind it.
+        notes.reassert_drums(deck);
     }
 }
 
@@ -1244,6 +1249,57 @@ pub fn set_deck_performance(
 ) {
     if valid_deck(deck) && perf.key < 12 {
         notes.set_performance(deck, perf);
+    }
+}
+
+/// Drum conditioning as it crosses the IPC boundary (issue #50): 'suppress'
+/// keeps drums out (sit beside another deck), 'auto' hands the choice back to
+/// the model. Binary, matching the `magenta-realtime` reference's `drumless`
+/// toggle (suppress vs masked) — the model also accepts a force flag but the
+/// reference never exposes it, so LSDJ doesn't either. A serde enum so an
+/// unknown mode is a clean deserialization `Err`; `JsonSchema` too, so the MCP
+/// tool surface (`crate::mcp`) reuses it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DrumModeArg {
+    Suppress,
+    Auto,
+}
+
+impl From<DrumModeArg> for Option<bool> {
+    fn from(mode: DrumModeArg) -> Self {
+        match mode {
+            DrumModeArg::Suppress => Some(false),
+            DrumModeArg::Auto => None,
+        }
+    }
+}
+
+/// Set a deck's drum conditioning (issue #50): the tri-state "drum-sit"
+/// mixing control. Routed through the note-steering service — the same
+/// single sender the MCP tool uses (ADR-0031) — which records the authored
+/// state (re-asserted on the play edge), sends the wire flag, and mirrors
+/// the store. A bad deck is a silent no-op at this trust boundary.
+#[tauri::command]
+pub fn set_deck_drums(notes: tauri::State<'_, NoteSteering>, deck: usize, mode: DrumModeArg) {
+    if valid_deck(deck) {
+        notes.set_drums(deck, mode.into());
+    }
+}
+
+/// Set a deck's drum-conditioning strength (issue #50): the `cfg_drums`
+/// guidance scale behind the drum-sit control. Clamped to the model's
+/// [-1.0, 7.0] range at this trust boundary (the engine validates too);
+/// routed through the note-steering service like the mode. A bad deck is a
+/// silent no-op.
+#[tauri::command]
+pub fn set_deck_drums_strength(
+    notes: tauri::State<'_, NoteSteering>,
+    deck: usize,
+    strength: f32,
+) {
+    if valid_deck(deck) {
+        notes.set_drums_strength(deck, strength.clamp(-1.0, 7.0));
     }
 }
 

@@ -54,8 +54,8 @@ class FakeEngine:
             raise ValueError("bad multihot")
         self.notes.append(notes)
 
-    def set_drums(self, flag):
-        self.drums.append(flag)
+    def set_drums(self, flag, cfg=None):
+        self.drums.append((flag, cfg))
 
     def set_chunk_frames(self, frames):
         if self.fail_set_chunk_frames:
@@ -206,16 +206,18 @@ def test_set_notes_applies_and_reports(deck):
 
 
 def test_set_drums_applies_and_reports(deck):
-    deck.send(type="set_drums", drums=0)
+    deck.send(type="set_drums", drums=0, cfg=5.0)
     applied = deck.next_event("drums_applied")
     assert applied["drums"] == 0
     assert applied["effective_from_chunk"] == 0
-    assert deck.engine.drums[-1] == 0
+    # The strength (issue #50) rides the same message through to the engine.
+    assert deck.engine.drums[-1] == (0, 5.0)
 
     # None returns the flag to masked — the model decides.
     deck.send(type="set_drums", drums=None)
     assert deck.next_event("drums_applied")["drums"] is None
-    assert deck.engine.drums[-1] is None
+    # A message without cfg falls back to the library default (None).
+    assert deck.engine.drums[-1] == (None, None)
 
 
 def test_set_chunk_frames_applies_and_reports(deck):
@@ -259,9 +261,10 @@ def test_play_resets_note_and_drum_conditioning(deck):
     deck.next_event("drums_applied")
     deck.send(type="play")
     deck.next_event("audio")
-    # A fresh stream starts unsteered (ADR-0023's discontinuity rule).
+    # A fresh stream starts unsteered (ADR-0023's discontinuity rule); the
+    # shell re-asserts drum-sit on the play edge (issue #50), not the worker.
     assert deck.engine.notes[-1] is None
-    assert deck.engine.drums[-1] is None
+    assert deck.engine.drums[-1] == (None, None)
 
 
 def test_stop_resets_note_and_drum_conditioning(deck):
@@ -274,7 +277,7 @@ def test_stop_resets_note_and_drum_conditioning(deck):
     deck.send(type="set_prompt", prompt="proof of drain")
     deck.next_event("style_applied")
     assert deck.engine.notes[-1] is None
-    assert deck.engine.drums[-1] is None
+    assert deck.engine.drums[-1] == (None, None)
 
 
 def test_generation_failure_stops_deck_but_worker_survives(deck):

@@ -163,7 +163,9 @@ def run_deck_worker(
                     if kind == "set_notes":
                         engine.set_notes(cmd["notes"])
                     else:
-                        engine.set_drums(cmd["drums"])
+                        # `cfg` (issue #50) is optional on the wire — a missing
+                        # one falls back to the library default in the engine.
+                        engine.set_drums(cmd["drums"], cmd.get("cfg"))
                 except Exception:
                     # The deck must survive a bad payload; the Rust deck command
                     # validates shape at the trust boundary (the sidecar shell is

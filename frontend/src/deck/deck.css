@@ -327,9 +327,19 @@
   min-width: 0;
 }
 
+/* The rule between the MIDI-steering config and the Drums control (issue
+   #50): the black on-accent ink at full strength, a hard split between the
+   two conditioning groups; the column gap spaces it. */
+.deck__perform-divider {
+  height: 1px;
+  background: var(--color-on-accent);
+}
+
 /* The dark field modules read as stickers on the accent slab; their
-   silkscreen labels flip to the on-accent ink for contrast. */
-.deck__perform-door .ui-field__label {
+   silkscreen labels flip to the on-accent ink for contrast — selects and the
+   drum-strength slider (issue #50) alike. */
+.deck__perform-door .ui-field__label,
+.deck__perform-door .ui-slider__label {
   color: var(--color-on-accent);
 }
 

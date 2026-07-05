@@ -27,6 +27,31 @@ MAX_CHUNK_FRAMES = FRAMES_PER_CHUNK
 # the model deciding attack vs continuation.
 NOTE_SLOTS = 128
 NOTE_STATES = frozenset((-1, 0, 1, 2, 3))
+# Onset (2, "first time") is a one-chunk event: a held press decays to sustain
+# (1) on the next chunk, or the model re-attacks the note every chunk. The two
+# states the decay rule bridges (issue #46/#48).
+NOTE_ONSET = 2
+NOTE_SUSTAIN = 1
+
+# Drum conditioning strength (issue #50): the `cfg_drums` classifier-free
+# guidance scale, a float the model accepts in [-1.0, 7.0]. The measured useful
+# range is ~3-5 (docs/spike-mrt2.md) — the library default of 1.0 barely bites
+# on a hot stream, and very high values drift out of distribution.
+MIN_DRUM_CFG = -1.0
+MAX_DRUM_CFG = 7.0
+
+# MRT2 sampling / guidance operating point (issue #50 reference audit). The
+# library constructor defaults (temperature 1.3, top_k 40, cfg_musiccoca 3.0,
+# cfg_notes 1.0) differ from what every `magenta-realtime` example app ships;
+# LSDJ adopts the reference app defaults (examples/common/react_ui/
+# defaultParams.ts) so generation matches the tuned MRT2 experience rather than
+# the raw library floor. `cfg_drums` is deliberately NOT set here — it is owned
+# per-deck by the drum-sit control (the Rust store) and passed per
+# generate_chunk (docs/spike-mrt2.md).
+TEMPERATURE = 1.1
+TOP_K = 50
+CFG_MUSICCOCA = 1.6
+CFG_NOTES = 2.4
 
 # The official models the in-app manager offers to download. This is the
 # installable catalog, NOT a discovery gate: `available_models()` discovers any
@@ -79,11 +104,22 @@ class DeckEngine:
         # the worker process.
         from magenta_rt.mlx import system
 
-        self._system = system.MagentaRT2SystemMlxfn(size=model)
+        # Reference-aligned sampling/guidance operating point (see the constants
+        # above): match the magenta-realtime apps, not the raw library floor.
+        # cfg_drums stays at the library default here and is overridden per
+        # generate_chunk by the drum-sit control (issue #50).
+        self._system = system.MagentaRT2SystemMlxfn(
+            size=model,
+            temperature=TEMPERATURE,
+            top_k=TOP_K,
+            cfg_musiccoca=CFG_MUSICCOCA,
+            cfg_notes=CFG_NOTES,
+        )
         self._state = None
         self._style = None
         self._notes: list[int] | None = None
         self._drums: int | None = None
+        self._drums_cfg: float | None = None
         self._chunk_frames = FRAMES_PER_CHUNK
         self._embed_cache: dict[str, np.ndarray] = {}
         self._samples: dict[str, np.ndarray] = {}
@@ -187,13 +223,23 @@ class DeckEngine:
                 raise ValueError("note states must be -1, 0, 1, 2, or 3")
         self._notes = None if notes is None else list(notes)
 
-    def set_drums(self, flag: int | None) -> None:
-        """Set the drum conditioning flag (ADR-0023): 0 suppresses drums,
-        1 forces them, None returns to masked — the model decides. Takes
+    def set_drums(self, flag: int | None, cfg: float | None = None) -> None:
+        """Set the drum conditioning (ADR-0023): flag 0 suppresses drums,
+        1 forces them, None returns to masked — the model decides.
+
+        `cfg` is the classifier-free-guidance strength (issue #50): how hard
+        the model binds to the flag, a float in [MIN_DRUM_CFG, MAX_DRUM_CFG]
+        (None falls back to the library default). It is applied only when a
+        flag is set — masked conditioning has nothing to guide toward. Takes
         effect on the next generate_chunk() and persists until changed."""
         if flag is not None and flag not in (0, 1):
             raise ValueError("drum flag must be 0, 1, or None")
+        if cfg is not None and not MIN_DRUM_CFG <= cfg <= MAX_DRUM_CFG:
+            raise ValueError(
+                f"drum cfg must be in [{MIN_DRUM_CFG}, {MAX_DRUM_CFG}] or None"
+            )
         self._drums = flag
+        self._drums_cfg = cfg
 
     def set_chunk_frames(self, frames: int) -> None:
         """Set the per-chunk frame count (the ADR-0023 performance knob).
@@ -231,9 +277,22 @@ class DeckEngine:
             style=self._style,
             notes=self._notes,
             drums=None if self._drums is None else [self._drums],
+            # cfg_drums only bites when a flag is set; masked conditioning has
+            # nothing to guide toward (issue #50).
+            cfg_drums=self._drums_cfg if self._drums is not None else None,
             frames=self._chunk_frames,
             state=self._state,
         )
+        # Onset is a one-chunk event (ADR-0023): a held press marked "first
+        # time" (state 2) has now sounded its attack, so decay it to sustain
+        # (1) for the next chunk. Without this a held note re-attacks every
+        # chunk (~5 Hz on an armed deck) instead of ringing. Chord-follow's
+        # state 3 is NOT an onset — it stays, the model re-decides the attack
+        # each chunk by design.
+        if self._notes is not None:
+            self._notes = [
+                NOTE_SUSTAIN if state == NOTE_ONSET else state for state in self._notes
+            ]
         return waveform.samples.astype(np.float32).tobytes()
 
     def render_clip(self, prompt: str, seconds: float) -> bytes:
