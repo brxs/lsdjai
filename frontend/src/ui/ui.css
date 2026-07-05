@@ -707,6 +707,11 @@
   border-radius: var(--radius-m);
   box-shadow: var(--inset-border);
   touch-action: none;
+  /* Dragging the surface is a control gesture, not a text drag: suppress the
+     selection the pointer would otherwise sweep over the target labels
+     (-webkit- for the macOS WKWebView). */
+  user-select: none;
+  -webkit-user-select: none;
   cursor: crosshair;
   /* The pad owns its square: edge targets' labels used to spill into the
      panel (and under the performance door's parked rail, poking out the far

@@ -64,9 +64,9 @@ export function PerformanceDrawer({
   // suppresses its drums ("sit beside") when `drums === false`, else the model
   // decides. Binary, like the magenta-realtime `drumless` toggle.
   const drumsOff = snap?.drums === false
-  // The suppression strength (cfg_drums) — meaningful only while suppressing,
-  // so the slider is revealed with the toggle. Rounded to the 0.1 step to
-  // shed f32 mirror noise.
+  // The drum-adherence strength (cfg_drums) — always shown and always guiding
+  // (like the reference), independent of the No-drums toggle. Rounded to the
+  // 0.1 step to shed f32 mirror noise.
   const drumStrength =
     Math.round((snap?.drumsStrength ?? DEFAULT_DRUM_STRENGTH) * 10) / 10
 
@@ -175,10 +175,11 @@ export function PerformanceDrawer({
               : t('deck.perform.live')}
         </p>
         {/* Drum conditioning (issue #50) — independent of the MIDI-steering
-            arm; the rule keeps the two reads apart on the door. Two controls
-            with the magenta-realtime reference's exact labels: a "No drums"
-            toggle and an always-shown "Drums adherence" knob (its value always
-            guides generation, so it is never hidden). Each carries a hint. */}
+            arm; a rule fences it off from the steering block above, and a
+            second splits its own two controls. Both carry the magenta-realtime
+            reference's exact labels: a "No drums" toggle and an always-shown
+            "Drums adherence" knob (its value always guides generation, so it is
+            never hidden). Each carries a hint. */}
         <div className="deck__perform-divider" />
         <div className="deck__perform-row">
           <Switch
@@ -189,6 +190,7 @@ export function PerformanceDrawer({
           />
         </div>
         <p className="deck__perform-hint">{t('deck.perform.noDrumsHint')}</p>
+        <div className="deck__perform-divider" />
         <Slider
           label={t('deck.perform.drumsAdherence', { value: drumStrength })}
           min={DRUM_STRENGTH_MIN}
