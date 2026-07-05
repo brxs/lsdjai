@@ -176,19 +176,19 @@ export function PerformanceDrawer({
         </p>
         {/* Drum conditioning (issue #50) — independent of the MIDI-steering
             arm; the rule keeps the two reads apart on the door. Two controls
-            like the magenta-realtime reference: a steering toggle and an
-            always-shown adherence knob (its value always guides generation,
-            so it is never hidden). Each carries a hint saying what it does. */}
+            with the magenta-realtime reference's exact labels: a "No drums"
+            toggle and an always-shown "Drums adherence" knob (its value always
+            guides generation, so it is never hidden). Each carries a hint. */}
         <div className="deck__perform-divider" />
         <div className="deck__perform-row">
           <Switch
-            label={t('deck.perform.drumSteering')}
+            label={t('deck.perform.noDrums')}
             on={drumsOff}
             accent={deckId}
             onClick={toggleDrums}
           />
         </div>
-        <p className="deck__perform-hint">{t('deck.perform.drumSteeringHint')}</p>
+        <p className="deck__perform-hint">{t('deck.perform.noDrumsHint')}</p>
         <Slider
           label={t('deck.perform.drumsAdherence', { value: drumStrength })}
           min={DRUM_STRENGTH_MIN}

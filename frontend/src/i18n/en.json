@@ -143,8 +143,8 @@
       "key": "Key",
       "scale": "Scale",
       "mode": "Note mode",
-      "drumSteering": "Drum steering",
-      "drumSteeringHint": "On holds this deck's drums out so it sits beside another deck; off lets the model decide.",
+      "noDrums": "No drums",
+      "noDrumsHint": "On holds this deck's drums out so it sits beside another deck; off lets the model decide.",
       "drumsAdherence": "Drums adherence — {{value}}",
       "drumsAdherenceHint": "How strictly the model follows the drum setting (0–5): higher forces stricter compliance, lower allows more creative drift. ~4 is the tuned default.",
       "scales": {

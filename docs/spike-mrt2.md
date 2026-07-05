@@ -90,7 +90,7 @@ the tuned MRT2 experience:
 note-steering (issue #48). All four are set once on the system, not per call.
 `cfg_drums` is set to the same 4.0 baseline so an untouched deck matches the
 reference. The UI exposes it as an always-shown **"Drums adherence"** knob (its
-own control, independent of the **"Drum steering"** suppress toggle, like the
+own control, independent of the **"No drums"** suppress toggle, like the
 reference): `generate_chunk` passes the knob's value every chunk (not only
 while suppressing), falling back to the baseline only before it is ever set.
 

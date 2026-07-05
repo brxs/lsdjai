@@ -1,17 +1,18 @@
 # Issue #50 — drum-sit layering: by-ear checklist
 
 Issue #50 exposes the #46 drum conditioning as a per-deck mixing control: a
-**Drums** tri-state in the performance drawer (webview → `set_deck_drums` →
-the shell `NoteSteering` service → worker), sticky across play/stop — the
-shell re-asserts the authored state over each fresh stream, superseding the
+**No drums** toggle plus a **Drums adherence** knob in the performance drawer
+(webview → `set_deck_drums` / `set_deck_drums_strength` → the shell
+`NoteSteering` service → worker), sticky across play/stop — the shell
+re-asserts the authored state over each fresh stream, superseding the
 reset-on-discontinuity behaviour the issue-46 checklist recorded for drums
 (held *notes* still reset).
 
 The unit tests cover the store mirror surviving transport transitions and
 the authored state surviving a discontinuity clear; the play-edge re-assert
 itself has no automated test — it is verified only here. **This checklist is
-the part tests can't reach**: that the control audibly suppresses/forces the
-real model's drums, and that the re-assert really lands on a fresh stream.
+the part tests can't reach**: that the control audibly suppresses the real
+model's drums, and that the re-assert really lands on a fresh stream.
 Tick a box only after hearing it on a real stream.
 
 A change lands at the next chunk boundary but is *heard* only once the deck's
@@ -24,14 +25,14 @@ deck (the 1 s chunk plus the worker's ~3 s pacing cushion).
       "four on the floor techno" plus something pitched, e.g. "warm dub
       chords").
 - [ ] Open deck A's performance door (the Config rail on the prompt pad):
-      the **Drum steering** toggle is off (auto) and the **Drums adherence**
+      the **No drums** toggle is off (auto) and the **Drums adherence**
       slider sits below it (always shown), with MIDI steering off. Two
       independent controls, matching the magenta-realtime reference (steering
       toggle + adherence knob); there is no "force drums".
 
-## The steering toggle, by ear
+## The No-drums toggle, by ear
 
-- [ ] Flip **Drum steering** on for the playing deck: the kit audibly
+- [ ] Flip **No drums** on for the playing deck: the kit audibly
       thins/drops within ~4 s (from a fresh stream) while the pitched content
       continues. On a stream that has been drumming a while, expect the full
       thinning to take ~10-30 s as the drummed context rolls out
@@ -43,7 +44,7 @@ deck (the 1 s chunk plus the worker's ~3 s pacing cushion).
 ## Drums adherence (cfg_drums, issue #50)
 
 - [ ] The **Drums adherence** slider is **always shown** (independent of the
-      steering toggle), range **0-5**, defaulting to **4** (the reference's
+      No-drums toggle), range **0-5**, defaulting to **4** (the reference's
       `DEFAULT_CFG_DRUMS`).
 - [ ] With steering on, lowering adherence toward 0 audibly weakens the
       suppression (drums creep back); raising toward ~5 forces the hardest
@@ -53,15 +54,15 @@ deck (the 1 s chunk plus the worker's ~3 s pacing cushion).
       model (it always guides, like the reference). Sweep it and note whether
       it has any audible effect on an unsteered deck — the masked drum
       condition may make it subtle or inert.
-- [ ] Adherence persists across stop→play with the steering toggle (both are
+- [ ] Adherence persists across stop→play with the No-drums toggle (both are
       deck config).
 
 ## Sticky across discontinuities (the #50 semantics)
 
-- [ ] **Drum steering** on, then **stop** deck A and **play** again: the
+- [ ] **No drums** on, then **stop** deck A and **play** again: the
       toggle still reads on, and within ~4 s of the fresh stream the drums are
       audibly suppressed again (the re-assert landed).
-- [ ] **Drum steering** on, then **switch deck A's model**: after the reload
+- [ ] **No drums** on, then **switch deck A's model**: after the reload
       and a fresh play, the toggle still reads on and the suppression holds.
 - [ ] Held **notes** still die on stop→play (steer a chord via pads/MCP,
       stop, play): free harmony returns — only drums stick.
@@ -69,7 +70,7 @@ deck (the 1 s chunk plus the worker's ~3 s pacing cushion).
 ## The two-deck point of the feature
 
 - [ ] Deck B looping a beat (layered sample or its own stream) under deck
-      A: flipping deck A's **Drum steering** on audibly un-muddies the low
+      A: flipping deck A's **No drums** on audibly un-muddies the low
       end; flipping back restores the clash.
 
 ## Onset note decay (issue #46/#48, folded in)

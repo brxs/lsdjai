@@ -188,13 +188,13 @@ describe('PerformanceDrawer', () => {
     )
   })
 
-  it('the drum-steering toggle writes suppress/auto through the shell without arming', () => {
+  it('the No-drums toggle writes suppress/auto through the shell without arming', () => {
     // Steering stays disarmed on purpose: drum conditioning (issue #50) is
     // independent of the performance arm and must not touch it. Off by default
     // (auto) → toggling on suppresses.
     render(<PerformanceDrawer deckId="b" deckIndex={1} />)
     fireEvent.click(screen.getByRole('button', { name: 'Config' }))
-    const drums = screen.getByRole('switch', { name: 'Drum steering' })
+    const drums = screen.getByRole('switch', { name: 'No drums' })
     expect(drums).toHaveAttribute('aria-checked', 'false')
     fireEvent.click(drums)
     expect(setDeckDrums).toHaveBeenCalledWith(1, 'suppress')
@@ -203,12 +203,12 @@ describe('PerformanceDrawer', () => {
     expect(screen.getByText(/holds this deck's drums out/i)).toBeInTheDocument()
   })
 
-  it('the drum-steering toggle reflects the store mirror and toggles back to auto', () => {
+  it('the No-drums toggle reflects the store mirror and toggles back to auto', () => {
     // Suppressing: the toggle reads on, and clicking it hands drums back.
     vi.mocked(useInterfaceStore).mockReturnValue(storeWith({ drums: false }))
     const first = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
     fireEvent.click(screen.getByRole('button', { name: 'Config' }))
-    const on = screen.getByRole('switch', { name: 'Drum steering' })
+    const on = screen.getByRole('switch', { name: 'No drums' })
     expect(on).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(on)
     expect(setDeckDrums).toHaveBeenCalledWith(1, 'auto')
@@ -219,7 +219,7 @@ describe('PerformanceDrawer', () => {
     render(<PerformanceDrawer deckId="b" deckIndex={1} />)
     fireEvent.click(screen.getByRole('button', { name: 'Config' }))
     expect(
-      screen.getByRole('switch', { name: 'Drum steering' }),
+      screen.getByRole('switch', { name: 'No drums' }),
     ).toHaveAttribute('aria-checked', 'false')
   })
 
