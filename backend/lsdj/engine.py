@@ -280,9 +280,11 @@ class DeckEngine:
             style=self._style,
             notes=self._notes,
             drums=None if self._drums is None else [self._drums],
-            # cfg_drums only bites when a flag is set; masked conditioning has
-            # nothing to guide toward (issue #50).
-            cfg_drums=self._drums_cfg if self._drums is not None else None,
+            # The Drums Adherence scale always guides the drum conditioning
+            # (like the reference), independent of the suppress flag; `None`
+            # (its unset default) falls back to the constructor baseline
+            # (issue #50).
+            cfg_drums=self._drums_cfg,
             frames=self._chunk_frames,
             state=self._state,
         )

@@ -188,25 +188,27 @@ describe('PerformanceDrawer', () => {
     )
   })
 
-  it('the drums toggle writes suppress/auto through the shell without arming', () => {
+  it('the drum-steering toggle writes suppress/auto through the shell without arming', () => {
     // Steering stays disarmed on purpose: drum conditioning (issue #50) is
     // independent of the performance arm and must not touch it. Off by default
     // (auto) → toggling on suppresses.
     render(<PerformanceDrawer deckId="b" deckIndex={1} />)
     fireEvent.click(screen.getByRole('button', { name: 'Config' }))
-    const drums = screen.getByRole('switch', { name: 'No drums — sit beside' })
+    const drums = screen.getByRole('switch', { name: 'Drum steering' })
     expect(drums).toHaveAttribute('aria-checked', 'false')
     fireEvent.click(drums)
     expect(setDeckDrums).toHaveBeenCalledWith(1, 'suppress')
     expect(setDeckPerformance).not.toHaveBeenCalled()
+    // The toggle carries a hint explaining what on/off do.
+    expect(screen.getByText(/holds this deck's drums out/i)).toBeInTheDocument()
   })
 
-  it('the drums toggle reflects the store mirror and toggles back to auto', () => {
+  it('the drum-steering toggle reflects the store mirror and toggles back to auto', () => {
     // Suppressing: the toggle reads on, and clicking it hands drums back.
     vi.mocked(useInterfaceStore).mockReturnValue(storeWith({ drums: false }))
     const first = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
     fireEvent.click(screen.getByRole('button', { name: 'Config' }))
-    const on = screen.getByRole('switch', { name: 'No drums — sit beside' })
+    const on = screen.getByRole('switch', { name: 'Drum steering' })
     expect(on).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(on)
     expect(setDeckDrums).toHaveBeenCalledWith(1, 'auto')
@@ -217,41 +219,35 @@ describe('PerformanceDrawer', () => {
     render(<PerformanceDrawer deckId="b" deckIndex={1} />)
     fireEvent.click(screen.getByRole('button', { name: 'Config' }))
     expect(
-      screen.getByRole('switch', { name: 'No drums — sit beside' }),
+      screen.getByRole('switch', { name: 'Drum steering' }),
     ).toHaveAttribute('aria-checked', 'false')
   })
 
-  it('reveals the suppression-strength slider only when suppressing', () => {
-    // Auto: no strength control — it would have nothing to bias.
-    const first = render(<PerformanceDrawer deckId="b" deckIndex={1} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
-    expect(screen.queryByRole('slider')).toBeNull()
-    first.unmount()
-
-    // Suppress: the slider appears at the store's strength and writes changes
-    // over the reference range (0-5, step 0.1).
+  it('the adherence slider is always shown, even in auto', () => {
+    // Independent of steering (issue #50) — the value always guides
+    // generation, so the slider is never hidden. Reference range 0-5, step 0.1.
     vi.mocked(useInterfaceStore).mockReturnValue(
-      storeWith({ drums: false, drumsStrength: 4 }),
+      storeWith({ drums: null, drumsStrength: 4 }),
     )
     render(<PerformanceDrawer deckId="b" deckIndex={1} />)
     fireEvent.click(screen.getByRole('button', { name: 'Config' }))
-    const slider = screen.getByLabelText('Suppression strength — 4') as HTMLInputElement
+    const slider = screen.getByLabelText('Drums adherence — 4') as HTMLInputElement
     expect(slider.value).toBe('4')
     expect(slider.min).toBe('0')
     expect(slider.max).toBe('5')
     // A hint explains what the value means (the number alone is opaque).
-    expect(screen.getByText(/how hard the model is pushed/i)).toBeInTheDocument()
+    expect(screen.getByText(/how strictly the model follows/i)).toBeInTheDocument()
     fireEvent.change(slider, { target: { value: '3.5' } })
     expect(setDeckDrumsStrength).toHaveBeenCalledWith(1, 3.5)
   })
 
-  it('the strength slider projects a fractional store value', () => {
+  it('the adherence slider projects a fractional store value', () => {
     vi.mocked(useInterfaceStore).mockReturnValue(
       storeWith({ drums: false, drumsStrength: 2.5 }),
     )
     render(<PerformanceDrawer deckId="b" deckIndex={1} />)
     fireEvent.click(screen.getByRole('button', { name: 'Config' }))
-    const slider = screen.getByLabelText('Suppression strength — 2.5') as HTMLInputElement
+    const slider = screen.getByLabelText('Drums adherence — 2.5') as HTMLInputElement
     expect(slider.value).toBe('2.5')
   })
 

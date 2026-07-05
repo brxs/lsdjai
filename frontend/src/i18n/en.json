@@ -143,9 +143,10 @@
       "key": "Key",
       "scale": "Scale",
       "mode": "Note mode",
-      "noDrums": "No drums — sit beside",
-      "drumsStrength": "Suppression strength — {{value}}",
-      "drumsStrengthHint": "How hard the model is pushed to keep drums out (0–5): higher holds them out more strictly, lower lets them drift back in. ~4 is the tuned default.",
+      "drumSteering": "Drum steering",
+      "drumSteeringHint": "On holds this deck's drums out so it sits beside another deck; off lets the model decide.",
+      "drumsAdherence": "Drums adherence — {{value}}",
+      "drumsAdherenceHint": "How strictly the model follows the drum setting (0–5): higher forces stricter compliance, lower allows more creative drift. ~4 is the tuned default.",
       "scales": {
         "major": "Major",
         "minor": "Minor",

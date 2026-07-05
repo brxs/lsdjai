@@ -242,18 +242,17 @@ def test_set_drums_wraps_the_flag_for_the_model():
     assert [call["drums"] for call in calls] == [[0], [1], None]
 
 
-def test_drum_cfg_applies_only_while_a_flag_is_set():
-    # Issue #50: the strength binds the model to the flag, so it must reach
-    # generate() when suppressing/forcing — but masked conditioning (auto) has
-    # nothing to guide toward, so cfg_drums falls back to the library default.
+def test_drum_cfg_always_reaches_generate():
+    # Drums Adherence (issue #50) always guides the drum conditioning — like
+    # the reference, independent of the suppress flag. It falls back to the
+    # constructor baseline (None) only before it has ever been set.
     engine, calls = make_streaming_engine()
-    engine.set_drums(0, 5.0)
+    engine.generate_chunk()  # never set → baseline
+    engine.set_drums(0, 5.0)  # suppress, adherence 5
     engine.generate_chunk()
-    engine.set_drums(1, 3.0)
+    engine.set_drums(None, 3.0)  # auto — adherence still applies
     engine.generate_chunk()
-    engine.set_drums(None, 5.0)  # auto: the strength is remembered but not sent
-    engine.generate_chunk()
-    assert [call["cfg_drums"] for call in calls] == [5.0, 3.0, None]
+    assert [call["cfg_drums"] for call in calls] == [None, 5.0, 3.0]
 
 
 def test_set_drums_rejects_out_of_range_cfg():

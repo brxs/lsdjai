@@ -531,21 +531,18 @@ impl NoteSteering {
     }
 
     /// Re-assert the authored drum conditioning over a fresh stream (the
-    /// play edge). The worker resets its flag on every discontinuity
-    /// (ADR-0023), but drum-sit is deck config, not a held gesture (issue
-    /// #50) — so the sender re-sends the full state, which ADR-0023's
-    /// idempotent messages make safe. Read + enqueue under the one lock,
-    /// like the setters, so a concurrent author can't interleave. A no-op
-    /// while the mode is `None` (auto ignores the strength anyway, and the
-    /// store mirror already agrees — it no longer clears on transport).
+    /// play edge). The worker resets both the flag AND the adherence to the
+    /// constructor baseline on every discontinuity (ADR-0023), but drum-sit is
+    /// deck config, not a held gesture (issue #50) — and the adherence now
+    /// always guides generation, not just while suppressing — so the sender
+    /// re-sends the full state (mode + adherence), which ADR-0023's idempotent
+    /// messages make safe. Read + enqueue under the one lock, like the setters,
+    /// so a concurrent author can't interleave.
     pub fn reassert_drums(&self, deck: usize) {
         if deck >= DECK_COUNT {
             return;
         }
-        let decks = self.lock();
-        if decks[deck].drums.mode.is_some() {
-            self.send_control(deck, &drums_wire(decks[deck].drums));
-        }
+        self.send_control(deck, &drums_wire(self.lock()[deck].drums));
     }
 
     /// A stream discontinuity (play / stop / worker death): the worker resets

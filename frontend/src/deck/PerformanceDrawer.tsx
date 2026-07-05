@@ -174,35 +174,30 @@ export function PerformanceDrawer({
               ? t('deck.perform.held', { notes: held.map(pitchName).join(' ') })
               : t('deck.perform.live')}
         </p>
-        {/* Drums is conditioning like the steering above but independent of
-            the MIDI-steering arm (issue #50) — the rule keeps the two reads
-            apart on the door, with the steering HUD closing its own section.
-            A binary toggle like the magenta-realtime `drumless`. */}
+        {/* Drum conditioning (issue #50) — independent of the MIDI-steering
+            arm; the rule keeps the two reads apart on the door. Two controls
+            like the magenta-realtime reference: a steering toggle and an
+            always-shown adherence knob (its value always guides generation,
+            so it is never hidden). Each carries a hint saying what it does. */}
         <div className="deck__perform-divider" />
         <div className="deck__perform-row">
           <Switch
-            label={t('deck.perform.noDrums')}
+            label={t('deck.perform.drumSteering')}
             on={drumsOff}
             accent={deckId}
             onClick={toggleDrums}
           />
         </div>
-        {/* Strength is meaningless with no suppression — reveal it only when
-            the deck is sitting beside (issue #50). The hint says what the
-            value means, since the number alone is opaque. */}
-        {drumsOff && (
-          <>
-            <Slider
-              label={t('deck.perform.drumsStrength', { value: drumStrength })}
-              min={DRUM_STRENGTH_MIN}
-              max={DRUM_STRENGTH_MAX}
-              step={DRUM_STRENGTH_STEP}
-              value={drumStrength}
-              onChange={onDrumStrength}
-            />
-            <p className="deck__perform-hint">{t('deck.perform.drumsStrengthHint')}</p>
-          </>
-        )}
+        <p className="deck__perform-hint">{t('deck.perform.drumSteeringHint')}</p>
+        <Slider
+          label={t('deck.perform.drumsAdherence', { value: drumStrength })}
+          min={DRUM_STRENGTH_MIN}
+          max={DRUM_STRENGTH_MAX}
+          step={DRUM_STRENGTH_STEP}
+          value={drumStrength}
+          onChange={onDrumStrength}
+        />
+        <p className="deck__perform-hint">{t('deck.perform.drumsAdherenceHint')}</p>
       </div>
       <button
         type="button"

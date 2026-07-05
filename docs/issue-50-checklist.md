@@ -24,48 +24,53 @@ deck (the 1 s chunk plus the worker's ~3 s pacing cushion).
       "four on the floor techno" plus something pitched, e.g. "warm dub
       chords").
 - [ ] Open deck A's performance door (the Config rail on the prompt pad):
-      the **No drums — sit beside** toggle is off (auto), with MIDI steering
-      off. The control is a binary toggle, matching the magenta-realtime
-      `drumless` — there is no "force drums".
+      the **Drum steering** toggle is off (auto) and the **Drums adherence**
+      slider sits below it (always shown), with MIDI steering off. Two
+      independent controls, matching the magenta-realtime reference (steering
+      toggle + adherence knob); there is no "force drums".
 
-## The control, by ear
+## The steering toggle, by ear
 
-- [ ] Flip **No drums** on for the playing deck: the kit audibly thins/drops
-      within ~4 s (from a fresh stream) while the pitched content continues.
-      On a stream that has been drumming a while, expect the full thinning to
-      take ~10-30 s as the drummed context rolls out (docs/spike-mrt2.md) —
-      not instant.
+- [ ] Flip **Drum steering** on for the playing deck: the kit audibly
+      thins/drops within ~4 s (from a fresh stream) while the pitched content
+      continues. On a stream that has been drumming a while, expect the full
+      thinning to take ~10-30 s as the drummed context rolls out
+      (docs/spike-mrt2.md) — not instant.
 - [ ] Flip it back off: the model's own drum choice returns.
 - [ ] It works with **MIDI steering off** — the toggle never arms the deck
       (the steer switch stays off, the chunk cadence unchanged).
 
-## Suppression strength (cfg_drums, issue #50)
+## Drums adherence (cfg_drums, issue #50)
 
-- [ ] The **Suppression strength** slider appears only with No-drums on, not
-      when off, range **0-5**, defaulting to **4** (matching the
-      magenta-realtime reference's `DEFAULT_CFG_DRUMS`).
-- [ ] With No-drums on, lowering strength toward 0 audibly weakens the
-      suppression (drums creep back); raising toward ~5 bites hardest. Confirm
-      4 is a good default on real speakers; note if a different value is
+- [ ] The **Drums adherence** slider is **always shown** (independent of the
+      steering toggle), range **0-5**, defaulting to **4** (the reference's
+      `DEFAULT_CFG_DRUMS`).
+- [ ] With steering on, lowering adherence toward 0 audibly weakens the
+      suppression (drums creep back); raising toward ~5 forces the hardest
+      compliance. Confirm 4 is a good default; note if a different value is
       preferable and adjust `DEFAULT_DRUM_STRENGTH`.
-- [ ] Strength persists across stop→play with the toggle (both are deck
-      config).
+- [ ] With steering **off** (auto), the adherence value still reaches the
+      model (it always guides, like the reference). Sweep it and note whether
+      it has any audible effect on an unsteered deck — the masked drum
+      condition may make it subtle or inert.
+- [ ] Adherence persists across stop→play with the steering toggle (both are
+      deck config).
 
 ## Sticky across discontinuities (the #50 semantics)
 
-- [ ] **No drums** on, then **stop** deck A and **play** again: the toggle
-      still reads on, and within ~4 s of the fresh stream the drums are
+- [ ] **Drum steering** on, then **stop** deck A and **play** again: the
+      toggle still reads on, and within ~4 s of the fresh stream the drums are
       audibly suppressed again (the re-assert landed).
-- [ ] **No drums** on, then **switch deck A's model**: after the reload and a
-      fresh play, the toggle still reads on and the suppression audibly holds.
+- [ ] **Drum steering** on, then **switch deck A's model**: after the reload
+      and a fresh play, the toggle still reads on and the suppression holds.
 - [ ] Held **notes** still die on stop→play (steer a chord via pads/MCP,
       stop, play): free harmony returns — only drums stick.
 
 ## The two-deck point of the feature
 
 - [ ] Deck B looping a beat (layered sample or its own stream) under deck
-      A: flipping deck A's **No drums** on audibly un-muddies the low end;
-      flipping back restores the clash.
+      A: flipping deck A's **Drum steering** on audibly un-muddies the low
+      end; flipping back restores the clash.
 
 ## Onset note decay (issue #46/#48, folded in)
 
