@@ -42,16 +42,18 @@ MAX_DRUM_CFG = 7.0
 
 # MRT2 sampling / guidance operating point (issue #50 reference audit). The
 # library constructor defaults (temperature 1.3, top_k 40, cfg_musiccoca 3.0,
-# cfg_notes 1.0) differ from what every `magenta-realtime` example app ships;
-# LSDJ adopts the reference app defaults (examples/common/react_ui/
-# defaultParams.ts) so generation matches the tuned MRT2 experience rather than
-# the raw library floor. `cfg_drums` is deliberately NOT set here — it is owned
-# per-deck by the drum-sit control (the Rust store) and passed per
-# generate_chunk (docs/spike-mrt2.md).
+# cfg_notes 1.0, cfg_drums 1.0) differ from what every `magenta-realtime`
+# example app ships; LSDJ adopts the reference app defaults
+# (examples/common/react_ui/defaultParams.ts) so generation matches the tuned
+# MRT2 experience rather than the raw library floor. CFG_DRUMS is the baseline
+# for an UNSTEERED deck; the per-deck drum-sit control (the Rust store)
+# overrides it per generate_chunk when a suppress/force flag is active
+# (docs/spike-mrt2.md).
 TEMPERATURE = 1.1
 TOP_K = 50
 CFG_MUSICCOCA = 1.6
 CFG_NOTES = 2.4
+CFG_DRUMS = 4.0
 
 # The official models the in-app manager offers to download. This is the
 # installable catalog, NOT a discovery gate: `available_models()` discovers any
@@ -106,14 +108,15 @@ class DeckEngine:
 
         # Reference-aligned sampling/guidance operating point (see the constants
         # above): match the magenta-realtime apps, not the raw library floor.
-        # cfg_drums stays at the library default here and is overridden per
-        # generate_chunk by the drum-sit control (issue #50).
+        # cfg_drums is the baseline here; the drum-sit control overrides it per
+        # generate_chunk when a suppress/force flag is active (issue #50).
         self._system = system.MagentaRT2SystemMlxfn(
             size=model,
             temperature=TEMPERATURE,
             top_k=TOP_K,
             cfg_musiccoca=CFG_MUSICCOCA,
             cfg_notes=CFG_NOTES,
+            cfg_drums=CFG_DRUMS,
         )
         self._state = None
         self._style = None

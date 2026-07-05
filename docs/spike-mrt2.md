@@ -84,10 +84,14 @@ the tuned MRT2 experience:
 | `top_k` | 40 | 50 | **50** |
 | `cfg_musiccoca` (prompt adherence) | 3.0 | 1.6 | **1.6** |
 | `cfg_notes` (note adherence) | 1.0 | 2.4 | **2.4** |
-| `cfg_drums` | 1.0 | 4.0 | per-deck, default **4.0** (drum-sit) |
+| `cfg_drums` | 1.0 | 4.0 | constructor baseline **4.0**; drum-sit overrides per chunk |
 
 `cfg_musiccoca` affects all generation; `cfg_notes` only bites while
-note-steering (issue #48). These are set once on the system, not per call.
+note-steering (issue #48). All four are set once on the system, not per call.
+`cfg_drums` is set as the same 4.0 baseline so an unsteered deck matches the
+reference; `generate_chunk` passes an explicit `cfg_drums` (the drum-sit
+strength) only while a suppress/force flag is active, else falls back to this
+baseline.
 
 **Note masking (matches the reference).** Non-held pitches are filled with
 `-1` (masked) so the model plays the held chord **and freely embellishes

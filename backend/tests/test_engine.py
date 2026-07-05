@@ -43,7 +43,8 @@ def test_constructor_uses_reference_sampling_defaults(monkeypatch):
     # The tuning knobs are set once on the system (not per generate) — adopting
     # the magenta-realtime app defaults, not the raw library floor. Lock them so
     # a silent revert to the library constructor defaults is caught. cfg_drums
-    # is intentionally absent (owned per-deck by the drum-sit control, issue #50).
+    # is the baseline for an unsteered deck; the drum-sit control overrides it
+    # per generate_chunk when a flag is active (issue #50).
     from magenta_rt.mlx import system
 
     captured = {}
@@ -58,7 +59,7 @@ def test_constructor_uses_reference_sampling_defaults(monkeypatch):
     assert captured["top_k"] == 50
     assert captured["cfg_musiccoca"] == 1.6
     assert captured["cfg_notes"] == 2.4
-    assert "cfg_drums" not in captured
+    assert captured["cfg_drums"] == 4.0
 
 
 def test_blends_weighted_embeddings_normalized():
