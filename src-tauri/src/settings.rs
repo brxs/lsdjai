@@ -17,7 +17,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use crate::store::{InterfaceState, InterfaceStore};
+use crate::store::{GenerationSnap, InterfaceState, InterfaceStore};
 
 /// The persisted shape. `#[serde(default)]` keeps old files readable as
 /// fields are added; empty strings are the defaults ("system default"
@@ -34,6 +34,11 @@ pub struct ShellSettings {
     /// Per-deck mixer state (ADR-0020 phase C), indexed by deck. Cue (PFL)
     /// deliberately never persists.
     pub deck_mixers: Vec<DeckMixerSetting>,
+    /// Per-deck live generation params (issue #84), indexed by deck — the
+    /// tunable sampling/guidance operating point, so a performer's tuning
+    /// survives a restart. Reuses the store snapshot shape (like `deck_mixers`
+    /// reuses `EqSnap`).
+    pub deck_generations: Vec<GenerationSnap>,
     pub crossfade: f32,
     pub cue_mix: f32,
 }
@@ -46,6 +51,7 @@ impl Default for ShellSettings {
             recordings_folder: String::new(),
             deck_styles: Vec::new(),
             deck_mixers: Vec::new(),
+            deck_generations: Vec::new(),
             crossfade: 0.5,
             cue_mix: 0.5,
         }
@@ -181,6 +187,7 @@ const PERSIST_DEBOUNCE: Duration = Duration::from_millis(1000);
 struct PersistedInterface {
     styles: Vec<DeckStyleSetting>,
     mixers: Vec<DeckMixerSetting>,
+    generations: Vec<GenerationSnap>,
     crossfade: f32,
     cue_mix: f32,
 }
@@ -214,6 +221,7 @@ fn persistable(state: &InterfaceState) -> PersistedInterface {
                 trim_db: deck.trim_db,
             })
             .collect(),
+        generations: state.decks.iter().map(|deck| deck.generation).collect(),
         crossfade: state.crossfade,
         cue_mix: state.cue_mix,
     }
@@ -238,6 +246,7 @@ pub fn watch_persistence(app: AppHandle, store: &InterfaceStore) {
             update(app, |s| {
                 s.deck_styles = slice.styles;
                 s.deck_mixers = slice.mixers;
+                s.deck_generations = slice.generations;
                 s.crossfade = slice.crossfade;
                 s.cue_mix = slice.cue_mix;
             });
@@ -303,6 +312,12 @@ mod tests {
                 fx_amount: 0.4,
                 trim_db: -3.0,
             }],
+            deck_generations: vec![GenerationSnap {
+                temperature: 0.7,
+                top_k: 20,
+                cfg_musiccoca: 3.0,
+                cfg_notes: 1.0,
+            }],
             crossfade: 0.25,
             cue_mix: 0.75,
         };
@@ -358,6 +373,7 @@ mod tests {
         assert_eq!(settings.recordings_folder, "");
         assert!(settings.deck_styles.is_empty());
         assert!(settings.deck_mixers.is_empty());
+        assert!(settings.deck_generations.is_empty());
         // The blend defaults are centred, not zeroed.
         assert_eq!(settings.crossfade, 0.5);
         assert_eq!(settings.cue_mix, 0.5);
@@ -375,6 +391,15 @@ mod tests {
         state.set_trim(1, -3.0);
         state.set_fx(0, lsdj_engine::FxKind::DubEcho);
         state.set_fx_amount(0, 0.4);
+        state.set_generation(
+            0,
+            GenerationSnap {
+                temperature: 0.7,
+                top_k: 20,
+                cfg_musiccoca: 3.0,
+                cfg_notes: 1.0,
+            },
+        );
         state.set_crossfade(0.25);
         state.set_cue_mix(0.75);
         // Cue never persists — flipping it must not change the slice.
@@ -391,6 +416,10 @@ mod tests {
         assert_eq!(slice.mixers[0].fx_kind, Some(crate::store::FxKindSnap::DubEcho));
         assert_eq!(slice.mixers[0].fx_amount, 0.4);
         assert_eq!(slice.mixers[1].trim_db, -3.0);
+        // The generation slice carries the deck's tuning; deck 1 keeps baseline.
+        assert_eq!(slice.generations[0].temperature, 0.7);
+        assert_eq!(slice.generations[0].top_k, 20);
+        assert_eq!(slice.generations[1], GenerationSnap::default());
         assert_eq!(slice.crossfade, 0.25);
         assert_eq!(slice.cue_mix, 0.75);
     }

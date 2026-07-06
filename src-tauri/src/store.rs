@@ -49,6 +49,30 @@ pub const STORE_CHANGED_EVENT: &str = "store://changed";
 /// the note-steering service, whose `DrumConditioning::default` lands here.
 pub const DEFAULT_DRUM_STRENGTH: f32 = 4.0;
 
+/// The reset-to-default baseline for the live generation params (issue #84):
+/// the `magenta-realtime` reference operating point (`defaultParams.ts`). This
+/// is the runtime source of truth (reassert-on-`ready` overwrites the engine's
+/// own init value), so a deck starts here and each per-knob reset returns to it.
+/// Cross-boundary duplication that must stay in step: the Python engine
+/// constants (`engine.py`, its init/reset value) and the frontend first-paint
+/// fallback (`GENERATION_FALLBACK`). Keep all three equal.
+pub const DEFAULT_TEMPERATURE: f32 = 1.1;
+pub const DEFAULT_TOP_K: u32 = 50;
+pub const DEFAULT_CFG_MUSICCOCA: f32 = 1.6;
+pub const DEFAULT_CFG_NOTES: f32 = 2.4;
+
+// The exposed slider bounds for the live generation params (issue #84), matching
+// the `magenta-realtime` reference (`Settings.tsx`): the two CFG scales share
+// [0, 5], temperature is [floor, 3], top-k is [1, 1024]. Enforced at every write
+// path by `GenerationSnap::clamped` — a value above ~5 cfg drifts out of
+// distribution, and a temperature of 0 divides the sampling logits by zero.
+pub const GEN_CFG_MIN: f32 = 0.0;
+pub const GEN_CFG_MAX: f32 = 5.0;
+pub const GEN_TEMPERATURE_MIN: f32 = 0.05;
+pub const GEN_TEMPERATURE_MAX: f32 = 3.0;
+pub const GEN_TOP_K_MIN: u32 = 1;
+pub const GEN_TOP_K_MAX: u32 = 1024;
+
 /// A Color FX kind as it appears in the snapshot — a serde camelCase enum mirroring
 /// the frontend `FxKind` (the six `fx.ts` effects), so the projection names the
 /// effect by intent rather than a magic index. `Deserialize` too — it
@@ -281,6 +305,124 @@ impl Default for AnalysisSnap {
     }
 }
 
+/// A deck's live generation operating point (issue #84): the sampling /
+/// guidance params the reference `magenta-realtime` apps expose. Deck config
+/// like the drum-sit — it survives transport transitions; the note-steering
+/// service re-sends it to a fresh worker on `ready`. Written through the shell
+/// note-steering service (the single deck control-frame sender), persisted, and
+/// projected down for the drawer sliders. `Deserialize` too — it is reused as
+/// the persisted shape (settings.rs) and hydrated back at boot, like [`EqSnap`].
+/// (Live edits cross as a [`GenerationPatch`], not a whole snap.)
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationSnap {
+    /// Sampling temperature (randomness). The shell floors it off zero.
+    pub temperature: f32,
+    /// Sampling top-k.
+    pub top_k: u32,
+    /// Prompt/style adherence (`cfg_musiccoca`) — guides all generation.
+    pub cfg_musiccoca: f32,
+    /// Note adherence (`cfg_notes`) — bites only while note-steering.
+    pub cfg_notes: f32,
+}
+
+impl Default for GenerationSnap {
+    fn default() -> Self {
+        GenerationSnap {
+            temperature: DEFAULT_TEMPERATURE,
+            top_k: DEFAULT_TOP_K,
+            cfg_musiccoca: DEFAULT_CFG_MUSICCOCA,
+            cfg_notes: DEFAULT_CFG_NOTES,
+        }
+    }
+}
+
+impl GenerationSnap {
+    /// Clamp every field to its exposed range (issue #84). The single
+    /// trust-boundary guard shared by every write path — pure, so it is
+    /// unit-tested directly. Temperature floors off zero (0 NaNs the sampler),
+    /// the two CFG scales share `[0, 5]`, and top-k is `[1, 1024]`.
+    pub fn clamped(self) -> Self {
+        GenerationSnap {
+            temperature: self.temperature.clamp(GEN_TEMPERATURE_MIN, GEN_TEMPERATURE_MAX),
+            top_k: self.top_k.clamp(GEN_TOP_K_MIN, GEN_TOP_K_MAX),
+            cfg_musiccoca: self.cfg_musiccoca.clamp(GEN_CFG_MIN, GEN_CFG_MAX),
+            cfg_notes: self.cfg_notes.clamp(GEN_CFG_MIN, GEN_CFG_MAX),
+        }
+    }
+}
+
+/// A partial edit to a deck's generation params (issue #84): only the changed
+/// field(s) cross the IPC boundary, so the shell merges them onto its
+/// authoritative value under the note-steering lock. A rapid second edit can
+/// never rebuild from a stale webview snapshot and revert the first
+/// (`GenerationPatch::apply`, then `GenerationSnap::clamped`).
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GenerationPatch {
+    pub temperature: Option<f32>,
+    pub top_k: Option<u32>,
+    pub cfg_musiccoca: Option<f32>,
+    pub cfg_notes: Option<f32>,
+}
+
+impl GenerationPatch {
+    /// Apply the set fields onto `base` (unclamped — the caller clamps the
+    /// merged result once).
+    pub fn apply(self, mut base: GenerationSnap) -> GenerationSnap {
+        if let Some(v) = self.temperature {
+            base.temperature = v;
+        }
+        if let Some(v) = self.top_k {
+            base.top_k = v;
+        }
+        if let Some(v) = self.cfg_musiccoca {
+            base.cfg_musiccoca = v;
+        }
+        if let Some(v) = self.cfg_notes {
+            base.cfg_notes = v;
+        }
+        base
+    }
+}
+
+/// One generation param, for a per-knob reset-to-default (issue #84). The reset
+/// target is the shell's own `DEFAULT_*` baseline (`reset_patch`), so the
+/// frontend's reset (↺) only names the field — it never holds a copy of the
+/// reference default that could drift from the engine's.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GenerationField {
+    Temperature,
+    TopK,
+    CfgMusiccoca,
+    CfgNotes,
+}
+
+impl GenerationField {
+    /// The single-field patch that resets this param to the reference baseline.
+    pub fn reset_patch(self) -> GenerationPatch {
+        match self {
+            GenerationField::Temperature => GenerationPatch {
+                temperature: Some(DEFAULT_TEMPERATURE),
+                ..GenerationPatch::default()
+            },
+            GenerationField::TopK => GenerationPatch {
+                top_k: Some(DEFAULT_TOP_K),
+                ..GenerationPatch::default()
+            },
+            GenerationField::CfgMusiccoca => GenerationPatch {
+                cfg_musiccoca: Some(DEFAULT_CFG_MUSICCOCA),
+                ..GenerationPatch::default()
+            },
+            GenerationField::CfgNotes => GenerationPatch {
+                cfg_notes: Some(DEFAULT_CFG_NOTES),
+                ..GenerationPatch::default()
+            },
+        }
+    }
+}
+
 /// One deck's state in the store: the mixer channel plus the realtime-deck
 /// read-backs the store mirrors (model / playing). Not `Copy` — `model` is a
 /// `String`.
@@ -358,6 +500,10 @@ pub struct DeckSnap {
     /// reference). Deck config like `drums`; defaults to `DEFAULT_DRUM_STRENGTH`
     /// (the measured sweet spot, not the library's weaker default).
     pub drums_strength: f32,
+    /// The deck's live generation operating point (issue #84): the tunable
+    /// sampling/guidance params, written through the note-steering service and
+    /// re-sent to a fresh worker on `ready`. Deck config that persists.
+    pub generation: GenerationSnap,
     /// The deck's live beat analysis (ADR-0025) — a shell-written measurement,
     /// blank until the honesty gate acquires.
     pub analysis: AnalysisSnap,
@@ -405,6 +551,7 @@ impl Default for DeckSnap {
             notes: None,
             drums: None,
             drums_strength: DEFAULT_DRUM_STRENGTH,
+            generation: GenerationSnap::default(),
             analysis: AnalysisSnap::default(),
             worker_died: false,
             switching_model: false,
@@ -809,6 +956,13 @@ impl InterfaceState {
         }
     }
 
+    /// Record a deck's live generation operating point (issue #84).
+    pub fn set_generation(&mut self, deck: usize, generation: GenerationSnap) {
+        if let Some(d) = self.deck_mut(deck) {
+            d.generation = generation;
+        }
+    }
+
     /// Record a deck's live beat analysis (ADR-0025) — a measurement the
     /// shell's analysis thread writes; nothing forwards to the engine here
     /// (the thread drives the echo clock through the [`Host`] itself).
@@ -1138,6 +1292,12 @@ impl InterfaceStore {
         self.mutate(move |s| s.set_drums_strength(deck, strength));
     }
 
+    /// Set a deck's live generation operating point (issue #84): the tunable
+    /// sampling/guidance params mirrored for the drawer sliders.
+    pub fn set_deck_generation(&self, deck: usize, generation: GenerationSnap) {
+        self.mutate(move |s| s.set_generation(deck, generation));
+    }
+
     /// Record a deck's live beat analysis (ADR-0025) — written by the shell's
     /// analysis thread at the estimate cadence; the no-change suppression in
     /// [`InterfaceStore::mutate`] keeps a held (or blank) reading silent.
@@ -1200,7 +1360,100 @@ mod tests {
             assert_eq!(deck.notes, None);
             assert_eq!(deck.drums, None);
             assert_eq!(deck.drums_strength, DEFAULT_DRUM_STRENGTH);
+            assert_eq!(deck.generation, GenerationSnap::default());
         }
+    }
+
+    #[test]
+    fn generation_params_default_to_the_reference_baseline() {
+        let generation = GenerationSnap::default();
+        assert_eq!(generation.temperature, DEFAULT_TEMPERATURE);
+        assert_eq!(generation.top_k, DEFAULT_TOP_K);
+        assert_eq!(generation.cfg_musiccoca, DEFAULT_CFG_MUSICCOCA);
+        assert_eq!(generation.cfg_notes, DEFAULT_CFG_NOTES);
+    }
+
+    #[test]
+    fn generation_is_mirrored_per_deck() {
+        let mut state = InterfaceState::default();
+        let tuned = GenerationSnap {
+            temperature: 0.7,
+            top_k: 20,
+            cfg_musiccoca: 3.0,
+            cfg_notes: 1.0,
+        };
+        state.set_generation(0, tuned);
+        assert_eq!(state.decks[0].generation, tuned);
+        // The other deck keeps the baseline.
+        assert_eq!(state.decks[1].generation, GenerationSnap::default());
+    }
+
+    #[test]
+    fn generation_clamped_pins_every_field_to_its_exposed_range() {
+        // Over the top: each field clamps to its own max, cfg shared at 5.
+        let over = GenerationSnap {
+            temperature: 9.0,
+            top_k: 9999,
+            cfg_musiccoca: 12.0,
+            cfg_notes: 7.5,
+        }
+        .clamped();
+        assert_eq!(over.temperature, GEN_TEMPERATURE_MAX);
+        assert_eq!(over.top_k, GEN_TOP_K_MAX);
+        assert_eq!(over.cfg_musiccoca, GEN_CFG_MAX);
+        assert_eq!(over.cfg_notes, GEN_CFG_MAX);
+        // Under the floor: temperature floors off zero, top-k off zero, cfg at 0.
+        let under = GenerationSnap {
+            temperature: 0.0,
+            top_k: 0,
+            cfg_musiccoca: -3.0,
+            cfg_notes: -1.0,
+        }
+        .clamped();
+        assert_eq!(under.temperature, GEN_TEMPERATURE_MIN);
+        assert_eq!(under.top_k, GEN_TOP_K_MIN);
+        assert_eq!(under.cfg_musiccoca, GEN_CFG_MIN);
+        assert_eq!(under.cfg_notes, GEN_CFG_MIN);
+        // In range: untouched, and the baseline is already within range.
+        assert_eq!(GenerationSnap::default().clamped(), GenerationSnap::default());
+    }
+
+    #[test]
+    fn generation_patch_merges_only_its_set_fields() {
+        let base = GenerationSnap {
+            temperature: 0.8,
+            top_k: 30,
+            cfg_musiccoca: 2.0,
+            cfg_notes: 3.0,
+        };
+        let merged = GenerationPatch { top_k: Some(64), ..GenerationPatch::default() }.apply(base);
+        // Only top-k changed; the other three ride along unchanged.
+        assert_eq!(
+            merged,
+            GenerationSnap {
+                temperature: 0.8,
+                top_k: 64,
+                cfg_musiccoca: 2.0,
+                cfg_notes: 3.0,
+            }
+        );
+    }
+
+    #[test]
+    fn generation_field_reset_targets_the_shell_baseline() {
+        // A reset patch names one field and carries the shell's own default —
+        // the frontend never supplies the value.
+        let base = GenerationSnap {
+            temperature: 0.2,
+            top_k: 5,
+            cfg_musiccoca: 0.5,
+            cfg_notes: 0.5,
+        };
+        let reset = GenerationField::CfgMusiccoca.reset_patch().apply(base);
+        assert_eq!(reset.cfg_musiccoca, DEFAULT_CFG_MUSICCOCA);
+        // The others are untouched by a single-field reset.
+        assert_eq!(reset.temperature, 0.2);
+        assert_eq!(reset.top_k, 5);
     }
 
     #[test]

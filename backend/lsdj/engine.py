@@ -40,6 +40,18 @@ NOTE_SUSTAIN = 1
 MIN_DRUM_CFG = -1.0
 MAX_DRUM_CFG = 7.0
 
+# Live generation params (issue #84): the sampling/guidance operating point,
+# exposed as per-deck UI controls threaded per generate() call like cfg_drums.
+# The two CFG scales share the model's real [-1.0, 7.0] bound (the UI exposes
+# [0, 5], `discretize_cfg`); top-k is a positive int. Temperature is clamped up
+# to a small positive floor — the reference slider bottoms at 0, but a
+# temperature of exactly 0 divides the sampling logits by zero (NaN), so the
+# lowest value that still generates is the floor, not 0.
+MIN_CFG = -1.0
+MAX_CFG = 7.0
+MIN_TEMPERATURE = 0.05
+MIN_TOP_K = 1
+
 # MRT2 sampling / guidance operating point (issue #50 reference audit). The
 # library constructor defaults (temperature 1.3, top_k 40, cfg_musiccoca 3.0,
 # cfg_notes 1.0, cfg_drums 1.0) differ from what every `magenta-realtime`
@@ -48,7 +60,9 @@ MAX_DRUM_CFG = 7.0
 # MRT2 experience rather than the raw library floor. CFG_DRUMS is the baseline
 # for an UNSTEERED deck; the per-deck drum-sit control (the Rust store)
 # overrides it per generate_chunk when a suppress/force flag is active
-# (docs/spike-mrt2.md).
+# (docs/spike-mrt2.md). TEMPERATURE/TOP_K/CFG_MUSICCOCA/CFG_NOTES are likewise
+# the reset-to-default baseline for the per-deck generation controls exposed by
+# issue #84 (set_generation overrides them per generate() call).
 TEMPERATURE = 1.1
 TOP_K = 50
 CFG_MUSICCOCA = 1.6
@@ -123,6 +137,13 @@ class DeckEngine:
         self._notes: list[int] | None = None
         self._drums: int | None = None
         self._drums_cfg: float | None = None
+        # Live generation params (issue #84): initialised to the reference
+        # baseline (the constructor values above), overridden per deck by
+        # set_generation and applied to every generate() call.
+        self._temperature = TEMPERATURE
+        self._top_k = TOP_K
+        self._cfg_musiccoca = CFG_MUSICCOCA
+        self._cfg_notes = CFG_NOTES
         self._chunk_frames = FRAMES_PER_CHUNK
         self._embed_cache: dict[str, np.ndarray] = {}
         self._samples: dict[str, np.ndarray] = {}
@@ -245,6 +266,32 @@ class DeckEngine:
         self._drums = flag
         self._drums_cfg = cfg
 
+    def set_generation(
+        self,
+        temperature: float,
+        top_k: int,
+        cfg_musiccoca: float,
+        cfg_notes: float,
+    ) -> None:
+        """Set the live generation operating point (issue #84).
+
+        `temperature` (sampling randomness) is clamped up to MIN_TEMPERATURE — a
+        temperature of exactly 0 divides the sampling logits by zero. `top_k`
+        (an int >= MIN_TOP_K) is the sampling top-k. `cfg_musiccoca` (prompt
+        adherence, all generation) and `cfg_notes` (note adherence, bites only
+        while note-steering) are guidance scales in [MIN_CFG, MAX_CFG]. Applies
+        to the next generate_chunk() / render_clip() and persists until changed.
+        """
+        if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k < MIN_TOP_K:
+            raise ValueError(f"top_k must be an int >= {MIN_TOP_K}")
+        for name, value in (("cfg_musiccoca", cfg_musiccoca), ("cfg_notes", cfg_notes)):
+            if not MIN_CFG <= value <= MAX_CFG:
+                raise ValueError(f"{name} must be in [{MIN_CFG}, {MAX_CFG}]")
+        self._temperature = max(MIN_TEMPERATURE, temperature)
+        self._top_k = top_k
+        self._cfg_musiccoca = cfg_musiccoca
+        self._cfg_notes = cfg_notes
+
     def set_chunk_frames(self, frames: int) -> None:
         """Set the per-chunk frame count (the ADR-0023 performance knob).
 
@@ -286,6 +333,12 @@ class DeckEngine:
             # (its unset default) falls back to the constructor baseline
             # (issue #50).
             cfg_drums=self._drums_cfg,
+            # The live generation params (issue #84): the deck's tuned
+            # sampling/guidance operating point, applied every chunk.
+            temperature=self._temperature,
+            top_k=self._top_k,
+            cfg_musiccoca=self._cfg_musiccoca,
+            cfg_notes=self._cfg_notes,
             frames=self._chunk_frames,
             state=self._state,
         )
@@ -315,7 +368,16 @@ class DeckEngine:
         pieces = []
         for _ in range(math.ceil(seconds / CHUNK_SECONDS)):
             waveform, state = self._system.generate(
-                style=style, frames=FRAMES_PER_CHUNK, state=state
+                # The deck's tuned sampling/guidance (issue #84) shapes its pad
+                # renders too — the character carries into rendered clips.
+                # cfg_notes has no effect here (a clip render has no held notes).
+                style=style,
+                temperature=self._temperature,
+                top_k=self._top_k,
+                cfg_musiccoca=self._cfg_musiccoca,
+                cfg_notes=self._cfg_notes,
+                frames=FRAMES_PER_CHUNK,
+                state=state,
             )
             pieces.append(waveform.samples.astype(np.float32))
         samples = np.concatenate(pieces)[: round(seconds * SAMPLE_RATE)]

@@ -330,6 +330,15 @@ export type DeckSnap = {
    * reference). Deck config like `drums`; the shell defaults it to the
    * measured sweet spot. */
   drumsStrength: number
+  /** The deck's live generation operating point (issue #84): the tunable
+   * sampling/guidance params (the reference `magenta-realtime` knobs). Deck
+   * config that persists; the shell re-sends it to a fresh worker on `ready`. */
+  generation: {
+    temperature: number
+    topK: number
+    cfgMusiccoca: number
+    cfgNotes: number
+  }
   /** The deck's live beat analysis (ADR-0025), written by the shell's analysis
    * thread at most ~once per second. `bpm` is the honesty-gated readout (null =
    * blank, the feature); `liveBeat` the phase clock (anchor in pushed frames
@@ -511,6 +520,38 @@ export function setDeckDrums(deck: number, mode: DrumMode): void {
  * projection (`drumsStrength`) reflects it. */
 export function setDeckDrumsStrength(deck: number, strength: number): void {
   void invoke('set_deck_drums_strength', { deck, strength }).catch(() => {})
+}
+
+/** The live generation params as they cross the IPC boundary (issue #84) —
+ * mirrors the shell's `GenerationSnap` (serde camelCase). */
+export type Generation = DeckSnap['generation']
+
+/** One tunable generation param, named for a reset-to-default (the shell owns
+ * the baseline). Matches the Rust `GenerationField` (serde camelCase). */
+export type GenerationField = keyof Generation
+
+/** Edit a deck's live generation params (issue #84) with a PARTIAL patch — only
+ * the changed field. The shell merges it onto its authoritative value under one
+ * lock (never rebuilding from this webview's snapshot), so a rapid second edit
+ * can't revert the first. Coalesced PER FIELD (a slider drag fires per
+ * pointermove; distinct fields must not collapse into one another). The shell
+ * clamps to the exposed ranges, mirrors the store, and re-sends on a fresh
+ * worker's `ready`. Fire-and-forget; the store projection reflects it. */
+export function setDeckGeneration(deck: number, patch: Partial<Generation>): void {
+  const fields = Object.keys(patch).sort().join(',')
+  coalesceIntent(`set_deck_generation:${deck}:${fields}`, () => {
+    void invoke('set_deck_generation', { deck, patch }).catch(() => {})
+  })
+}
+
+/** Reset one of a deck's generation params to the reference baseline (issue
+ * #84). The shell owns the default, so this only names the field — the frontend
+ * never holds a copy that could drift from the engine's. Discrete: flushes any
+ * pending coalesced edit first so a queued drag can't land after (and undo) the
+ * reset. Fire-and-forget. */
+export function resetDeckGeneration(deck: number, field: GenerationField): void {
+  flushIntents()
+  void invoke('reset_deck_generation', { deck, field }).catch(() => {})
 }
 
 // Coalesce high-rate intents to ~one invoke per animation frame, like the

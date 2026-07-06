@@ -39,7 +39,9 @@ use crate::midi::notes::NoteSteering;
 use crate::samples::{NewSample, SampleEntry, SampleLibrary};
 use crate::sidecar::{PcmTaps, Sidecars};
 use crate::songs::{NewSong, SongEntry, SongLibrary};
-use crate::store::{InterfaceState, InterfaceStore, PerformanceSnap};
+use crate::store::{
+    GenerationField, GenerationPatch, InterfaceState, InterfaceStore, PerformanceSnap,
+};
 
 /// Reject a deck index outside `[0, DECK_COUNT)`. A bad index from the webview is
 /// a no-op (the command returns without touching the engine), never a panic. Shared
@@ -1303,6 +1305,40 @@ pub fn set_deck_drums_strength(
 ) {
     if valid_deck(deck) {
         notes.set_drums_strength(deck, strength.clamp(0.0, 5.0));
+    }
+}
+
+/// Edit a deck's live generation operating point (issue #84): a PARTIAL patch —
+/// only the changed field(s) cross the boundary, so the note-steering service
+/// merges them onto its authoritative value under one lock and clamps the result
+/// (`GenerationSnap::clamped`, the trust-boundary guard). Sending only the delta
+/// means a rapid second edit can't rebuild from a stale webview snapshot and
+/// revert the first. Routed through the same single deck control-frame sender the
+/// drum controls use — which sends the merged frame to the worker, mirrors the
+/// store, and re-sends on a fresh worker's `ready`. A bad deck is a silent no-op.
+#[tauri::command]
+pub fn set_deck_generation(
+    notes: tauri::State<'_, NoteSteering>,
+    deck: usize,
+    patch: GenerationPatch,
+) {
+    if valid_deck(deck) {
+        notes.patch_generation(deck, patch);
+    }
+}
+
+/// Reset one generation param to the reference baseline (issue #84): the reset
+/// target is the shell's own `DEFAULT_*` (`GenerationField::reset_patch`), so the
+/// frontend's per-knob reset only names the field and never holds a copy of the
+/// default. Same merge-under-lock path as an edit. A bad deck is a silent no-op.
+#[tauri::command]
+pub fn reset_deck_generation(
+    notes: tauri::State<'_, NoteSteering>,
+    deck: usize,
+    field: GenerationField,
+) {
+    if valid_deck(deck) {
+        notes.reset_generation_field(deck, field);
     }
 }
 

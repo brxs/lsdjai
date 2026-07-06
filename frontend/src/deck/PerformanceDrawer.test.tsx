@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DeckSnap, InterfaceState } from '../audio/nativeEngine'
 import {
+  resetDeckGeneration,
   setDeckDrums,
   setDeckDrumsStrength,
+  setDeckGeneration,
   setDeckPerformance,
 } from '../audio/nativeEngine'
 import { useInterfaceStore } from '../audio/interfaceStore'
@@ -20,6 +22,8 @@ vi.mock('../audio/nativeEngine', async (importOriginal) => {
     setDeckPerformance: vi.fn(),
     setDeckDrums: vi.fn(),
     setDeckDrumsStrength: vi.fn(),
+    setDeckGeneration: vi.fn(),
+    resetDeckGeneration: vi.fn(),
   }
 })
 
@@ -48,6 +52,7 @@ function deckSnap(over: Partial<DeckSnap> = {}): DeckSnap {
     notes: null,
     drums: null,
     drumsStrength: 4,
+    generation: { temperature: 1.1, topK: 50, cfgMusiccoca: 1.6, cfgNotes: 2.4 },
     analysis: { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 },
     workerDied: false,
     switchingModel: false,
@@ -73,6 +78,8 @@ beforeEach(() => {
   vi.mocked(setDeckPerformance).mockClear()
   vi.mocked(setDeckDrums).mockClear()
   vi.mocked(setDeckDrumsStrength).mockClear()
+  vi.mocked(setDeckGeneration).mockClear()
+  vi.mocked(resetDeckGeneration).mockClear()
 })
 
 describe('PerformanceDrawer', () => {
@@ -249,6 +256,57 @@ describe('PerformanceDrawer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Config' }))
     const slider = screen.getByLabelText('Drums adherence — 2.5') as HTMLInputElement
     expect(slider.value).toBe('2.5')
+  })
+
+  it('the generation sliders project the store tuning with reference ranges', () => {
+    vi.mocked(useInterfaceStore).mockReturnValue(
+      storeWith({
+        generation: { temperature: 0.8, topK: 30, cfgMusiccoca: 2, cfgNotes: 3 },
+      }),
+    )
+    render(<PerformanceDrawer deckId="b" deckIndex={1} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
+    const temp = screen.getByLabelText('Temperature — 0.8') as HTMLInputElement
+    expect(temp.value).toBe('0.8')
+    expect(temp.min).toBe('0')
+    expect(temp.max).toBe('3')
+    const topK = screen.getByLabelText('Top-k — 30') as HTMLInputElement
+    expect(topK.max).toBe('1024')
+    expect(screen.getByLabelText('Prompt adherence — 2')).toBeInTheDocument()
+    // The note-adherence hint says it only bites while steering.
+    expect(screen.getByText(/no effect unless steering/i)).toBeInTheDocument()
+  })
+
+  it('a generation slider sends only its own field as a partial patch', () => {
+    // The shell merges the delta onto its authoritative value, so the webview
+    // sends just the changed field — never a full snapshot that could be stale.
+    vi.mocked(useInterfaceStore).mockReturnValue(
+      storeWith({
+        generation: { temperature: 0.8, topK: 30, cfgMusiccoca: 2, cfgNotes: 3 },
+      }),
+    )
+    render(<PerformanceDrawer deckId="b" deckIndex={1} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
+    fireEvent.change(screen.getByLabelText('Temperature — 0.8'), {
+      target: { value: '1.5' },
+    })
+    expect(setDeckGeneration).toHaveBeenCalledWith(1, { temperature: 1.5 })
+  })
+
+  it("each knob's reset names its field for the shell to default", () => {
+    // The reset target is the shell's baseline; the webview only names the
+    // field, so it never holds a copy of the default that could drift.
+    vi.mocked(useInterfaceStore).mockReturnValue(
+      storeWith({
+        generation: { temperature: 0.8, topK: 30, cfgMusiccoca: 2, cfgNotes: 3 },
+      }),
+    )
+    render(<PerformanceDrawer deckId="b" deckIndex={1} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
+    fireEvent.click(screen.getByLabelText('Reset Top-k to default'))
+    expect(resetDeckGeneration).toHaveBeenCalledWith(1, 'topK')
+    // A reset is not a value write.
+    expect(setDeckGeneration).not.toHaveBeenCalled()
   })
 
   it('the HUD strip reads off / live / holding', () => {

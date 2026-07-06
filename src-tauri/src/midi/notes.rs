@@ -31,8 +31,8 @@ use lsdj_engine::{DECK_COUNT, SAMPLE_RATE};
 
 use crate::sidecar::Sidecars;
 use crate::store::{
-    InterfaceStore, NoteModeSnap, NoteSteeringSnap, PerformanceSnap, ScaleSnap,
-    DEFAULT_DRUM_STRENGTH,
+    GenerationField, GenerationPatch, GenerationSnap, InterfaceStore, NoteModeSnap,
+    NoteSteeringSnap, PerformanceSnap, ScaleSnap, DEFAULT_DRUM_STRENGTH,
 };
 
 /// The wire multihot width (one slot per MIDI pitch, docs/spike-mrt2.md).
@@ -171,6 +171,20 @@ fn drums_wire(drums: DrumConditioning) -> String {
     json!({ "type": "set_drums", "drums": flag, "cfg": drums.strength }).to_string()
 }
 
+/// The wire message for the live generation params (issue #84): the deck's
+/// sampling/guidance operating point in one atomic frame. One place for the
+/// shape — the setter, the boot hydrate, and the `ready` re-send must not drift.
+fn generation_wire(g: GenerationSnap) -> String {
+    json!({
+        "type": "set_generation",
+        "temperature": g.temperature,
+        "top_k": g.top_k,
+        "cfg_musiccoca": g.cfg_musiccoca,
+        "cfg_notes": g.cfg_notes,
+    })
+    .to_string()
+}
+
 /// Seconds until the next beat, from the deck's gated clock (ADR-0025): the
 /// anchor is a pushed-frame index, `origin` the engine context-frame count
 /// captured at the stream reset, `context` the engine frame clock now. `None`
@@ -224,6 +238,11 @@ struct DeckState {
     /// not a held gesture — it survives `clear_holds` and is re-asserted
     /// over a fresh stream on the play edge.
     drums: DrumConditioning,
+    /// The authored live generation params (issue #84). Deck config like
+    /// `drums` — it survives `clear_holds` and is re-sent to a fresh worker on
+    /// `ready` (not the play edge: unlike drums these do not reset on play).
+    /// Named `_params` to avoid the onset scheduler's `generation` stamp above.
+    generation_params: GenerationSnap,
     /// Held pitches with source refcounts — a pad triad and a keyboard note
     /// may hold the same pitch; it stays held until every holder releases.
     held: BTreeMap<u8, u32>,
@@ -543,6 +562,64 @@ impl NoteSteering {
             return;
         }
         self.send_control(deck, &drums_wire(self.lock()[deck].drums));
+    }
+
+    /// Live generation params (issue #84): merges a partial edit onto the
+    /// authoritative value, clamps the result to the exposed range, sends it
+    /// immediately (so a stopped deck's next pad render honors the edit too),
+    /// and mirrors the store. Merging under the one lock — never rebuilding from
+    /// a webview snapshot — is what makes a rapid second edit safe: a rebuild
+    /// from a stale base could otherwise revert a field that had just changed.
+    /// Same lock discipline as the drum setters.
+    pub fn patch_generation(&self, deck: usize, patch: GenerationPatch) {
+        if deck >= DECK_COUNT {
+            return;
+        }
+        let merged;
+        {
+            let mut decks = self.lock();
+            merged = patch.apply(decks[deck].generation_params).clamped();
+            decks[deck].generation_params = merged;
+            self.send_control(deck, &generation_wire(merged));
+        }
+        if let Some(store) = self.app.try_state::<InterfaceStore>() {
+            store.set_deck_generation(deck, merged);
+        }
+    }
+
+    /// Reset one generation param to the reference baseline (issue #84): the
+    /// reset target is the shell's own `DEFAULT_*`, so the frontend's per-knob
+    /// reset (↺) only names the field. Rides the same merge-under-lock path.
+    pub fn reset_generation_field(&self, deck: usize, field: GenerationField) {
+        self.patch_generation(deck, field.reset_patch());
+    }
+
+    /// Re-send the authored generation params to a fresh worker (issue #84),
+    /// poked on the worker's `ready` event. Unlike the drums the worker never
+    /// resets these on play/stop, so `ready` (a new worker at the reference
+    /// baseline) is the only moment they must be re-sent — which also covers a
+    /// `render_clip` on a stopped deck before its first play. Read + enqueue
+    /// under the one lock, like the setters.
+    pub fn reassert_generation(&self, deck: usize) {
+        if deck >= DECK_COUNT {
+            return;
+        }
+        self.send_control(deck, &generation_wire(self.lock()[deck].generation_params));
+    }
+
+    /// Seed the authored generation params from persisted settings at boot
+    /// (issue #84): records the value in the DeckState `reassert_generation`
+    /// reads, but does NOT send (no worker exists yet — the first `ready`
+    /// re-send delivers it) and does NOT mirror the store (the boot hydration
+    /// seeds the store directly, before the persistence watcher, so this can't
+    /// echo the settings file straight back to disk). Runs before any worker
+    /// can announce `ready`. Clamped: `settings.json` is a file trust boundary,
+    /// so a hand-edited out-of-range value is pinned here, not on the next edit.
+    pub fn hydrate_generation(&self, deck: usize, generation: GenerationSnap) {
+        if deck >= DECK_COUNT {
+            return;
+        }
+        self.lock()[deck].generation_params = generation.clamped();
     }
 
     /// A stream discontinuity (play / stop / worker death): the worker resets
@@ -896,5 +973,65 @@ mod tests {
         assert_eq!(reasserted["cfg"].as_f64(), Some(3.0)); // authored, not baseline
         // And it differs from the default a bare fresh stream would otherwise keep.
         assert_ne!(reasserted, parse(DrumConditioning::default()));
+    }
+
+    #[test]
+    fn generation_wire_carries_the_four_params() {
+        // The single wire shape three call sites share (setter, boot hydrate,
+        // `ready` re-send) — lock it so they can't drift.
+        // Exactly-representable f32 values so the f32→JSON→f64 round-trip is
+        // bit-clean (0.7 would land as 0.699…).
+        let wire = generation_wire(GenerationSnap {
+            temperature: 0.5,
+            top_k: 20,
+            cfg_musiccoca: 3.0,
+            cfg_notes: 1.0,
+        });
+        let parsed = serde_json::from_str::<serde_json::Value>(&wire).unwrap();
+        assert_eq!(parsed["type"], "set_generation");
+        assert_eq!(parsed["temperature"].as_f64(), Some(0.5));
+        assert_eq!(parsed["top_k"].as_i64(), Some(20));
+        assert_eq!(parsed["cfg_musiccoca"].as_f64(), Some(3.0));
+        assert_eq!(parsed["cfg_notes"].as_f64(), Some(1.0));
+    }
+
+    #[test]
+    fn generation_is_deck_config_and_survives_a_discontinuity_clear() {
+        // Issue #84: the tuned params live beside the perf config, outside the
+        // held state a discontinuity drops — a stopped-and-restarted deck keeps
+        // its tuning. Default is the reference baseline, not f32 zeros.
+        let mut state = DeckState::default();
+        assert_eq!(state.generation_params, GenerationSnap::default());
+        state.generation_params.temperature = 0.7;
+        state.generation_params.top_k = 20;
+        state.pad_down(0);
+        state.clear_holds();
+        assert!(state.held_pitches().is_empty());
+        assert_eq!(state.generation_params.temperature, 0.7);
+        assert_eq!(state.generation_params.top_k, 20);
+    }
+
+    #[test]
+    fn reassert_generation_re_emits_the_authored_tuning() {
+        // The `ready` re-send carries `generation_wire(deck.generation)`. This
+        // locks the value: an authored tuning survives the discontinuity clear
+        // and re-emits as the authored params, NOT the reference baseline a
+        // fresh worker starts at. (The send plumbing rides the manual checklist;
+        // this is the pure data contract beneath it.)
+        let mut state = DeckState::default();
+        state.generation_params.temperature = 0.5;
+        state.generation_params.cfg_musiccoca = 3.0;
+        state.pad_down(0);
+        state.clear_holds();
+
+        let wire = generation_wire(state.generation_params);
+        let parsed = serde_json::from_str::<serde_json::Value>(&wire).unwrap();
+        assert_eq!(parsed["temperature"].as_f64(), Some(0.5)); // authored
+        assert_eq!(parsed["cfg_musiccoca"].as_f64(), Some(3.0));
+        // And it differs from what a bare fresh worker would otherwise keep.
+        assert_ne!(parsed, {
+            let baseline = generation_wire(GenerationSnap::default());
+            serde_json::from_str::<serde_json::Value>(&baseline).unwrap()
+        });
     }
 }

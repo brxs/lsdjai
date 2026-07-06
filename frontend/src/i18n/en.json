@@ -147,6 +147,21 @@
       "noDrumsHint": "On holds this deck's drums out so it sits beside another deck; off lets the model decide.",
       "drumsAdherence": "Drums adherence — {{value}}",
       "drumsAdherenceHint": "How strictly the model follows the drum setting (0–5): higher forces stricter compliance, lower allows more creative drift. ~4 is the tuned default.",
+      "temperature": "Temperature — {{value}}",
+      "temperatureHint": "Sampling randomness (0–3): higher wanders, lower repeats. ~1.1 is the tuned default.",
+      "topK": "Top-k — {{value}}",
+      "topKHint": "How many candidate tokens sampling weighs (1–1024): higher is more varied, lower more focused. ~50 is the tuned default.",
+      "promptAdherence": "Prompt adherence — {{value}}",
+      "promptAdherenceHint": "How strictly generation follows the style prompt (0–5): higher locks on, lower drifts. ~1.6 is the tuned default.",
+      "noteAdherence": "Note adherence — {{value}}",
+      "noteAdherenceHint": "How strictly held notes are followed while MIDI steering (0–5): higher binds to the chord, lower embellishes. ~2.4 default. No effect unless steering.",
+      "resetParam": "Reset {{param}} to default",
+      "names": {
+        "temperature": "Temperature",
+        "topK": "Top-k",
+        "promptAdherence": "Prompt adherence",
+        "noteAdherence": "Note adherence"
+      },
       "scales": {
         "major": "Major",
         "minor": "Minor",

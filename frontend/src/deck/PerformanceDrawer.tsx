@@ -3,10 +3,13 @@ import { useTranslation } from 'react-i18next'
 
 import { useInterfaceStore } from '../audio/interfaceStore'
 import {
+  resetDeckGeneration,
   setDeckDrums,
   setDeckDrumsStrength,
+  setDeckGeneration,
   setDeckPerformance,
   type DeckSnap,
+  type Generation,
 } from '../audio/nativeEngine'
 import type { DeckId } from '../audio/types'
 import { Select } from '../ui/Select'
@@ -27,6 +30,34 @@ const DEFAULT_DRUM_STRENGTH = 4
 const DRUM_STRENGTH_MIN = 0
 const DRUM_STRENGTH_MAX = 5
 const DRUM_STRENGTH_STEP = 0.1
+
+// The live generation params (issue #84): ranges and steps match the
+// magenta-realtime reference (Settings.tsx / defaultParams.ts). The two CFG
+// knobs share [0, 5] step 0.1 like the drum knob; temperature is [0, 3] step
+// 0.01; top-k is an integer [1, 1024]. The visible temperature min is 0
+// (reference), but the shell clamps the effective value up off zero (a
+// temperature of 0 NaNs the sampler).
+//
+// FIRST-PAINT FALLBACK ONLY: the store owns the real per-deck values and a
+// reset (↺) targets the SHELL's default (resetDeckGeneration), so this constant
+// is never the reset source — it only fills the sliders for the brief window
+// before the first store snapshot arrives, and is corrected the instant it does.
+// Keep equal to the shell baseline (store.rs DEFAULT_*) and the engine constants.
+const GENERATION_FALLBACK: Generation = {
+  temperature: 1.1,
+  topK: 50,
+  cfgMusiccoca: 1.6,
+  cfgNotes: 2.4,
+}
+const TEMPERATURE_MIN = 0
+const TEMPERATURE_MAX = 3
+const TEMPERATURE_STEP = 0.01
+const TOP_K_MIN = 1
+const TOP_K_MAX = 1024
+const TOP_K_STEP = 1
+const CFG_MIN = 0
+const CFG_MAX = 5
+const CFG_STEP = 0.1
 
 type Performance = DeckSnap['performance']
 
@@ -69,6 +100,10 @@ export function PerformanceDrawer({
   // 0.1 step to shed f32 mirror noise.
   const drumStrength =
     Math.round((snap?.drumsStrength ?? DEFAULT_DRUM_STRENGTH) * 10) / 10
+  // The live generation params (issue #84), projected from the store mirror.
+  // The value is the deck's tuning; the fallback covers only the pre-snapshot
+  // window (the store owns the real value).
+  const generation = snap?.generation ?? GENERATION_FALLBACK
 
   // Door visibility is ephemeral view state (ADR-0020 narrowing): closing it
   // does NOT stop steering. It auto-opens on a steering rising edge so an arm
@@ -111,6 +146,10 @@ export function PerformanceDrawer({
     (value: number) => setDeckDrumsStrength(deckIndex, value),
     [deckIndex],
   )
+  // Generation edits send only the changed field as a partial patch — the shell
+  // merges it onto its authoritative value under one lock, so a rapid second
+  // edit can't rebuild from a stale snapshot and revert the first. A reset (↺)
+  // names the field; the shell resets it to its own baseline.
 
   const scaleOptions = useMemo(
     () => SCALES.map((scale) => ({ value: scale, label: t(`deck.perform.scales.${scale}`) })),
@@ -167,6 +206,26 @@ export function PerformanceDrawer({
             onChange={onMode}
           />
         </div>
+        {/* Note adherence (cfg_notes, issue #84) lives with the steering
+            controls: it only guides generation while this deck is note-steering,
+            so it belongs beside key/scale/mode rather than in the always-on
+            Sampling & guidance block. Reference range 0–5, step 0.1, with a
+            reset (↺) to the tuned baseline. */}
+        <Slider
+          label={t('deck.perform.noteAdherence', {
+            value: Math.round(generation.cfgNotes * 10) / 10,
+          })}
+          min={CFG_MIN}
+          max={CFG_MAX}
+          step={CFG_STEP}
+          value={Math.round(generation.cfgNotes * 10) / 10}
+          onChange={(value) => setDeckGeneration(deckIndex, { cfgNotes: value })}
+          onReset={() => resetDeckGeneration(deckIndex, 'cfgNotes')}
+          resetLabel={t('deck.perform.resetParam', {
+            param: t('deck.perform.names.noteAdherence'),
+          })}
+        />
+        <p className="deck__perform-hint">{t('deck.perform.noteAdherenceHint')}</p>
         <p className="deck__perform-live" role="status">
           {!perf.armed
             ? t('deck.perform.off')
@@ -200,6 +259,53 @@ export function PerformanceDrawer({
           onChange={onDrumStrength}
         />
         <p className="deck__perform-hint">{t('deck.perform.drumsAdherenceHint')}</p>
+        {/* Sampling & guidance (issue #84): the always-on MRT2 operating-point
+            knobs — temperature, top-k, prompt adherence — matching the
+            magenta-realtime reference's ranges/defaults. (Note adherence is the
+            fourth param, but it only bites while steering, so it lives in the
+            steering block above.) Each carries a hint and its own reset (↺) to
+            the tuned baseline; values are rounded to their step to shed f32
+            mirror noise, like Drums adherence. */}
+        <div className="deck__perform-divider" />
+        <Slider
+          label={t('deck.perform.temperature', {
+            value: Math.round(generation.temperature * 100) / 100,
+          })}
+          min={TEMPERATURE_MIN}
+          max={TEMPERATURE_MAX}
+          step={TEMPERATURE_STEP}
+          value={Math.round(generation.temperature * 100) / 100}
+          onChange={(value) => setDeckGeneration(deckIndex, { temperature: value })}
+          onReset={() => resetDeckGeneration(deckIndex, 'temperature')}
+          resetLabel={t('deck.perform.resetParam', { param: t('deck.perform.names.temperature') })}
+        />
+        <p className="deck__perform-hint">{t('deck.perform.temperatureHint')}</p>
+        <Slider
+          label={t('deck.perform.topK', { value: Math.round(generation.topK) })}
+          min={TOP_K_MIN}
+          max={TOP_K_MAX}
+          step={TOP_K_STEP}
+          value={Math.round(generation.topK)}
+          onChange={(value) => setDeckGeneration(deckIndex, { topK: Math.round(value) })}
+          onReset={() => resetDeckGeneration(deckIndex, 'topK')}
+          resetLabel={t('deck.perform.resetParam', { param: t('deck.perform.names.topK') })}
+        />
+        <p className="deck__perform-hint">{t('deck.perform.topKHint')}</p>
+        <Slider
+          label={t('deck.perform.promptAdherence', {
+            value: Math.round(generation.cfgMusiccoca * 10) / 10,
+          })}
+          min={CFG_MIN}
+          max={CFG_MAX}
+          step={CFG_STEP}
+          value={Math.round(generation.cfgMusiccoca * 10) / 10}
+          onChange={(value) => setDeckGeneration(deckIndex, { cfgMusiccoca: value })}
+          onReset={() => resetDeckGeneration(deckIndex, 'cfgMusiccoca')}
+          resetLabel={t('deck.perform.resetParam', {
+            param: t('deck.perform.names.promptAdherence'),
+          })}
+        />
+        <p className="deck__perform-hint">{t('deck.perform.promptAdherenceHint')}</p>
       </div>
       <button
         type="button"
