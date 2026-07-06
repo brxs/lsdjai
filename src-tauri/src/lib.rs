@@ -190,10 +190,17 @@ fn start_sidecars(
                     }
                     // A fresh worker has no conditioning: push the deck's
                     // current style blend again (ADR-0020 phase B — the
-                    // shell sender owns the resend the webview used to do).
+                    // shell sender owns the resend the webview used to do), and
+                    // re-send the authored generation params (issue #84) — the
+                    // worker starts at the reference baseline, so this is the
+                    // moment the deck's persisted tuning (re)takes effect, for a
+                    // render on a stopped deck as much as the live stream.
                     if event == "ready" {
                         if let Some(sender) = app.try_state::<style_send::StyleSender>() {
                             sender.resend(idx);
+                        }
+                        if let Some(notes) = app.try_state::<midi::notes::NoteSteering>() {
+                            notes.reassert_generation(idx);
                         }
                     }
                 }
@@ -644,6 +651,22 @@ pub fn run() {
                             store_state.clear_fx(deck);
                         }
                     }
+                    // Hydrate the live generation params (issue #84) into the
+                    // store so the drawer sliders project the persisted tuning
+                    // from the first snapshot. The note-steering service (managed
+                    // below) also seeds its authored copy, and re-sends it to the
+                    // worker on `ready`. Seeded here, before the persistence
+                    // watcher, so the hydrate can't echo back to disk.
+                    // Clamp on the way in: settings.json is a file trust
+                    // boundary, so a hand-edited out-of-range value is pinned
+                    // here (the note-steering hydrate below clamps its copy too).
+                    let generation = shell_settings
+                        .deck_generations
+                        .get(deck)
+                        .copied()
+                        .unwrap_or_default()
+                        .clamped();
+                    store_state.set_deck_generation(deck, generation);
                 }
                 host.set_crossfade(shell_settings.crossfade);
                 store_state.set_crossfade(shell_settings.crossfade);
@@ -667,6 +690,22 @@ pub fn run() {
             // sender for note/drum conditioning — native MIDI, MCP, and the UI
             // all go through it.
             app.manage(midi::notes::NoteSteering::new(app.handle().clone()));
+            // Seed the service's authored generation params (issue #84) from
+            // the settings file — the value `reassert_generation` re-sends to
+            // each fresh worker on `ready` (no worker exists yet, so this only
+            // records; the store was seeded above). Runs before any worker can
+            // announce `ready`.
+            {
+                let notes = app.state::<midi::notes::NoteSteering>();
+                for deck in 0..lsdj_engine::DECK_COUNT {
+                    let generation = shell_settings
+                        .deck_generations
+                        .get(deck)
+                        .copied()
+                        .unwrap_or_default();
+                    notes.hydrate_generation(deck, generation);
+                }
+            }
             // Native MIDI I/O (ADR-0031): controller binding, translation, LEDs,
             // and the performance input — the webview shim is gone. The LED
             // painter follows the store through the in-process watcher.
@@ -767,6 +806,8 @@ pub fn run() {
             commands::set_deck_performance,
             commands::set_deck_drums,
             commands::set_deck_drums_strength,
+            commands::set_deck_generation,
+            commands::reset_deck_generation,
             commands::deck_play,
             commands::deck_stop,
             commands::deck_set_prompt,

@@ -87,12 +87,29 @@ the tuned MRT2 experience:
 | `cfg_drums` | 1.0 | 4.0 | constructor baseline **4.0**; "Drums adherence" knob overrides per chunk |
 
 `cfg_musiccoca` affects all generation; `cfg_notes` only bites while
-note-steering (issue #48). All four are set once on the system, not per call.
-`cfg_drums` is set to the same 4.0 baseline so an untouched deck matches the
-reference. The UI exposes it as an always-shown **"Drums adherence"** knob (its
-own control, independent of the **"No drums"** suppress toggle, like the
-reference): `generate_chunk` passes the knob's value every chunk (not only
-while suppressing), falling back to the baseline only before it is ever set.
+note-steering (issue #48). `cfg_drums` is set to the same 4.0 baseline so an
+untouched deck matches the reference. The UI exposes it as an always-shown
+**"Drums adherence"** knob (its own control, independent of the **"No drums"**
+suppress toggle, like the reference): `generate_chunk` passes the knob's value
+every chunk (not only while suppressing), falling back to the baseline only
+before it is ever set.
+
+**All five are now per-deck UI controls (issue #84).** The constructor values
+are the *reset-to-default baseline*; `temperature`, `top_k`, `cfg_musiccoca`,
+`cfg_notes` are threaded per call through `generate_chunk` **and `render_clip`**
+(a deck's tuning carries into its M18 pad renders too) exactly like `cfg_drums`.
+`temperature`, `top_k`, `cfg_musiccoca` live in an always-on **"Sampling &
+guidance"** section of the performance drawer; `cfg_notes` (**"Note adherence"**)
+sits with the **steering** controls (key/scale/mode) instead, since it only bites
+while note-steering. Each has a per-knob reset (↺) to the baseline; ranges/steps
+match the reference
+`Settings.tsx` (temperature `[0, 3]`/0.01 — the shell floors the effective value
+off zero; top-k `[1, 1024]`/1; the two CFG knobs share `[0, 5]`/0.1). The value
+is **deck config that persists** (shell `settings.json`, per deck): the
+note-steering service records the authored value, sends it to the worker on
+change, and — because the worker never resets these on play/stop — re-sends it
+to a *fresh* worker on its `ready` event (covering a model switch, a crash
+reload, and a render on a stopped deck), not on the play edge the drum-sit uses.
 
 **Note masking (matches the reference).** Non-held pitches are filled with
 `-1` (masked) so the model plays the held chord **and freely embellishes

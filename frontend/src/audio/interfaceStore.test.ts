@@ -38,6 +38,7 @@ const deck = (): DeckSnap => ({
   notes: null,
   drums: null,
   drumsStrength: 4,
+  generation: { temperature: 1.1, topK: 50, cfgMusiccoca: 1.6, cfgNotes: 2.4 },
   analysis: { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 },
   workerDied: false,
   switchingModel: false,

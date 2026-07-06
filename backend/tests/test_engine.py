@@ -6,7 +6,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from lsdj.engine import DeckEngine, FRAMES_PER_CHUNK
+from lsdj.engine import (
+    CFG_MUSICCOCA,
+    CFG_NOTES,
+    DeckEngine,
+    FRAMES_PER_CHUNK,
+    TEMPERATURE,
+    TOP_K,
+)
 
 
 AUDIO_EMBEDDING = np.array([9.0, -9.0])
@@ -30,6 +37,10 @@ def make_engine(embeddings: dict[str, np.ndarray]):
     engine._notes = None
     engine._drums = None
     engine._drums_cfg = None
+    engine._temperature = TEMPERATURE
+    engine._top_k = TOP_K
+    engine._cfg_musiccoca = CFG_MUSICCOCA
+    engine._cfg_notes = CFG_NOTES
     engine._chunk_frames = FRAMES_PER_CHUNK
     return engine, calls
 
@@ -191,7 +202,16 @@ def make_streaming_engine():
     generate_calls = []
 
     def generate(
-        style=None, notes=None, drums=None, cfg_drums=None, frames=None, state=None
+        style=None,
+        notes=None,
+        drums=None,
+        cfg_drums=None,
+        temperature=None,
+        top_k=None,
+        cfg_musiccoca=None,
+        cfg_notes=None,
+        frames=None,
+        state=None,
     ):
         # A copy: generate_chunk mutates self._notes in place after the call
         # (the onset decay), so recording the live list would show the decayed
@@ -201,6 +221,10 @@ def make_streaming_engine():
                 "notes": None if notes is None else list(notes),
                 "drums": drums,
                 "cfg_drums": cfg_drums,
+                "temperature": temperature,
+                "top_k": top_k,
+                "cfg_musiccoca": cfg_musiccoca,
+                "cfg_notes": cfg_notes,
             }
         )
         return (
@@ -215,7 +239,81 @@ def make_streaming_engine():
 def test_generate_chunk_is_masked_until_steered():
     engine, calls = make_streaming_engine()
     engine.generate_chunk()
-    assert calls == [{"notes": None, "drums": None, "cfg_drums": None}]
+    assert (calls[0]["notes"], calls[0]["drums"], calls[0]["cfg_drums"]) == (
+        None,
+        None,
+        None,
+    )
+
+
+def test_generate_chunk_passes_the_baseline_generation_params():
+    # An untouched deck generates at the reference operating point (issue #84):
+    # the tuning knobs reach generate() every chunk, defaulting to the baseline
+    # until set_generation overrides them.
+    engine, calls = make_streaming_engine()
+    engine.generate_chunk()
+    assert (
+        calls[0]["temperature"],
+        calls[0]["top_k"],
+        calls[0]["cfg_musiccoca"],
+        calls[0]["cfg_notes"],
+    ) == (TEMPERATURE, TOP_K, CFG_MUSICCOCA, CFG_NOTES)
+
+
+def test_set_generation_reaches_every_chunk_until_changed():
+    engine, calls = make_streaming_engine()
+    engine.set_generation(temperature=0.7, top_k=20, cfg_musiccoca=3.0, cfg_notes=1.0)
+    engine.generate_chunk()
+    engine.generate_chunk()
+    for call in calls:
+        assert (
+            call["temperature"],
+            call["top_k"],
+            call["cfg_musiccoca"],
+            call["cfg_notes"],
+        ) == (0.7, 20, 3.0, 1.0)
+    # Reset-to-baseline is a plain set back to the reference constants.
+    engine.set_generation(
+        temperature=TEMPERATURE,
+        top_k=TOP_K,
+        cfg_musiccoca=CFG_MUSICCOCA,
+        cfg_notes=CFG_NOTES,
+    )
+    engine.generate_chunk()
+    assert calls[-1]["temperature"] == TEMPERATURE
+
+
+def test_set_generation_clamps_temperature_off_zero():
+    # A temperature of 0 divides the sampling logits by zero; the engine floors
+    # it at MIN_TEMPERATURE so the lowest live value still generates.
+    from lsdj.engine import MIN_TEMPERATURE
+
+    engine, calls = make_streaming_engine()
+    engine.set_generation(
+        temperature=0.0, top_k=TOP_K, cfg_musiccoca=CFG_MUSICCOCA, cfg_notes=CFG_NOTES
+    )
+    engine.generate_chunk()
+    assert calls[0]["temperature"] == MIN_TEMPERATURE
+
+
+def test_set_generation_rejects_bad_values():
+    engine, _ = make_engine({})
+    with pytest.raises(ValueError, match="top_k"):
+        engine.set_generation(
+            temperature=1.0, top_k=0, cfg_musiccoca=1.6, cfg_notes=2.4
+        )
+    with pytest.raises(ValueError, match="top_k"):
+        engine.set_generation(
+            temperature=1.0, top_k=True, cfg_musiccoca=1.6, cfg_notes=2.4
+        )
+    with pytest.raises(ValueError, match="cfg_musiccoca"):
+        engine.set_generation(
+            temperature=1.0, top_k=50, cfg_musiccoca=7.5, cfg_notes=2.4
+        )
+    with pytest.raises(ValueError, match="cfg_notes"):
+        engine.set_generation(
+            temperature=1.0, top_k=50, cfg_musiccoca=1.6, cfg_notes=-2.0
+        )
 
 
 def test_set_notes_applies_to_every_chunk_until_changed():
@@ -320,9 +418,7 @@ def test_chunk_frames_knob_changes_generation_length():
     engine, _ = make_engine({})
     frames_seen = []
 
-    def generate(
-        style=None, notes=None, drums=None, cfg_drums=None, frames=None, state=None
-    ):
+    def generate(style=None, frames=None, state=None, **_extra):
         frames_seen.append(frames)
         return (
             SimpleNamespace(samples=np.zeros((48_000, 2), dtype=np.float32)),
@@ -361,14 +457,40 @@ def test_render_clip_never_carries_the_stream_conditioning():
     engine.set_notes([3] * 128)
     engine.set_drums(1)
     engine.render_clip("air horn", 1.0)
-    assert kwargs_seen == [{}]
+    # The note/drum stream conditioning is absent from a clip render...
+    for key in ("notes", "drums", "cfg_drums"):
+        assert key not in kwargs_seen[0]
+
+
+def test_render_clip_carries_the_deck_tuning():
+    # ...but the deck's tuned sampling/guidance DOES shape its pad renders
+    # (issue #84): the character carries into rendered clips.
+    engine, _ = make_engine({"air horn": np.array([1.0, 0.0])})
+    kwargs_seen = []
+
+    def generate(style=None, frames=None, state=None, **extra):
+        kwargs_seen.append(extra)
+        return (
+            SimpleNamespace(samples=np.zeros((48_000, 2), dtype=np.float32)),
+            None,
+        )
+
+    engine._system.generate = generate
+    engine.set_generation(temperature=0.7, top_k=20, cfg_musiccoca=3.0, cfg_notes=1.0)
+    engine.render_clip("air horn", 1.0)
+    assert kwargs_seen[0] == {
+        "temperature": 0.7,
+        "top_k": 20,
+        "cfg_musiccoca": 3.0,
+        "cfg_notes": 1.0,
+    }
 
 
 def test_render_clip_leaves_the_stream_untouched():
     engine, _ = make_engine({"air horn": np.array([1.0, 0.0])})
     chunk_calls = []
 
-    def generate(style=None, frames=None, state=None):
+    def generate(style=None, frames=None, state=None, **_extra):
         chunk_calls.append((frames, state))
         samples = np.full((48_000, 2), 0.5, dtype=np.float32)
         return SimpleNamespace(samples=samples), "clip-state"
@@ -391,7 +513,7 @@ def test_render_clip_leaves_the_stream_untouched():
 
 def test_render_clip_reuses_the_text_embed_cache():
     engine, calls = make_engine({"air horn": np.array([1.0, 0.0])})
-    engine._system.generate = lambda style=None, frames=None, state=None: (
+    engine._system.generate = lambda style=None, frames=None, state=None, **_extra: (
         SimpleNamespace(samples=np.zeros((48_000, 2), dtype=np.float32)),
         None,
     )

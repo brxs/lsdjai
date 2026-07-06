@@ -23,6 +23,7 @@ class FakeEngine:
         self.renders = []
         self.notes = []
         self.drums = []
+        self.generation = []
         self.chunk_frames = []
         self.chunk_seconds = 1.0
         self.fail_set_style = False
@@ -31,6 +32,7 @@ class FakeEngine:
         self.fail_render = False
         self.fail_set_notes = False
         self.fail_set_chunk_frames = False
+        self.fail_set_generation = False
 
     def render_clip(self, prompt, seconds):
         if self.fail_render:
@@ -62,6 +64,11 @@ class FakeEngine:
             raise ValueError("bad chunk frames")
         self.chunk_frames.append(frames)
         self.chunk_seconds = frames * 0.04
+
+    def set_generation(self, temperature, top_k, cfg_musiccoca, cfg_notes):
+        if self.fail_set_generation:
+            raise ValueError("bad generation params")
+        self.generation.append((temperature, top_k, cfg_musiccoca, cfg_notes))
 
     def generate_chunk(self):
         if self.fail_generate:
@@ -242,6 +249,47 @@ def test_set_chunk_frames_failure_keeps_worker_alive(deck):
     deck.engine.fail_set_chunk_frames = False
     deck.send(type="set_chunk_frames", frames=25)
     assert deck.next_event("chunk_frames_applied")["frames"] == 25
+
+
+def test_set_generation_applies_and_reports(deck):
+    deck.send(
+        type="set_generation",
+        temperature=0.7,
+        top_k=20,
+        cfg_musiccoca=3.0,
+        cfg_notes=1.0,
+    )
+    applied = deck.next_event("generation_applied")
+    assert applied["effective_from_chunk"] == 0
+    assert deck.engine.generation[-1] == (0.7, 20, 3.0, 1.0)
+
+    # The params are a mode, not steering: a play does not reset them (the
+    # worker sends no counter-command), and the deck keeps generating.
+    deck.send(type="play")
+    assert deck.next_event("audio") == FAKE_PCM
+    assert deck.engine.generation == [(0.7, 20, 3.0, 1.0)]
+
+
+def test_set_generation_failure_keeps_worker_alive(deck):
+    deck.engine.fail_set_generation = True
+    deck.send(
+        type="set_generation",
+        temperature=0.0,
+        top_k=1,
+        cfg_musiccoca=1.6,
+        cfg_notes=2.4,
+    )
+    assert "set_generation failed" in deck.next_event("error")["error"]
+    # The deck must survive and keep taking commands.
+    deck.engine.fail_set_generation = False
+    deck.send(
+        type="set_generation",
+        temperature=1.1,
+        top_k=50,
+        cfg_musiccoca=1.6,
+        cfg_notes=2.4,
+    )
+    assert deck.next_event("generation_applied")["effective_from_chunk"] == 0
 
 
 def test_set_notes_failure_keeps_worker_alive(deck):

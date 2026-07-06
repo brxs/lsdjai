@@ -156,6 +156,39 @@ def run_deck_worker(
                             },
                         )
                     )
+            elif kind == "set_generation":
+                # Live generation params (issue #84): the deck's sampling /
+                # guidance operating point, applied between chunks like every
+                # command. A mode, not held conditioning — it survives play/stop
+                # (the authored value lives shell-side and is re-sent on ready).
+                try:
+                    engine.set_generation(
+                        cmd["temperature"],
+                        cmd["top_k"],
+                        cmd["cfg_musiccoca"],
+                        cmd["cfg_notes"],
+                    )
+                except Exception:
+                    logger.exception("deck %s: set_generation failed", deck_id)
+                    out_queue.put(
+                        (
+                            "status",
+                            {
+                                "event": "error",
+                                "error": "set_generation failed; params unchanged",
+                            },
+                        )
+                    )
+                else:
+                    out_queue.put(
+                        (
+                            "status",
+                            {
+                                "event": "generation_applied",
+                                "effective_from_chunk": chunk_index,
+                            },
+                        )
+                    )
             elif kind in ("set_notes", "set_drums"):
                 # Idempotent full-state conditioning (ADR-0023): the payload
                 # replaces the held state wholesale; None returns to masked.

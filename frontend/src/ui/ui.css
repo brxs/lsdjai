@@ -296,11 +296,36 @@
   gap: var(--space-1);
 }
 
+/* Label row: the label plus an optional per-slider reset (↺) at the far end. */
+.ui-slider__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
 .ui-slider__label {
   font: var(--silkscreen);
   letter-spacing: var(--silkscreen-spacing);
   text-transform: uppercase;
   color: var(--color-text-silkscreen);
+}
+
+/* A small ghost icon-button, quieter than a full ui-button so it reads as an
+   affordance on the label rather than a primary action. */
+.ui-slider__reset {
+  flex: none;
+  padding: 0 var(--space-1);
+  border: none;
+  background: transparent;
+  color: var(--color-text-silkscreen);
+  font-size: var(--text-s);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ui-slider__reset:hover {
+  color: var(--color-text);
 }
 
 .ui-slider__input {
