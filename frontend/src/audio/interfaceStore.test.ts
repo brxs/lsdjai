@@ -37,6 +37,7 @@ const deck = (): DeckSnap => ({
   performance: { armed: false, key: 0, scale: 'major', mode: 'chord' },
   notes: null,
   drums: null,
+  drumsStrength: 4,
   analysis: { bpm: null, confidence: 0, liveBeat: null, originFrames: 0 },
   workerDied: false,
   switchingModel: false,

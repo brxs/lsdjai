@@ -29,6 +29,7 @@ def make_engine(embeddings: dict[str, np.ndarray]):
     engine._state = None
     engine._notes = None
     engine._drums = None
+    engine._drums_cfg = None
     engine._chunk_frames = FRAMES_PER_CHUNK
     return engine, calls
 
@@ -36,6 +37,29 @@ def make_engine(embeddings: dict[str, np.ndarray]):
 def sample_pcm(seconds: float) -> bytes:
     frames = int(seconds * 48_000)
     return np.zeros(frames * 2, dtype="<f4").tobytes()
+
+
+def test_constructor_uses_reference_sampling_defaults(monkeypatch):
+    # The tuning knobs are set once on the system (not per generate) — adopting
+    # the magenta-realtime app defaults, not the raw library floor. Lock them so
+    # a silent revert to the library constructor defaults is caught. cfg_drums
+    # is the baseline for an unsteered deck; the drum-sit control overrides it
+    # per generate_chunk when a flag is active (issue #50).
+    from magenta_rt.mlx import system
+
+    captured = {}
+
+    def fake_system(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(system, "MagentaRT2SystemMlxfn", fake_system)
+    DeckEngine(model="mrt2_small")
+    assert captured["temperature"] == 1.1
+    assert captured["top_k"] == 50
+    assert captured["cfg_musiccoca"] == 1.6
+    assert captured["cfg_notes"] == 2.4
+    assert captured["cfg_drums"] == 4.0
 
 
 def test_blends_weighted_embeddings_normalized():
@@ -166,8 +190,19 @@ def make_streaming_engine():
     engine, _ = make_engine({})
     generate_calls = []
 
-    def generate(style=None, notes=None, drums=None, frames=None, state=None):
-        generate_calls.append({"notes": notes, "drums": drums})
+    def generate(
+        style=None, notes=None, drums=None, cfg_drums=None, frames=None, state=None
+    ):
+        # A copy: generate_chunk mutates self._notes in place after the call
+        # (the onset decay), so recording the live list would show the decayed
+        # state, not what this chunk was handed.
+        generate_calls.append(
+            {
+                "notes": None if notes is None else list(notes),
+                "drums": drums,
+                "cfg_drums": cfg_drums,
+            }
+        )
         return (
             SimpleNamespace(samples=np.zeros((48_000, 2), dtype=np.float32)),
             "stream-state",
@@ -180,7 +215,7 @@ def make_streaming_engine():
 def test_generate_chunk_is_masked_until_steered():
     engine, calls = make_streaming_engine()
     engine.generate_chunk()
-    assert calls == [{"notes": None, "drums": None}]
+    assert calls == [{"notes": None, "drums": None, "cfg_drums": None}]
 
 
 def test_set_notes_applies_to_every_chunk_until_changed():
@@ -205,6 +240,56 @@ def test_set_drums_wraps_the_flag_for_the_model():
     engine.set_drums(None)
     engine.generate_chunk()
     assert [call["drums"] for call in calls] == [[0], [1], None]
+
+
+def test_drum_cfg_always_reaches_generate():
+    # Drums Adherence (issue #50) always guides the drum conditioning — like
+    # the reference, independent of the suppress flag. It falls back to the
+    # constructor baseline (None) only before it has ever been set.
+    engine, calls = make_streaming_engine()
+    engine.generate_chunk()  # never set → baseline
+    engine.set_drums(0, 5.0)  # suppress, adherence 5
+    engine.generate_chunk()
+    engine.set_drums(None, 3.0)  # auto — adherence still applies
+    engine.generate_chunk()
+    assert [call["cfg_drums"] for call in calls] == [None, 5.0, 3.0]
+
+
+def test_set_drums_rejects_out_of_range_cfg():
+    engine, _ = make_engine({})
+    with pytest.raises(ValueError, match="drum cfg"):
+        engine.set_drums(0, 7.5)
+    with pytest.raises(ValueError, match="drum cfg"):
+        engine.set_drums(0, -2.0)
+
+
+def test_held_onset_decays_to_sustain_after_the_first_chunk():
+    # Issue #46/#48: a held press marked onset (2) must sound its attack once,
+    # then continue as sustain (1) — otherwise the engine re-applies "first
+    # time" every chunk and the model re-attacks the note at the chunk rate.
+    engine, calls = make_streaming_engine()
+    multihot = [0] * 128
+    multihot[60] = 2  # a fresh onset on C4
+    engine.set_notes(multihot)
+    engine.generate_chunk()
+    engine.generate_chunk()
+    assert calls[0]["notes"][60] == 2  # first chunk attacks
+    assert calls[1]["notes"][60] == 1  # then decays to a sustain
+    # The held-state itself decayed, so a later change re-onsets deliberately.
+    assert engine._notes[60] == 1
+
+
+def test_chord_follow_state_does_not_decay():
+    # State 3 (model-decides) is not an onset: it stays every chunk so the
+    # model keeps its attack freedom — the forgiving chord-follow default.
+    engine, calls = make_streaming_engine()
+    multihot = [0] * 128
+    multihot[60] = 3
+    engine.set_notes(multihot)
+    engine.generate_chunk()
+    engine.generate_chunk()
+    assert calls[0]["notes"][60] == 3
+    assert calls[1]["notes"][60] == 3
 
 
 def test_set_notes_is_full_state_not_a_reference():
@@ -235,7 +320,9 @@ def test_chunk_frames_knob_changes_generation_length():
     engine, _ = make_engine({})
     frames_seen = []
 
-    def generate(style=None, notes=None, drums=None, frames=None, state=None):
+    def generate(
+        style=None, notes=None, drums=None, cfg_drums=None, frames=None, state=None
+    ):
         frames_seen.append(frames)
         return (
             SimpleNamespace(samples=np.zeros((48_000, 2), dtype=np.float32)),

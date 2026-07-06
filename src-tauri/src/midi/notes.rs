@@ -30,12 +30,17 @@ use lsdj_engine::host::Host;
 use lsdj_engine::{DECK_COUNT, SAMPLE_RATE};
 
 use crate::sidecar::Sidecars;
-use crate::store::{InterfaceStore, NoteModeSnap, NoteSteeringSnap, PerformanceSnap, ScaleSnap};
+use crate::store::{
+    InterfaceStore, NoteModeSnap, NoteSteeringSnap, PerformanceSnap, ScaleSnap,
+    DEFAULT_DRUM_STRENGTH,
+};
 
 /// The wire multihot width (one slot per MIDI pitch, docs/spike-mrt2.md).
 pub const NOTE_SLOTS: usize = 128;
-/// Wire states: 0 off, 1 sustain, 2 onset, 3 model-decides.
-const NOTE_OFF: i32 = 0;
+/// Wire states: -1 masked, 0 off, 1 sustain, 2 onset, 3 model-decides.
+/// Non-held pitches are MASKED (the reference's `unmask_width=0` default), so
+/// the model plays freely around the held chord rather than being forced OFF.
+const NOTE_MASKED: i32 = -1;
 const NOTE_SUSTAIN: i32 = 1;
 const NOTE_ONSET: i32 = 2;
 const NOTE_MODEL_DECIDES: i32 = 3;
@@ -124,16 +129,17 @@ pub fn snap_to_scale(pitch: u8, key: u8, scale: ScaleSnap) -> u8 {
 }
 
 /// Build the full wire multihot from held pitches, or `None` for an empty
-/// hold — the port of `notes.ts` `buildNoteMultihot`. `None` means fully
-/// masked (the model plays freely); an all-zero multihot would instead
-/// suppress melody outright. Non-held slots are OFF so the held chord really
-/// constrains the harmony. In onset mode a pitch also in `previous` is a
+/// hold. `None` means fully masked (the model plays freely). Non-held slots
+/// are MASKED (`-1`), matching the magenta-realtime reference's
+/// `populate_condition_tokens` at its `unmask_width=0` default: only the held
+/// pitches are pinned, and the model is free to embellish around them
+/// (docs/spike-mrt2.md). In onset mode a pitch also in `previous` is a
 /// continued hold (sustain), a fresh one an attack.
 pub fn build_multihot(pitches: &[u8], mode: NoteModeSnap, previous: &[u8]) -> Option<Vec<i32>> {
     if pitches.is_empty() {
         return None;
     }
-    let mut multihot = vec![NOTE_OFF; NOTE_SLOTS];
+    let mut multihot = vec![NOTE_MASKED; NOTE_SLOTS];
     for &pitch in pitches {
         let slot = pitch as usize;
         if slot >= NOTE_SLOTS {
@@ -151,6 +157,18 @@ pub fn build_multihot(pitches: &[u8], mode: NoteModeSnap, previous: &[u8]) -> Op
         };
     }
     Some(multihot)
+}
+
+/// The ADR-0023 wire message for drum conditioning: the flag (`0` suppresses,
+/// `1` forces, `null` returns to masked) plus the `cfg_drums` strength (issue
+/// #50). One place for the shape — the mode setter, the strength setter, and
+/// the play-edge re-assert must never drift.
+fn drums_wire(drums: DrumConditioning) -> String {
+    let flag = match drums.mode {
+        None => serde_json::Value::Null,
+        Some(force) => json!(if force { 1 } else { 0 }),
+    };
+    json!({ "type": "set_drums", "drums": flag, "cfg": drums.strength }).to_string()
 }
 
 /// Seconds until the next beat, from the deck's gated clock (ADR-0025): the
@@ -174,11 +192,38 @@ pub fn next_beat_delay(
     Some(Duration::from_secs_f64(delay_seconds))
 }
 
+/// A deck's authored drum conditioning (issue #50): the suppress/auto mode plus
+/// the guidance strength that decides how hard the model binds to it. They
+/// travel together on the wire, reset together, and re-assert together on the
+/// play edge; grouping them also lands DeckState's derived `Default` on the
+/// tuned strength (`DEFAULT_DRUM_STRENGTH`) rather than f32's 0.0.
+#[derive(Clone, Copy)]
+struct DrumConditioning {
+    /// `Some(false)` suppress ("sit beside"), `None` model-decides. The
+    /// product is binary; `Some(true)` (force) is a valid model flag the wire
+    /// still encodes but no LSDJ surface emits.
+    mode: Option<bool>,
+    /// The `cfg_drums` guidance scale (docs/spike-mrt2.md), applied by the
+    /// worker every chunk regardless of `mode` (like the reference), not only
+    /// while suppressing.
+    strength: f32,
+}
+
+impl Default for DrumConditioning {
+    fn default() -> Self {
+        DrumConditioning { mode: None, strength: DEFAULT_DRUM_STRENGTH }
+    }
+}
+
 /// One deck's steering state. Pure data + bookkeeping so the hold semantics
 /// are unit-testable without an app handle.
 #[derive(Default)]
 struct DeckState {
     perf: PerformanceSnap,
+    /// The authored drum conditioning (issue #50). Deck config like `perf`,
+    /// not a held gesture — it survives `clear_holds` and is re-asserted
+    /// over a fresh stream on the play edge.
+    drums: DrumConditioning,
     /// Held pitches with source refcounts — a pad triad and a keyboard note
     /// may hold the same pitch; it stays held until every holder releases.
     held: BTreeMap<u8, u32>,
@@ -447,20 +492,57 @@ impl NoteSteering {
         self.send_now(deck);
     }
 
-    /// Drum conditioning (tri-state): sends the wire flag and mirrors the
-    /// store — the drum half of the single-sender contract.
-    pub fn set_drums(&self, deck: usize, drums: Option<bool>) {
+    /// Drum-conditioning mode (tri-state): records it, re-sends the full drum
+    /// state (mode + the deck's current strength), and mirrors the store — the
+    /// drum half of the single-sender contract. Record + enqueue happen under
+    /// one lock so concurrent authors (drawer, MCP) can never leave the wire
+    /// disagreeing with the authored state the play edge re-asserts
+    /// (`send_control` never blocks, so holding the lock across it is safe).
+    pub fn set_drums(&self, deck: usize, mode: Option<bool>) {
         if deck >= DECK_COUNT {
             return;
         }
-        let flag = match drums {
-            None => serde_json::Value::Null,
-            Some(force) => json!(if force { 1 } else { 0 }),
-        };
-        self.send_control(deck, &json!({ "type": "set_drums", "drums": flag }).to_string());
-        if let Some(store) = self.app.try_state::<InterfaceStore>() {
-            store.set_deck_drums(deck, drums);
+        {
+            let mut decks = self.lock();
+            decks[deck].drums.mode = mode;
+            self.send_control(deck, &drums_wire(decks[deck].drums));
         }
+        if let Some(store) = self.app.try_state::<InterfaceStore>() {
+            store.set_deck_drums(deck, mode);
+        }
+    }
+
+    /// Drum-conditioning strength (issue #50): records the `cfg_drums` scale,
+    /// re-sends the full drum state (mode unchanged, so the worker picks up the
+    /// new strength), and mirrors the store. Same lock discipline as the mode
+    /// setter. The caller clamps to the model's range at its trust boundary.
+    pub fn set_drums_strength(&self, deck: usize, strength: f32) {
+        if deck >= DECK_COUNT {
+            return;
+        }
+        {
+            let mut decks = self.lock();
+            decks[deck].drums.strength = strength;
+            self.send_control(deck, &drums_wire(decks[deck].drums));
+        }
+        if let Some(store) = self.app.try_state::<InterfaceStore>() {
+            store.set_deck_drums_strength(deck, strength);
+        }
+    }
+
+    /// Re-assert the authored drum conditioning over a fresh stream (the
+    /// play edge). The worker resets both the flag AND the adherence to the
+    /// constructor baseline on every discontinuity (ADR-0023), but drum-sit is
+    /// deck config, not a held gesture (issue #50) — and the adherence now
+    /// always guides generation, not just while suppressing — so the sender
+    /// re-sends the full state (mode + adherence), which ADR-0023's idempotent
+    /// messages make safe. Read + enqueue under the one lock, like the setters,
+    /// so a concurrent author can't interleave.
+    pub fn reassert_drums(&self, deck: usize) {
+        if deck >= DECK_COUNT {
+            return;
+        }
+        self.send_control(deck, &drums_wire(self.lock()[deck].drums));
     }
 
     /// A stream discontinuity (play / stop / worker death): the worker resets
@@ -665,20 +747,22 @@ mod tests {
     }
 
     #[test]
-    fn multihot_ports_the_notes_ts_semantics() {
+    fn multihot_masks_non_held_pitches_like_the_reference() {
         // Empty hold → None (masked, model free) — NOT an all-zero vector.
         assert_eq!(build_multihot(&[], NoteModeSnap::Chord, &[]), None);
-        // Chord mode: held pitches are model-decides (3), the rest OFF.
+        // Chord mode: held pitches are model-decides (3), the rest MASKED (-1)
+        // so the model embellishes around them (reference `unmask_width=0`).
         let hot = build_multihot(&[60, 64, 67], NoteModeSnap::Chord, &[]).unwrap();
         assert_eq!(hot.len(), NOTE_SLOTS);
         assert_eq!(hot[60], 3);
         assert_eq!(hot[64], 3);
         assert_eq!(hot[67], 3);
-        assert_eq!(hot[61], 0);
+        assert_eq!(hot[61], -1); // non-held → masked, not off
         // Onset mode: a re-held pitch sustains (1), a fresh one attacks (2).
         let hot = build_multihot(&[60, 64], NoteModeSnap::Onset, &[60]).unwrap();
         assert_eq!(hot[60], 1);
         assert_eq!(hot[64], 2);
+        assert_eq!(hot[61], -1);
     }
 
     #[test]
@@ -754,5 +838,63 @@ mod tests {
         assert!(state.sent.is_empty());
         assert!(state.perf.armed);
         assert_eq!(state.perf.key, 9);
+    }
+
+    #[test]
+    fn drums_wire_carries_the_flag_and_the_strength() {
+        // The single wire shape three call sites depend on (mode setter,
+        // strength setter, play-edge reassert) — lock it so they can't drift.
+        let parse = |c| serde_json::from_str::<serde_json::Value>(&drums_wire(c)).unwrap();
+
+        let suppress = parse(DrumConditioning { mode: Some(false), strength: 4.0 });
+        assert_eq!(suppress["type"], "set_drums");
+        assert_eq!(suppress["drums"].as_i64(), Some(0));
+        assert_eq!(suppress["cfg"].as_f64(), Some(4.0));
+
+        // Auto masks the flag but still carries the strength — the worker
+        // always guides with it (like the reference), independent of the flag.
+        let auto = parse(DrumConditioning { mode: None, strength: 4.0 });
+        assert!(auto["drums"].is_null());
+        assert_eq!(auto["cfg"].as_f64(), Some(4.0));
+    }
+
+    #[test]
+    fn drum_conditioning_is_deck_config_and_survives_a_discontinuity_clear() {
+        // Issue #50: a stopped-and-restarted deck must not silently un-sit —
+        // the authored mode + strength live beside the perf config, outside
+        // the held state a discontinuity drops.
+        let mut state = DeckState::default();
+        assert_eq!(state.drums.mode, None);
+        assert_eq!(state.drums.strength, DEFAULT_DRUM_STRENGTH); // tuned, not 0.0
+        state.drums.mode = Some(false);
+        state.drums.strength = 3.0;
+        state.pad_down(0);
+        state.clear_holds();
+        assert!(state.held_pitches().is_empty());
+        assert_eq!(state.drums.mode, Some(false));
+        assert_eq!(state.drums.strength, 3.0);
+    }
+
+    #[test]
+    fn reassert_drums_re_emits_the_authored_sit_after_a_discontinuity() {
+        // The play edge re-sends `drums_wire(deck.drums)` (reassert_drums) right
+        // after the worker's reset. This locks the value it carries: an authored
+        // sit survives the discontinuity clear and re-emits as suppress + the
+        // authored strength — NOT the constructor baseline the fresh stream reset
+        // to. (The send plumbing — the per-deck lane, deck_play's call — has no
+        // test harness and rides the manual checklist; this is the pure data
+        // contract beneath it.)
+        let parse = |c| serde_json::from_str::<serde_json::Value>(&drums_wire(c)).unwrap();
+        let mut state = DeckState::default();
+        state.drums.mode = Some(false); // performer sits this deck's drums out
+        state.drums.strength = 3.0; // at a non-default adherence
+        state.pad_down(0);
+        state.clear_holds(); // the discontinuity: holds drop, drum config stays
+
+        let reasserted = parse(state.drums);
+        assert_eq!(reasserted["drums"].as_i64(), Some(0)); // still suppressing
+        assert_eq!(reasserted["cfg"].as_f64(), Some(3.0)); // authored, not baseline
+        // And it differs from the default a bare fresh stream would otherwise keep.
+        assert_ne!(reasserted, parse(DrumConditioning::default()));
     }
 }

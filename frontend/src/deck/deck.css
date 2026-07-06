@@ -327,15 +327,34 @@
   min-width: 0;
 }
 
+/* The rule between the MIDI-steering config and the Drums control (issue
+   #50): the black on-accent ink at full strength, a hard split between the
+   two conditioning groups; the column gap spaces it. */
+.deck__perform-divider {
+  /* flex: none so the column's flex-shrink can't crush this empty 1px rule to
+     0 when the door content overflows (an element with no content has nothing
+     to hold its height open). */
+  flex: none;
+  height: 1px;
+  background: var(--color-on-accent);
+}
+
 /* The dark field modules read as stickers on the accent slab; their
-   silkscreen labels flip to the on-accent ink for contrast. */
-.deck__perform-door .ui-field__label {
+   silkscreen labels flip to the on-accent ink for contrast — selects and the
+   drum-strength slider (issue #50) alike. */
+.deck__perform-door .ui-field__label,
+.deck__perform-door .ui-slider__label {
   color: var(--color-on-accent);
 }
 
-/* The live readout: a bottom HUD strip, monospace, like a status LCD. */
+/* The live readout: the tail of the STEER group, monospace, like a status LCD.
+   It no longer bottom-pins as a HUD — issue #50 added the DRUMS section below
+   the divider, so an `auto` top margin would absorb the free space above and
+   float this strip (plus the whole drums block) down mid-door. Normal flow
+   keeps the steering block tight so the single rule reads as a clean section
+   split. */
 .deck__perform-live {
-  margin: auto 0 0;
+  margin: 0;
   padding: var(--space-1) var(--space-2);
   font: 500 var(--text-xs) var(--font-mono);
   letter-spacing: var(--silkscreen-spacing);

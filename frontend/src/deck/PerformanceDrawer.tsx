@@ -2,15 +2,31 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { useInterfaceStore } from '../audio/interfaceStore'
-import { setDeckPerformance, type DeckSnap } from '../audio/nativeEngine'
+import {
+  setDeckDrums,
+  setDeckDrumsStrength,
+  setDeckPerformance,
+  type DeckSnap,
+} from '../audio/nativeEngine'
 import type { DeckId } from '../audio/types'
 import { Select } from '../ui/Select'
+import { Slider } from '../ui/Slider'
 import { Switch } from '../ui/Switch'
 
 /** Pitch-class names for the key picker and the held-note readout. */
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 const SCALES = ['major', 'minor', 'pentatonicMinor', 'chromatic'] as const
 const MODES = ['chord', 'onset'] as const
+// The drum-suppression strength slider (issue #50): the cfg_drums guidance
+// scale. Range, step, and default all match the magenta-realtime reference
+// (CFG_MIN 0, CFG_MAX 5, DEFAULT_CFG_DRUMS 4.0) — above ~5 the model drifts
+// out of distribution. DEFAULT mirrors the shell's DEFAULT_DRUM_STRENGTH; it
+// is only the fallback for the brief window before the store's first snapshot
+// arrives (the store owns the real value).
+const DEFAULT_DRUM_STRENGTH = 4
+const DRUM_STRENGTH_MIN = 0
+const DRUM_STRENGTH_MAX = 5
+const DRUM_STRENGTH_STEP = 0.1
 
 type Performance = DeckSnap['performance']
 
@@ -44,6 +60,15 @@ export function PerformanceDrawer({
     [snapPerf],
   )
   const held = snap?.notes?.pitches ?? []
+  // The drum-sit toggle (issue #50), projected from the store mirror: the deck
+  // suppresses its drums ("sit beside") when `drums === false`, else the model
+  // decides. Binary, like the magenta-realtime `drumless` toggle.
+  const drumsOff = snap?.drums === false
+  // The drum-adherence strength (cfg_drums) — always shown and always guiding
+  // (like the reference), independent of the No-drums toggle. Rounded to the
+  // 0.1 step to shed f32 mirror noise.
+  const drumStrength =
+    Math.round((snap?.drumsStrength ?? DEFAULT_DRUM_STRENGTH) * 10) / 10
 
   // Door visibility is ephemeral view state (ADR-0020 narrowing): closing it
   // does NOT stop steering. It auto-opens on a steering rising edge so an arm
@@ -74,6 +99,17 @@ export function PerformanceDrawer({
   const onMode = useCallback(
     (value: string) => write({ ...perf, mode: value as Performance['mode'] }),
     [write, perf],
+  )
+  // Drums write through the shell steering service directly — conditioning,
+  // not performance config, so it needs no arming and never touches the
+  // chunk knob.
+  const toggleDrums = useCallback(
+    () => setDeckDrums(deckIndex, drumsOff ? 'auto' : 'suppress'),
+    [deckIndex, drumsOff],
+  )
+  const onDrumStrength = useCallback(
+    (value: number) => setDeckDrumsStrength(deckIndex, value),
+    [deckIndex],
   )
 
   const scaleOptions = useMemo(
@@ -138,6 +174,32 @@ export function PerformanceDrawer({
               ? t('deck.perform.held', { notes: held.map(pitchName).join(' ') })
               : t('deck.perform.live')}
         </p>
+        {/* Drum conditioning (issue #50) — independent of the MIDI-steering
+            arm; a rule fences it off from the steering block above, and a
+            second splits its own two controls. Both carry the magenta-realtime
+            reference's exact labels: a "No drums" toggle and an always-shown
+            "Drums adherence" knob (its value always guides generation, so it is
+            never hidden). Each carries a hint. */}
+        <div className="deck__perform-divider" />
+        <div className="deck__perform-row">
+          <Switch
+            label={t('deck.perform.noDrums')}
+            on={drumsOff}
+            accent={deckId}
+            onClick={toggleDrums}
+          />
+        </div>
+        <p className="deck__perform-hint">{t('deck.perform.noDrumsHint')}</p>
+        <div className="deck__perform-divider" />
+        <Slider
+          label={t('deck.perform.drumsAdherence', { value: drumStrength })}
+          min={DRUM_STRENGTH_MIN}
+          max={DRUM_STRENGTH_MAX}
+          step={DRUM_STRENGTH_STEP}
+          value={drumStrength}
+          onChange={onDrumStrength}
+        />
+        <p className="deck__perform-hint">{t('deck.perform.drumsAdherenceHint')}</p>
       </div>
       <button
         type="button"

@@ -765,6 +765,8 @@ pub fn run() {
             commands::style_apply_preset,
             commands::set_deck_primed,
             commands::set_deck_performance,
+            commands::set_deck_drums,
+            commands::set_deck_drums_strength,
             commands::deck_play,
             commands::deck_stop,
             commands::deck_set_prompt,
