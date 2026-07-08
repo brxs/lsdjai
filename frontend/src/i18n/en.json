@@ -34,6 +34,10 @@
     "collapseHint": "Collapse media explorer ({{shortcut}})",
     "expandHint": "Expand media explorer ({{shortcut}})",
     "resize": "Resize media explorer",
+    "pianoWindow": {
+      "open": "Open MIDI keyboard",
+      "close": "Close MIDI keyboard"
+    },
     "tabs": {
       "crates": "Presets",
       "generate": "Generate",
@@ -366,5 +370,15 @@
       "done": "Done",
       "error": "Failed"
     }
+  },
+  "piano": {
+    "heading": "MIDI keyboard",
+    "hint": "Play with your computer keyboard — A S D F G H J K across an octave. Notes snap to each routed deck's key & scale.",
+    "routeLabel": "Send to",
+    "routeDeck": "Deck {{deck}}",
+    "octave": "Octave {{n}}",
+    "octaveUp": "Octave up",
+    "octaveDown": "Octave down",
+    "key": "{{note}}"
   }
 }

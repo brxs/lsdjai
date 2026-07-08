@@ -13,12 +13,15 @@ import {
   invoke,
   isTauri,
   subscribeLibraryChanged,
+  togglePianoWindow,
 } from '../audio/nativeEngine'
+import { useInterfaceStore } from '../audio/interfaceStore'
 import { useControlBus } from '../control/busContext'
 import { CrateBrowser } from '../crates/CrateBrowser'
 import type { StylePreset } from '../presets'
 import { Button } from '../ui/Button'
 import { Panel } from '../ui/Panel'
+import { PianoIcon } from '../ui/PianoIcon'
 import { Select } from '../ui/Select'
 import { TextField } from '../ui/TextField'
 import { randomSongTitle } from './songTitle'
@@ -291,6 +294,9 @@ export function MediaExplorer({
   onResize,
 }: MediaExplorerProps) {
   const { t } = useTranslation()
+  // Whether the standalone MIDI-keyboard window (issue #49) is open — a shell
+  // read-back that lights the tray's piano toggle.
+  const pianoWindowOpen = useInterfaceStore()?.pianoWindowOpen ?? false
   const [tab, setTab] = useState<MediaTab>('crates')
   // True only while the top grip is being dragged, to drop the height
   // transition so the tray tracks the cursor instead of easing behind it.
@@ -977,6 +983,21 @@ export function MediaExplorer({
                 )}
               </Button>
             </div>
+          )}
+          {open && (
+            <Button
+              lit={pianoWindowOpen}
+              aria-pressed={pianoWindowOpen}
+              aria-label={
+                pianoWindowOpen ? t('media.pianoWindow.close') : t('media.pianoWindow.open')
+              }
+              title={
+                pianoWindowOpen ? t('media.pianoWindow.close') : t('media.pianoWindow.open')
+              }
+              onClick={togglePianoWindow}
+            >
+              <PianoIcon />
+            </Button>
           )}
           {open ? (
             <Button

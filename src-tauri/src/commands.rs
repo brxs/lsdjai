@@ -1254,6 +1254,79 @@ pub fn set_deck_performance(
     }
 }
 
+/// Play one note from the on-screen keyboard (issue #49): the webview's
+/// computer-keyboard surface, scoped to a single deck. Routed through the same
+/// single note-steering sender the hardware and MCP use — which snaps the raw
+/// pitch to the deck's key/scale, holds it on the surface's own ledger, and
+/// mirrors the store. It does NOT arm the deck — routing is independent of the
+/// steering switch; the note conditions generation regardless. A bad deck or an
+/// out-of-range pitch (the MIDI 0–127 wire width) is a silent no-op at this
+/// trust boundary.
+#[tauri::command]
+pub fn deck_keyboard_note(
+    notes: tauri::State<'_, NoteSteering>,
+    deck: usize,
+    pitch: u8,
+    down: bool,
+) {
+    if valid_deck(deck) && pitch < 128 {
+        notes.keyboard_event_deck(deck, pitch, down);
+    }
+}
+
+/// The standalone MIDI-keyboard window's label (issue #49); shared by the
+/// toggle command and the `piano` capability scope.
+const PIANO_WINDOW_LABEL: &str = "piano";
+
+/// Mirror the keyboard window's visibility into the store so the drawer's
+/// toggle button reflects it (the window is shell-owned; the webview projects).
+fn set_piano_window_open(app: &tauri::AppHandle, open: bool) {
+    if let Some(store) = app.try_state::<InterfaceStore>() {
+        store.set_piano_window_open(open);
+    }
+}
+
+/// Show / hide / create the standalone MIDI-keyboard window (issue #49): the
+/// drawer's toggle button calls this. The first call builds the window
+/// (`index.html?window=piano`, which `main.tsx` renders as the piano); later
+/// calls flip its visibility. A close is intercepted to HIDE the window, so the
+/// toggle re-shows the same one with its routing/octave state intact.
+#[tauri::command]
+pub fn toggle_piano_window(app: tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window(PIANO_WINDOW_LABEL) {
+        let showing = win.is_visible().unwrap_or(false);
+        if showing {
+            let _ = win.hide();
+        } else {
+            let _ = win.show();
+            let _ = win.set_focus();
+        }
+        set_piano_window_open(&app, !showing);
+        return;
+    }
+    let built = tauri::WebviewWindowBuilder::new(
+        &app,
+        PIANO_WINDOW_LABEL,
+        tauri::WebviewUrl::App("index.html?window=piano".into()),
+    )
+    .title("MIDI Keyboard")
+    .inner_size(560.0, 260.0)
+    .min_inner_size(440.0, 220.0)
+    .build();
+    if let Ok(win) = built {
+        set_piano_window_open(&app, true);
+        let app_for_close = app.clone();
+        let win_for_close = win.clone();
+        win.on_window_event(move |event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = win_for_close.hide();
+                set_piano_window_open(&app_for_close, false);
+            }
+        });
+    }
+}
+
 /// Drum conditioning as it crosses the IPC boundary (issue #50): 'suppress'
 /// keeps drums out (sit beside another deck), 'auto' hands the choice back to
 /// the model. Binary, matching the `magenta-realtime` reference's `drumless`

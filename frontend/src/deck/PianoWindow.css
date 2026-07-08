@@ -1,0 +1,125 @@
+/* The standalone MIDI-keyboard window (issue #49). Its own OS window, so it
+   fills the viewport and owns its chrome, built from the shared tokens. */
+.piano {
+  box-sizing: border-box;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.piano__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.piano__title {
+  margin: 0;
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.piano__routes {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.piano__routes-label {
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-silkscreen);
+}
+
+.piano__controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.piano__octave {
+  font: 500 var(--text-xs) var(--font-mono);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+/* The piano well: white keys tile a flex row; black keys overlay absolutely on
+   the boundaries between them (their `left` is set inline as a percentage). */
+.piano__keys {
+  position: relative;
+  flex: 1;
+  min-height: 6rem;
+  background: var(--color-surface-inset);
+}
+
+/* Fill the well via absolute inset rather than height:100% — a percentage
+   height doesn't resolve against the flex-sized well, which collapsed the white
+   keys to content height and floated their bottom-pinned labels up to the top. */
+.piano__whites {
+  position: absolute;
+  inset: 2px;
+  display: flex;
+  gap: 2px;
+}
+
+.piano__key {
+  position: relative;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+}
+
+/* The QWERTY letter sits at the bottom edge of each key — pinned there
+   absolutely so it stays put regardless of the key's height (white keys run
+   the full well; black keys stop short). */
+.piano__key-hint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: var(--space-1);
+  text-align: center;
+  pointer-events: none;
+}
+
+.piano__key--white {
+  flex: 1;
+  min-width: 0;
+  background: var(--color-surface-raised);
+}
+
+.piano__key--black {
+  position: absolute;
+  top: 2px;
+  width: 9%;
+  height: 62%;
+  transform: translateX(-50%);
+  background: var(--color-bg);
+  color: var(--color-text-silkscreen);
+  z-index: 2;
+}
+
+/* A held key lights in the accent so the note reads against the dark well,
+   whichever hand played it (keyboard or pointer). */
+.piano__key--held {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+.piano__hint {
+  margin: 0;
+  font: 500 var(--text-xs) var(--font-mono);
+  opacity: 0.82;
+}

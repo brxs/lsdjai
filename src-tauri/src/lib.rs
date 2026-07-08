@@ -804,6 +804,8 @@ pub fn run() {
             commands::style_apply_preset,
             commands::set_deck_primed,
             commands::set_deck_performance,
+            commands::deck_keyboard_note,
+            commands::toggle_piano_window,
             commands::set_deck_drums,
             commands::set_deck_drums_strength,
             commands::set_deck_generation,
