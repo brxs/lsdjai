@@ -1,12 +1,22 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { togglePianoWindow } from '../audio/nativeEngine'
+import { useInterfaceStore } from '../audio/interfaceStore'
 import type { DeckId, TrackSource } from '../audio/types'
 import { createControlBus, type ControlBus } from '../control/bus'
 import { ControlBusProvider } from '../control/ControlBusProvider'
 import type { StylePreset } from '../presets'
 import { MediaExplorer } from './MediaExplorer'
 import { MEDIA_DEFAULT_HEIGHT } from './mediaTray'
+
+// Real nativeEngine except the piano-window toggle, which we spy on; and a
+// controllable interface-store hook for the window's open (lit) state.
+vi.mock('../audio/nativeEngine', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../audio/nativeEngine')>()
+  return { ...original, togglePianoWindow: vi.fn() }
+})
+vi.mock('../audio/interfaceStore', () => ({ useInterfaceStore: vi.fn(() => null) }))
 
 type Handlers = {
   onLoadPreset?: (deck: DeckId, preset: StylePreset) => void
@@ -87,6 +97,8 @@ async function composeSampleClip(name: string, oneShot = true) {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.mocked(useInterfaceStore).mockReturnValue(null)
+  vi.mocked(togglePianoWindow).mockClear()
 })
 
 describe('MediaExplorer', () => {
@@ -129,6 +141,29 @@ describe('MediaExplorer', () => {
     // Clicking the bar (here, its title label) expands it — not just a chevron.
     fireEvent.click(screen.getByText('Media explorer'))
     expect(onToggle).toHaveBeenCalledTimes(1)
+  })
+
+  it('toggles the MIDI keyboard window from the tray button', () => {
+    renderExplorer()
+    const piano = screen.getByRole('button', { name: 'Open MIDI keyboard' })
+    expect(piano).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(piano)
+    expect(togglePianoWindow).toHaveBeenCalledTimes(1)
+  })
+
+  it('lights the tray button and flips its label while the window is open', () => {
+    vi.mocked(useInterfaceStore).mockReturnValue({
+      pianoWindowOpen: true,
+    } as unknown as ReturnType<typeof useInterfaceStore>)
+    renderExplorer()
+    const lit = screen.getByRole('button', { name: 'Close MIDI keyboard' })
+    expect(lit).toHaveAttribute('aria-pressed', 'true')
+    expect(lit.className).toContain('ui-button--lit')
+  })
+
+  it('hides the piano toggle while the tray is collapsed', () => {
+    renderExplorer({}, [], createControlBus(), false)
+    expect(screen.queryByRole('button', { name: 'Open MIDI keyboard' })).toBeNull()
   })
 
   it('composes an SA3 track and loads it onto a deck', async () => {

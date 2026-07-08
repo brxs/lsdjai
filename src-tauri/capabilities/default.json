@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main-window capability — Tauri core, the native folder picker (dialog open), and window dragging for the frameless header (data-tauri-drag-region). MIDI is native in the shell (ADR-0031) and needs no webview permission.",
-  "windows": ["main"],
+  "description": "Webview capability — Tauri core, the native folder picker (dialog open), and window dragging for the frameless header (data-tauri-drag-region). Scoped to the main window and the standalone MIDI-keyboard window (issue #49), which invokes the same note IPC. MIDI is native in the shell (ADR-0031) and needs no webview permission.",
+  "windows": ["main", "piano"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

@@ -252,6 +252,11 @@ struct DeckState {
     /// Snapped pitch per raw external-keyboard note, so the release matches
     /// its own press even across a key change.
     keyboard_pitches: BTreeMap<u8, u8>,
+    /// The on-screen computer-keyboard surface's own ledger (issue #49),
+    /// separate from `keyboard_pitches` so the two sources can't desync when
+    /// both press the same raw pitch on this deck (a shared refcount, not one
+    /// stolen hold). Snapped pitch per raw note, like the external keyboard.
+    screen_pitches: BTreeMap<u8, u8>,
     /// The pitches of the last multihot actually sent (onset's
     /// sustain-vs-fresh baseline, ADR-0023 full-state semantics).
     sent: Vec<u8>,
@@ -318,12 +323,31 @@ impl DeckState {
         }
     }
 
+    /// The on-screen keyboard's press/release (issue #49) — identical snap and
+    /// release-by-raw-pitch bookkeeping to `key_down`/`key_up`, but on its own
+    /// `screen_pitches` ledger so it holds independently of the external
+    /// keyboard.
+    fn screen_down(&mut self, raw: u8) {
+        let snapped = snap_to_scale(raw, self.perf.key, self.perf.scale);
+        if let Some(previous) = self.screen_pitches.insert(raw, snapped) {
+            self.release(&[previous]);
+        }
+        self.hold(&[snapped]);
+    }
+
+    fn screen_up(&mut self, raw: u8) {
+        if let Some(snapped) = self.screen_pitches.remove(&raw) {
+            self.release(&[snapped]);
+        }
+    }
+
     /// Drop every hold (a stream discontinuity or an external full-state
     /// replace); the performance config survives.
     fn clear_holds(&mut self) {
         self.held.clear();
         self.pad_pitches = Default::default();
         self.keyboard_pitches.clear();
+        self.screen_pitches.clear();
         self.sent.clear();
         self.pending = false;
         self.generation += 1;
@@ -439,6 +463,32 @@ impl NoteSteering {
                 self.dispatch(deck, down);
             }
         }
+    }
+
+    /// An on-screen keyboard note edge (issue #49): the standalone MIDI-keyboard
+    /// window's surface, scoped to ONE deck — unlike the shared external keyboard
+    /// above, which steers every armed deck at once. The window's A/B toggles
+    /// route each press to the enabled decks, so this only *sends notes*: it does
+    /// NOT arm the deck (routing is independent of the steering switch) and does
+    /// not touch the chunk — an unarmed deck still takes the conditioning at its
+    /// default chunk; arm steering for the tighter chunk. Holds land on the
+    /// deck's own `screen_pitches` ledger, so this surface and the external
+    /// keyboard can both hold the same raw pitch without stealing each other's
+    /// release.
+    pub fn keyboard_event_deck(&self, deck: usize, raw: u8, down: bool) {
+        if deck >= DECK_COUNT {
+            return;
+        }
+        {
+            let mut decks = self.lock();
+            let state = &mut decks[deck];
+            if down {
+                state.screen_down(raw);
+            } else {
+                state.screen_up(raw);
+            }
+        }
+        self.dispatch(deck, down);
     }
 
     /// A pad-mode selector press: choosing the KEYBOARD bank arms the deck's
@@ -894,6 +944,33 @@ mod tests {
     }
 
     #[test]
+    fn screen_notes_snap_on_press_and_release_by_raw_pitch() {
+        // Issue #49: the on-screen keyboard snaps and releases exactly like the
+        // external one, on its own ledger.
+        let mut state = DeckState::default();
+        state.screen_down(63); // Eb snaps to D in C major
+        assert_eq!(state.held_pitches(), vec![62]);
+        state.perf.key = 4; // re-key mid-hold
+        state.screen_up(63); // the release still finds the D it pressed
+        assert!(state.held_pitches().is_empty());
+    }
+
+    #[test]
+    fn screen_and_keyboard_lanes_hold_the_same_pitch_independently() {
+        // Issue #49: an external keyboard and the on-screen surface pressing the
+        // same raw pitch on one deck double-hold it (refcount 2); releasing one
+        // lane leaves the other holding — the separate ledgers can't desync.
+        let mut state = DeckState::default();
+        state.key_down(60); // external C
+        state.screen_down(60); // on-screen C — same pitch, different source
+        assert_eq!(state.held_pitches(), vec![60]);
+        state.key_up(60); // external releases; the on-screen hold survives
+        assert_eq!(state.held_pitches(), vec![60]);
+        state.screen_up(60);
+        assert!(state.held_pitches().is_empty());
+    }
+
+    #[test]
     fn a_repeated_pad_down_without_a_release_does_not_leak_holds() {
         let mut state = DeckState::default();
         state.pad_down(0);
@@ -909,6 +986,7 @@ mod tests {
         state.perf.key = 9;
         state.pad_down(0);
         state.key_down(65);
+        state.screen_down(67); // issue #49: the screen lane clears too
         state.sent = vec![60];
         state.clear_holds();
         assert!(state.held_pitches().is_empty());

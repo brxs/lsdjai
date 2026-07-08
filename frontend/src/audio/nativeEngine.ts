@@ -375,6 +375,10 @@ export type InterfaceState = {
   mainDevice: string
   cueDevice: string
   recordingsFolder: string
+  /** Whether the standalone MIDI-keyboard window (issue #49) is open — a shell
+   * window-lifecycle read-back the drawer's toggle reflects. Optional so test
+   * fixtures need not set it; the shell snapshot always carries it. */
+  pianoWindowOpen?: boolean
 }
 
 /** Fetch the current interface-state snapshot (the projection's initial hydrate). */
@@ -497,6 +501,27 @@ export function setDeckPerformance(
   perf: DeckSnap['performance'],
 ): void {
   void invoke('set_deck_performance', { deck, perf }).catch(() => {})
+}
+
+/** Play one note from the on-screen keyboard (issue #49): a raw MIDI pitch and
+ * an on/off edge, scoped to one deck. The shell note-steering service snaps it
+ * to the deck's key/scale and holds it on the surface's own ledger. It does NOT
+ * arm the deck — routing is independent of the MIDI-steering switch; the note
+ * conditions generation either way (arm steering for the tighter chunk).
+ * Fire-and-forget; the held state is the local surface's, the sound the store's. */
+export function deckKeyboardNote(
+  deck: number,
+  pitch: number,
+  down: boolean,
+): void {
+  void invoke('deck_keyboard_note', { deck, pitch, down }).catch(() => {})
+}
+
+/** Show / hide the standalone MIDI-keyboard window (issue #49), creating it on
+ * the first call. The shell mirrors its visibility into the store, so the
+ * drawer's toggle reflects it. Fire-and-forget. */
+export function togglePianoWindow(): void {
+  void invoke('toggle_piano_window').catch(() => {})
 }
 
 /** The drum-conditioning vocabulary the IPC boundary speaks (issue #50) —

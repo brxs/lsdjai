@@ -594,6 +594,10 @@ pub struct InterfaceState {
     pub cue_device: String,
     /// The recordings folder ("" = Downloads).
     pub recordings_folder: String,
+    /// Whether the standalone MIDI-keyboard window (issue #49) is visible — a
+    /// shell-owned window-lifecycle read-back the drawer's toggle button mirrors
+    /// (the window lives shell-side; the webview only reflects it).
+    pub piano_window_open: bool,
 }
 
 impl Default for InterfaceState {
@@ -606,6 +610,7 @@ impl Default for InterfaceState {
             main_device: String::new(),
             cue_device: String::new(),
             recordings_folder: String::new(),
+            piano_window_open: false,
         }
     }
 }
@@ -624,6 +629,10 @@ impl InterfaceState {
 
     pub fn set_cue_mix(&mut self, position: f32) {
         self.cue_mix = position;
+    }
+
+    pub fn set_piano_window_open(&mut self, open: bool) {
+        self.piano_window_open = open;
     }
 
     pub fn set_volume(&mut self, deck: usize, gain: f32) {
@@ -1124,6 +1133,10 @@ impl InterfaceStore {
 
     pub fn set_cue_mix(&self, position: f32) {
         self.mutate(|s| s.set_cue_mix(position));
+    }
+
+    pub fn set_piano_window_open(&self, open: bool) {
+        self.mutate(|s| s.set_piano_window_open(open));
     }
 
     pub fn set_volume(&self, deck: usize, gain: f32) {
