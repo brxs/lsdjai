@@ -1,6 +1,6 @@
 # 0034. Structured songs render via a backend continuation-conditioning pipeline
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-07-10)
 - **Date:** 2026-07-10
 - **Deciders:** Daniel Peter
 

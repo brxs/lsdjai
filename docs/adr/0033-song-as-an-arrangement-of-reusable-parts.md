@@ -1,6 +1,6 @@
 # 0033. A song is an arrangement of reusable parts
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-07-10)
 - **Date:** 2026-07-10
 - **Deciders:** Daniel Peter
 
