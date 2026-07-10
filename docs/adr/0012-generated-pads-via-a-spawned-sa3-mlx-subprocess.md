@@ -3,7 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-06-12
 - **Deciders:** Daniel Peter
-- **Extended by:** ADR-0028 (Stable Audio 3 LoRA finetunes via the MLX path)
+- **Extended by:** ADR-0028 (Stable Audio 3 LoRA finetunes via the MLX path),
+  issue #54 (audio-to-audio, inpainting, CFG/APG, and fixed seeds)
 
 ## Context
 
@@ -56,12 +57,12 @@ and what happens when it's missing or fails.
   (measured: it built an ephemeral torch env and crashed on
   `import mlx`); the `./sa3` wrapper exists for humans and may prompt.
   The module invokes the interpreter the checkout's installer created.
-- **The checkout lives outside this repo, pinned.** A small resolver
-  takes the first existing of `$SA3_MLX_HOME`,
-  `~/Documents/Magenta/stable-audio-3`, `~/Repos/stable-audio-3`
-  (each expected to contain `optimized/mlx/.venv`). The integration is
-  validated against commit `bccf5b7`; the resolver is pure and
-  unit-tested.
+- **The checkout lives outside this repo, pinned.** A small resolver takes
+  `$SA3_MLX_HOME` first, then the in-app model manager's app-data checkout at
+  `~/Library/Application Support/LSDJai/stable-audio-3` (each expected to
+  contain `optimized/mlx/.venv`). `sa3-pin.json` records the repository and
+  commit; issue #54 is validated against the current `36ef977` pin. The
+  resolver is pure and unit-tested.
 - **Generations are serialised** behind a single-slot semaphore: peak
   RSS is ~1.5 GB transient and two decks can request at once; one at a
   time keeps worst-case memory flat next to two model workers on a
@@ -71,6 +72,25 @@ and what happens when it's missing or fails.
   CLI → 502 with the captured stderr tail; prompt/seconds validation
   (non-blank, bounded length and duration) → 422 at the trust
   boundary.
+- **The SA3 generation surface is one backward-compatible endpoint.** Existing
+  text-only calls remain `application/json` with `{prompt, seconds, kind}` and
+  spawn the exact same argv. Optional JSON fields carry `init_noise_level`,
+  `inpaint_range`, `negative_prompt`, numeric `cfg`/`apg`, and `seed`. A request
+  with source audio uses `multipart/form-data`: one `request` field containing
+  that JSON and one `init_audio` WAV file. The upload is bounded at 16 MiB both
+  before and during body consumption; metadata is bounded at 64 KiB. Init audio
+  is 44.1 kHz PCM16 mono/stereo, the format the pinned CLI reads natively, so the
+  packaged app never acquires an undeclared `ffmpeg` dependency. All numeric,
+  type, ordering, and cross-field rules are rejected at the HTTP boundary before
+  the generation lock or subprocess. `python-multipart` is the only added
+  backend runtime dependency.
+- **Optional flags do not perturb defaults.** `sa3.generate()` accepts the new
+  controls as keyword-only values, writes an optional `init.wav` inside the
+  existing locked temporary directory, and appends only explicitly supplied
+  flags. Inpainting requires init audio; negative prompt and APG require CFG
+  other than 1, where the CLI actually runs its unconditional branch. A seed is
+  bounded to the CLI's non-negative 31-bit random domain. `/api/render` remains
+  the separate Magenta worker and gains none of these SA3-specific controls.
 - **Magenta is the third engine, as its own worker.** A dedicated
   render process — the deck worker loop reused verbatim; a render
   worker is a deck worker that never receives `play` — serves
@@ -91,15 +111,20 @@ and what happens when it's missing or fails.
 
 ## Consequences
 
-- Easier: no dependency enters the backend venv; generation memory is
-  transient (nothing competes with the deck workers between runs);
-  upgrading sa3_mlx is `git pull` + re-validate, not a lockfile dance.
+- Easier: no SA3 model/runtime dependency enters the backend venv; generation
+  memory is transient (nothing competes with the deck workers between runs).
+  The small multipart parser is a normal locked backend dependency. Upgrading
+  sa3_mlx is update the pin + re-validate, not a model-runtime lockfile dance.
 - The subprocess spawn + model load (~0.5 s of the wall) is paid on
   every generation. Accepted: at 1–1.5 s total, a resident-model
   server is complexity without a user-visible win.
 - An un-versioned upstream: the CLI flags are the contract and a
   rebase upstream can break it. Mitigated by the pinned commit, one
   owning module, and errors that name the problem.
+- Multipart source audio creates bounded copies in the HTTP client, parser,
+  final bytes object, and temporary file. The 16 MiB file/whole-body ceilings
+  keep that exposure fixed; base64 JSON was rejected because it adds about 33%
+  expansion and another large text copy.
 - A session that touches the Magenta engine holds a third model
   resident (~2 GB) until shutdown. Accepted: it is lazy, and the
   alternative — borrowing a deck's worker — made generation

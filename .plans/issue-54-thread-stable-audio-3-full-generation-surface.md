@@ -4,7 +4,7 @@ url: https://github.com/brxs/lsdjai/issues/54
 title: "Thread Stable Audio 3's full generation surface through the pipeline"
 date: 2026-07-10
 baseline: 76466aa
-status: implementation-ready
+status: implementation-in-progress
 ---
 
 # Plan: Thread Stable Audio 3's full generation surface (#54)
@@ -18,7 +18,9 @@ status: implementation-ready
 - [x] Mark this plan implementation-ready.
 - [x] Implement the SA3 CLI adapter and exact argv/init-file regression tests.
 - [x] Implement JSON/multipart HTTP parsing and trust-boundary validation.
-- [ ] Add automated and API-level model-loaded verification.
+- [x] Add automated and API-level model-loaded verification.
+- [x] Run the model-loaded verifier through JSON and multipart; machine verdict
+  passes (fixed seed exact, inpaint concentration 12.445x).
 - [ ] Run the full check suite and complete the API/by-ear checklist.
 
 ## Problem
