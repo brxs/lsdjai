@@ -31,8 +31,9 @@ status: in_progress
 - [x] Phase 2: measure the unchanged shipping estimator, classify failures, and
   commit proposed numeric targets (10 s acquisition, 8 s recovery, 0 wrong
   steady/beatless seconds, at most 1 stale change second).
-- [ ] Phase 2 owner gate: approve or replace the proposed targets, then flip
-  their manifest status from `proposed` to `approved` before tuning.
+- [x] Phase 2 owner gate: owner approved the proposed 10 s / 8 s / 0-or-1
+  targets on 2026-07-10. Candidate tuning may begin; flip the manifest status
+  to `approved` with the measured winner so the committed branch stays green.
 - [ ] Phase 3: run corpus-wide candidate experiments and make the ADR decision.
 - [ ] Phase 4: ship the smallest winning estimator/gate change and turn the
   frozen targets into regression gates.
