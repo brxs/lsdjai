@@ -476,6 +476,10 @@ generation controls, and beat-consumer product behaviour.
 - `just check` passes: 176 backend tests, 572 frontend tests, 210 shell tests
   (one diagnostic ignored), 109 engine tests, plus Ruff, ESLint, TypeScript,
   and Clippy with warnings denied.
+- A native dev build opened the MacBook Pro Speakers at 48 kHz, loaded both
+  `mrt2_small` workers, acquired 130.13 BPM / 0.881 confidence on a real house
+  stream, stayed blank for a 35-second real ambient/no-drums stream, and cleared
+  published BPM/phase immediately on stop.
 - Remaining evidence is deliberately not conflated with simulation: the
-  listening/device checks in `docs/issue-77-hardware-checklist.md` require a
-  human with actual output hardware before the issue is closed.
+  unchecked listening/device checks in `docs/issue-77-hardware-checklist.md`
+  require a human to judge sound and musical timing before the issue is closed.
