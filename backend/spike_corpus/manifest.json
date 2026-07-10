@@ -47,7 +47,12 @@
           "librosa_bpm": 130.8
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": 10.0,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "mrt2_generate",
         "frames": 600
@@ -75,7 +80,12 @@
           "librosa_bpm": 119.7
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": 10.0,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "mrt2_generate",
         "frames": 600
@@ -103,7 +113,12 @@
           "librosa_bpm": 89.3
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": 10.0,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "mrt2_generate",
         "frames": 600
@@ -131,7 +146,12 @@
           "librosa_bpm": 95.3
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": 10.0,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "mrt2_generate",
         "frames": 600
@@ -159,7 +179,12 @@
           "librosa_bpm": 133.9
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": 10.0,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "mrt2_generate",
         "frames": 600
@@ -187,7 +212,12 @@
           "librosa_bpm": 140.6
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": 10.0,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "mrt2_generate",
         "frames": 600
@@ -215,7 +245,12 @@
           "librosa_bpm": 45.0
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": null,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "mrt2_generate",
         "frames": 600
@@ -243,7 +278,12 @@
           "librosa_bpm": 160.7
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": null,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "mrt2_generate",
         "frames": 600
@@ -271,7 +311,12 @@
           "librosa_bpm": 119.7
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": null,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "mrt2_generate",
         "frames": 600
@@ -299,7 +344,12 @@
           "librosa_bpm": 74.0
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": null,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "mrt2_generate",
         "frames": 600
@@ -327,7 +377,12 @@
           "librosa_bpm": 114.8
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": 10.0,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "mrt2_generate",
         "frames": 600
@@ -355,7 +410,12 @@
           "librosa_bpm": 117.2
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": 10.0,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "mrt2_generate",
         "frames": 600
@@ -383,7 +443,12 @@
           "librosa_bpm": 125.0
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": 10.0,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "mrt2_generate",
         "frames": 600
@@ -411,7 +476,12 @@
           "librosa_bpm": 112.5
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": 10.0,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "mrt2_generate",
         "frames": 600
@@ -439,7 +509,12 @@
           "librosa_bpm": 72.1
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": 10.0,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "mrt2_generate",
         "frames": 600
@@ -467,7 +542,12 @@
           "librosa_bpm": 200.9
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": 10.0,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "mrt2_generate",
         "frames": 600
@@ -492,7 +572,7 @@
           "start_seconds": 0.0,
           "end_seconds": 4.0,
           "expect": "beatless",
-          "librosa_bpm": 152.0
+          "librosa_bpm": 160.7
         },
         {
           "start_seconds": 4.0,
@@ -501,7 +581,12 @@
           "librosa_bpm": 114.8
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": 10.0,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "pcm_concatenate",
         "boundary": "hard",
@@ -548,7 +633,12 @@
           "librosa_bpm": 72.1
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": 10.0,
+        "max_recovery_seconds": null,
+        "max_wrong_display_seconds": 0
+      },
       "recipe": {
         "kind": "pcm_concatenate",
         "boundary": "hard",
@@ -595,7 +685,12 @@
           "librosa_bpm": 140.6
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": 10.0,
+        "max_recovery_seconds": 8.0,
+        "max_wrong_display_seconds": 1
+      },
       "recipe": {
         "kind": "pcm_concatenate",
         "boundary": "hard",
@@ -642,7 +737,12 @@
           "librosa_bpm": 119.7
         }
       ],
-      "targets": null,
+      "targets": {
+        "status": "proposed",
+        "max_first_correct_display_seconds": 10.0,
+        "max_recovery_seconds": 8.0,
+        "max_wrong_display_seconds": 1
+      },
       "recipe": {
         "kind": "pcm_concatenate",
         "boundary": "hard",

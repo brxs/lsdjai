@@ -55,6 +55,7 @@ struct Segment {
 
 #[derive(Debug, Deserialize)]
 struct Targets {
+    status: String,
     max_first_correct_display_seconds: Option<f64>,
     max_recovery_seconds: Option<f64>,
     max_wrong_display_seconds: Option<u32>,
@@ -76,7 +77,8 @@ struct Summary {
     blank_seconds: u32,
     first_correct_display_seconds: Option<f64>,
     time_to_first_correct_display_seconds: Option<f64>,
-    first_correct_confident_estimate_seconds: Option<f64>,
+    time_to_first_correct_confident_estimate_seconds: Option<f64>,
+    raw_recovery_seconds: Option<f64>,
     recovery_seconds: Option<f64>,
     confidence_min: Option<f64>,
     confidence_max: Option<f64>,
@@ -160,6 +162,7 @@ fn summarize(entry: &Entry, observations: &[Observation]) -> Summary {
     let mut wrong_display_seconds = 0;
     let mut first_correct_display_seconds = None;
     let mut first_correct_confident_estimate_seconds = None;
+    let mut raw_recovery_seconds = None;
     let mut recovery_seconds = None;
     let mut confidence_min: Option<f64> = None;
     let mut confidence_max: Option<f64> = None;
@@ -177,8 +180,16 @@ fn summarize(entry: &Entry, observations: &[Observation]) -> Summary {
             if estimate.confidence >= GATE_MIN_CONFIDENCE
                 && value_matches_segment(estimate.bpm, segment)
             {
-                first_correct_confident_estimate_seconds
-                    .get_or_insert(observation.elapsed_seconds);
+                if observation.elapsed_seconds > onset {
+                    first_correct_confident_estimate_seconds
+                        .get_or_insert(observation.elapsed_seconds);
+                }
+                if let Some(change) = entry.change_at_seconds {
+                    if observation.elapsed_seconds > change {
+                        raw_recovery_seconds
+                            .get_or_insert(observation.elapsed_seconds - change);
+                    }
+                }
             }
         }
         if let Some(displayed) = observation.displayed {
@@ -209,7 +220,9 @@ fn summarize(entry: &Entry, observations: &[Observation]) -> Summary {
         first_correct_display_seconds,
         time_to_first_correct_display_seconds: first_correct_display_seconds
             .map(|seconds| seconds - onset),
-        first_correct_confident_estimate_seconds,
+        time_to_first_correct_confident_estimate_seconds:
+            first_correct_confident_estimate_seconds.map(|seconds| seconds - onset),
+        raw_recovery_seconds,
         recovery_seconds,
         confidence_min,
         confidence_max,
@@ -299,6 +312,15 @@ fn assert_targets(entry: &Entry, summary: &Summary) {
     let Some(targets) = &entry.targets else {
         return;
     };
+    assert!(
+        matches!(targets.status.as_str(), "proposed" | "approved"),
+        "{}: invalid target status {}",
+        entry.file,
+        targets.status
+    );
+    if targets.status == "proposed" {
+        return;
+    }
     if let Some(limit) = targets.max_first_correct_display_seconds {
         let actual = summary
             .time_to_first_correct_display_seconds
@@ -384,8 +406,18 @@ fn the_expanded_spike_corpus_reports_shipping_metrics() {
     validate_coverage(&manifest);
 
     println!(
-        "{:<30} {:<12} {:<13} {:<7} {:<12} {:<8} {:<8} {:<11} {:<11}",
-        "clip", "scenario", "reference", "final", "correct/total", "wrong", "first", "recover", "confidence"
+        "{:<30} {:<12} {:<13} {:<7} {:<12} {:<6} {:<7} {:<7} {:<7} {:<7} {:<11}",
+        "clip",
+        "scenario",
+        "reference",
+        "final",
+        "correct/total",
+        "wrong",
+        "raw",
+        "first",
+        "raw-rec",
+        "recover",
+        "confidence"
     );
     for entry in &manifest.entries {
         let wav_path = corpus_dir().join(&entry.file);
@@ -397,7 +429,7 @@ fn the_expanded_spike_corpus_reports_shipping_metrics() {
             _ => "—".into(),
         };
         println!(
-            "{:<30} {:<12} {:<13} {:<7} {:>3}/{:<8} {:<8} {:<8} {:<11} {:<11}",
+            "{:<30} {:<12} {:<13} {:<7} {:>3}/{:<8} {:<6} {:<7} {:<7} {:<7} {:<7} {:<11}",
             entry.file,
             entry.scenario,
             reference_label(entry),
@@ -405,7 +437,9 @@ fn the_expanded_spike_corpus_reports_shipping_metrics() {
             summary.correct_display_seconds,
             summary.total_seconds,
             summary.wrong_display_seconds,
+            format_optional(summary.time_to_first_correct_confident_estimate_seconds),
             format_optional(summary.time_to_first_correct_display_seconds),
+            format_optional(summary.raw_recovery_seconds),
             format_optional(summary.recovery_seconds),
             confidence,
         );
@@ -470,7 +504,10 @@ mod metric_tests {
         let summary = summarize(&entry, &observations);
         assert_eq!(summary.first_correct_display_seconds, Some(2.0));
         assert_eq!(summary.time_to_first_correct_display_seconds, Some(2.0));
-        assert_eq!(summary.first_correct_confident_estimate_seconds, Some(1.0));
+        assert_eq!(
+            summary.time_to_first_correct_confident_estimate_seconds,
+            Some(1.0)
+        );
     }
 
     #[test]
@@ -514,6 +551,7 @@ mod metric_tests {
         ];
         let summary = summarize(&entry, &observations);
         assert_eq!(summary.recovery_seconds, Some(3.0));
+        assert_eq!(summary.raw_recovery_seconds, Some(2.0));
         assert_eq!(summary.wrong_display_seconds, 1);
     }
 

@@ -28,8 +28,11 @@ status: in_progress
 - [x] Phase 1: extend the Rust harness with acquisition, recovery,
   wrong-display, confidence, and coverage metrics; original outputs reproduce
   exactly and beatless clips never display at any tick.
-- [ ] Phase 2: measure the unchanged shipping estimator and freeze numeric
-  improvement targets in documentation before tuning it.
+- [x] Phase 2: measure the unchanged shipping estimator, classify failures, and
+  commit proposed numeric targets (10 s acquisition, 8 s recovery, 0 wrong
+  steady/beatless seconds, at most 1 stale change second).
+- [ ] Phase 2 owner gate: approve or replace the proposed targets, then flip
+  their manifest status from `proposed` to `approved` before tuning.
 - [ ] Phase 3: run corpus-wide candidate experiments and make the ADR decision.
 - [ ] Phase 4: ship the smallest winning estimator/gate change and turn the
   frozen targets into regression gates.
