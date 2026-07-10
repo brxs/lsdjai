@@ -58,9 +58,9 @@ inside/outside RMS `0.08108330` / `0.00651554` (**12.445x** concentration).
 
 ## Existing app regression
 
-- [ ] Generate one SA3 SFX pad and one SA3 Music loop in the app: both load and
+- [x] Generate one SA3 SFX pad and one SA3 Music loop in the app: both load and
       play as before.
-- [ ] Compose one SA3 medium track in Media Explorer: it saves and loads as
+- [x] Compose one SA3 medium track in Media Explorer: it saves and loads as
       before.
 - [x] With the SA3 checkout unavailable, `/api/generate` still returns 503 with
       the setup hint; a forced CLI failure still maps to 502 rather than crashing
