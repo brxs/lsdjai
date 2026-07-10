@@ -191,7 +191,8 @@ def _generation_number(
         or not minimum <= value <= maximum
     ):
         raise HTTPException(
-            status_code=422, detail=f"'{name}' must be {minimum:g}-{maximum:g}"
+            status_code=422,
+            detail=f"'{name}' must be between {minimum:g} and {maximum:g}",
         )
     return float(value)
 
@@ -244,15 +245,26 @@ async def _read_init_audio(upload: UploadFile) -> bytes:
     return data
 
 
-async def _bounded_multipart_request(request: Request) -> Request:
+async def _read_capped_body(request: Request, limit: int, detail: str) -> bytes:
+    """Stream the request body, rejecting with 413 once it passes `limit`.
+
+    A chunked request can omit or lie about Content-Length, so the ceiling is
+    enforced while reading rather than trusting the header.
+    """
     chunks = []
     size = 0
     async for chunk in request.stream():
         size += len(chunk)
-        if size > MAX_MULTIPART_BODY_BYTES:
-            raise HTTPException(status_code=413, detail="multipart body is too large")
+        if size > limit:
+            raise HTTPException(status_code=413, detail=detail)
         chunks.append(chunk)
-    body = b"".join(chunks)
+    return b"".join(chunks)
+
+
+async def _bounded_multipart_request(request: Request) -> Request:
+    body = await _read_capped_body(
+        request, MAX_MULTIPART_BODY_BYTES, "multipart body is too large"
+    )
     sent = False
 
     async def receive() -> dict:
@@ -269,8 +281,11 @@ async def _parse_generate_body(request: Request) -> tuple[dict, bytes | None]:
     content_type = request.headers.get("content-type", "")
     media_type = content_type.partition(";")[0].strip().lower()
     if media_type == "application/json":
+        body = await _read_capped_body(
+            request, sa3.MAX_GENERATE_METADATA_BYTES, "request body is too large"
+        )
         try:
-            parsed = await request.json()
+            parsed = json.loads(body)
         except (json.JSONDecodeError, UnicodeDecodeError):
             raise HTTPException(status_code=422, detail="body must be JSON") from None
         return parsed, None
@@ -295,10 +310,14 @@ async def _parse_generate_body(request: Request) -> tuple[dict, bytes | None]:
 
     multipart_request = await _bounded_multipart_request(request)
     try:
+        # `max_part_size` guards only non-file parts and Starlette maps a breach to
+        # a generic 422. Leave it at the whole-body bound (already the memory
+        # ceiling) so the explicit, charset-correct metadata check below is the
+        # authoritative gate and returns a consistent 413 for oversized metadata.
         async with multipart_request.form(
             max_files=1,
             max_fields=1,
-            max_part_size=sa3.MAX_GENERATE_METADATA_BYTES,
+            max_part_size=MAX_MULTIPART_BODY_BYTES,
         ) as form:
             items = form.multi_items()
             request_fields = [value for name, value in items if name == "request"]

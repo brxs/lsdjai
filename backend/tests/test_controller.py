@@ -406,6 +406,20 @@ def test_generate_rejects_an_oversized_multipart_body_before_parsing(
     assert response.status_code == 413
 
 
+def test_generate_rejects_oversized_multipart_metadata(client, monkeypatch):
+    monkeypatch.setattr(sa3, "MAX_GENERATE_METADATA_BYTES", 8)
+    response = client.post(
+        "/api/generate", files=generate_multipart(generate_request())
+    )
+    assert response.status_code == 413
+
+
+def test_generate_rejects_an_oversized_json_body(client, monkeypatch):
+    monkeypatch.setattr(sa3, "MAX_GENERATE_METADATA_BYTES", 8)
+    response = client.post("/api/generate", json=generate_request())
+    assert response.status_code == 413
+
+
 def test_generate_bounds_a_chunked_multipart_stream_without_content_length(monkeypatch):
     monkeypatch.setattr(controller, "MAX_MULTIPART_BODY_BYTES", 5)
     messages = iter(

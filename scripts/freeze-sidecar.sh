@@ -28,6 +28,10 @@ BACKEND="$REPO/backend"
 SEQLAYERS_DIR="$SP/magenta_rt/_vendor/sequence-layers"
 OUT="$REPO/src-tauri/sidecar-dist"
 
+# Starlette reaches python_multipart (the /api/generate multipart init-audio
+# path, issue #54) through a guarded `try: import python_multipart` that
+# PyInstaller's static analysis can miss; collect it explicitly so the frozen
+# generation server can parse uploads instead of failing only on that path.
 rm -rf "$OUT"
 "$PYI" \
   --noconfirm \
@@ -40,6 +44,7 @@ rm -rf "$OUT"
   --hidden-import lsdj.engine \
   --hidden-import lsdj.worker \
   --collect-submodules lsdj \
+  --collect-submodules python_multipart \
   --collect-all mlx \
   --collect-all mlx_metal \
   --collect-submodules magenta_rt \
