@@ -8,3 +8,6 @@ pub mod beat;
 pub mod grid;
 pub mod live;
 pub mod track;
+
+#[cfg(test)]
+mod beat_corpus;

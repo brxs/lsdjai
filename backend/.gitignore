@@ -1,4 +1,6 @@
 .venv/
 __pycache__/
 *.wav
-spike_corpus/
+!spike_corpus/
+!spike_corpus/*.wav
+!spike_corpus/manifest.json

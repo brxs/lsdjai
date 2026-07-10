@@ -22,8 +22,12 @@ status: in_progress
   and an approval pause after the baseline targets are drafted.
 - [x] Start implementation on clean branch `issue-77-beat-detection` from
   `main` at `e2a0859` (issue 54 merged as PR 87).
-- [ ] Phase 1: commit and validate the expanded deterministic corpus.
-- [ ] Phase 1: extend the Rust harness with acquisition and recovery metrics.
+- [x] Phase 1: commit and validate the expanded deterministic corpus (20 clips,
+  97.8 MiB; 10 legacy + 6 genre + 4 timing scenarios; all hashes and WAV
+  contracts verified).
+- [x] Phase 1: extend the Rust harness with acquisition, recovery,
+  wrong-display, confidence, and coverage metrics; original outputs reproduce
+  exactly and beatless clips never display at any tick.
 - [ ] Phase 2: measure the unchanged shipping estimator and freeze numeric
   improvement targets in documentation before tuning it.
 - [ ] Phase 3: run corpus-wide candidate experiments and make the ADR decision.

@@ -1,0 +1,665 @@
+{
+  "schema_version": 2,
+  "provenance": {
+    "generator": "backend/scripts/spike_beat_corpus.py",
+    "command": "uv run python scripts/spike_beat_corpus.py --generate",
+    "model": "mrt2_small",
+    "magenta_rt_version": "2.0.2",
+    "librosa_version": "0.11.0",
+    "generation_seconds": 24,
+    "generation_frames": 600,
+    "generation_frame_seconds": 0.04,
+    "stream_chunk_seconds": 0.04,
+    "estimate_interval_seconds": 1.0,
+    "sample_rate": 48000,
+    "channels": 2,
+    "bits_per_sample": 16
+  },
+  "required_coverage": {
+    "steady_genre_families": {
+      "breakbeat_jungle": 2,
+      "swung_garage": 2,
+      "sparse_minimal": 2
+    },
+    "short_intro_scenarios": 2,
+    "tempo_change_scenarios": 2
+  },
+  "entries": [
+    {
+      "slug": "techno",
+      "file": "techno.wav",
+      "tier": "legacy",
+      "family": "legacy",
+      "scenario": "steady",
+      "prompt": "driving techno, four on the floor",
+      "expect": "rhythmic",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1152000,
+      "duration_seconds": 24.0,
+      "sha256": "d28018860c836c56113b1282267f25bd2228d7fc209b3d167beddeb9b14f0013",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 130.8
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "mrt2_generate",
+        "frames": 600
+      }
+    },
+    {
+      "slug": "house",
+      "file": "house.wav",
+      "tier": "legacy",
+      "family": "legacy",
+      "scenario": "steady",
+      "prompt": "deep house groove, steady kick",
+      "expect": "rhythmic",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1152000,
+      "duration_seconds": 24.0,
+      "sha256": "0bc66663b3f812c00794a6776bdd826d9f383f5531d36c3bb13a56ee35594ae3",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 119.7
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "mrt2_generate",
+        "frames": 600
+      }
+    },
+    {
+      "slug": "dnb",
+      "file": "dnb.wav",
+      "tier": "legacy",
+      "family": "legacy",
+      "scenario": "steady",
+      "prompt": "drum and bass, fast breakbeats",
+      "expect": "rhythmic",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1152000,
+      "duration_seconds": 24.0,
+      "sha256": "35e96881cce25e834725c58d2b5c4bd1f8f4e67a2f8edf64fa579fb7f099d611",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 89.3
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "mrt2_generate",
+        "frames": 600
+      }
+    },
+    {
+      "slug": "hiphop",
+      "file": "hiphop.wav",
+      "tier": "legacy",
+      "family": "legacy",
+      "scenario": "steady",
+      "prompt": "hip hop boom bap, heavy drums",
+      "expect": "rhythmic",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1152000,
+      "duration_seconds": 24.0,
+      "sha256": "3280c1d15402e89f6012b317f93e4e70495b0c0087888c30031107f43a40b30a",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 95.3
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "mrt2_generate",
+        "frames": 600
+      }
+    },
+    {
+      "slug": "garage",
+      "file": "garage.wav",
+      "tier": "legacy",
+      "family": "legacy",
+      "scenario": "steady",
+      "prompt": "uk garage shuffle, swung drums",
+      "expect": "rhythmic",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1152000,
+      "duration_seconds": 24.0,
+      "sha256": "93c5a8e68b92a685e86b764db533cfcdd4337c189ce736bfc18bb17f138c7993",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 133.9
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "mrt2_generate",
+        "frames": 600
+      }
+    },
+    {
+      "slug": "dub",
+      "file": "dub.wav",
+      "tier": "legacy",
+      "family": "legacy",
+      "scenario": "steady",
+      "prompt": "dub reggae, slow heavy groove",
+      "expect": "rhythmic",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1152000,
+      "duration_seconds": 24.0,
+      "sha256": "6eb5a10124c15fb2c7ead49771e7895503d24fe1a16731e5f9115db509877609",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 140.6
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "mrt2_generate",
+        "frames": 600
+      }
+    },
+    {
+      "slug": "triphop",
+      "file": "triphop.wav",
+      "tier": "legacy",
+      "family": "legacy",
+      "scenario": "steady",
+      "prompt": "downtempo trip hop, dusty drums",
+      "expect": "ambiguous",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1152000,
+      "duration_seconds": 24.0,
+      "sha256": "3eb7cf58a12e49c2682cbb0a2f31f002165cfad9a68a3e9b7c5009fdc8858288",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "ambiguous",
+          "librosa_bpm": 45.0
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "mrt2_generate",
+        "frames": 600
+      }
+    },
+    {
+      "slug": "ambient",
+      "file": "ambient.wav",
+      "tier": "legacy",
+      "family": "legacy",
+      "scenario": "steady",
+      "prompt": "ambient drone, soft pads, no drums",
+      "expect": "beatless",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1152000,
+      "duration_seconds": 24.0,
+      "sha256": "543ab136f625fed5497e63e644dd9d1dbc93556c4bc35245ccb889f8182cd785",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "beatless",
+          "librosa_bpm": 160.7
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "mrt2_generate",
+        "frames": 600
+      }
+    },
+    {
+      "slug": "soundscape",
+      "file": "soundscape.wav",
+      "tier": "legacy",
+      "family": "legacy",
+      "scenario": "steady",
+      "prompt": "generative ambient soundscape, evolving textures",
+      "expect": "beatless",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1152000,
+      "duration_seconds": 24.0,
+      "sha256": "09f4d3946046695d404515cd2e44c44f7e51f1ecba391ad67376f44d6285648b",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "beatless",
+          "librosa_bpm": 119.7
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "mrt2_generate",
+        "frames": 600
+      }
+    },
+    {
+      "slug": "piano",
+      "file": "piano.wav",
+      "tier": "legacy",
+      "family": "legacy",
+      "scenario": "steady",
+      "prompt": "solo piano ballad, rubato, expressive",
+      "expect": "beatless",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1152000,
+      "duration_seconds": 24.0,
+      "sha256": "f809db84a13ef9d0ecdac40698c5bc7ae659c9a917e2a47f86c9b9b859249019",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "beatless",
+          "librosa_bpm": 74.0
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "mrt2_generate",
+        "frames": 600
+      }
+    },
+    {
+      "slug": "jungle_amen",
+      "file": "jungle_amen.wav",
+      "tier": "expanded",
+      "family": "breakbeat_jungle",
+      "scenario": "steady",
+      "prompt": "jungle, chopped amen break, fast syncopated drums",
+      "expect": "rhythmic",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1152000,
+      "duration_seconds": 24.0,
+      "sha256": "68f965f263bee8acd5eba84aff29c0340697a2d9a9e535ceea6dc9eacf95d823",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 114.8
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "mrt2_generate",
+        "frames": 600
+      }
+    },
+    {
+      "slug": "jungle_rolling",
+      "file": "jungle_rolling.wav",
+      "tier": "expanded",
+      "family": "breakbeat_jungle",
+      "scenario": "steady",
+      "prompt": "dark jungle, rolling breakbeats, sub bass",
+      "expect": "rhythmic",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1152000,
+      "duration_seconds": 24.0,
+      "sha256": "3a612621a944699e9f51f9cd7cbbb5c890e556b0db3ac8ca990b9f9b36d26106",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 117.2
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "mrt2_generate",
+        "frames": 600
+      }
+    },
+    {
+      "slug": "swung_house",
+      "file": "swung_house.wav",
+      "tier": "expanded",
+      "family": "swung_garage",
+      "scenario": "steady",
+      "prompt": "swung house groove, shuffled drums",
+      "expect": "rhythmic",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1152000,
+      "duration_seconds": 24.0,
+      "sha256": "c6ae7777cb90f0c22767b14d3c826c85497095a29d8e1a56335b2e405e946501",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 125.0
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "mrt2_generate",
+        "frames": 600
+      }
+    },
+    {
+      "slug": "garage_two_step",
+      "file": "garage_two_step.wav",
+      "tier": "expanded",
+      "family": "swung_garage",
+      "scenario": "steady",
+      "prompt": "UK 2-step garage, syncopated kick, swung hi-hats",
+      "expect": "rhythmic",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1152000,
+      "duration_seconds": 24.0,
+      "sha256": "4e01331fbd2cc2b5d827ef524799beea9269b7e010e5170517a462e50acbea6e",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 112.5
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "mrt2_generate",
+        "frames": 600
+      }
+    },
+    {
+      "slug": "minimal_percussion",
+      "file": "minimal_percussion.wav",
+      "tier": "expanded",
+      "family": "sparse_minimal",
+      "scenario": "steady",
+      "prompt": "minimal techno, sparse kick and percussion",
+      "expect": "rhythmic",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1152000,
+      "duration_seconds": 24.0,
+      "sha256": "103e8697224ca85746128315a7ff4c5e6747e2c9acc6dc2b007aac4c1e1fbf49",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 72.1
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "mrt2_generate",
+        "frames": 600
+      }
+    },
+    {
+      "slug": "sparse_dub",
+      "file": "sparse_dub.wav",
+      "tier": "expanded",
+      "family": "sparse_minimal",
+      "scenario": "steady",
+      "prompt": "sparse dub percussion, deep bass, lots of space",
+      "expect": "rhythmic",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1152000,
+      "duration_seconds": 24.0,
+      "sha256": "ae57d60cc62a7e8befb9177422d92a2df2f64a43c37102ee9322e839ffb30948",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 200.9
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "mrt2_generate",
+        "frames": 600
+      }
+    },
+    {
+      "slug": "intro_jungle_amen",
+      "file": "intro_jungle_amen.wav",
+      "tier": "expanded",
+      "family": "breakbeat_jungle",
+      "scenario": "short_intro",
+      "prompt": null,
+      "expect": "rhythmic",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1344000,
+      "duration_seconds": 28.0,
+      "sha256": "587f47e84af4b2ac4db1576c6088543e8a7483770cf813783f0ca63277c8af80",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 4.0,
+          "expect": "beatless",
+          "librosa_bpm": 152.0
+        },
+        {
+          "start_seconds": 4.0,
+          "end_seconds": 28.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 114.8
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "pcm_concatenate",
+        "boundary": "hard",
+        "sources": [
+          {
+            "slug": "ambient",
+            "start_seconds": 0.0,
+            "duration_seconds": 4.0
+          },
+          {
+            "slug": "jungle_amen",
+            "start_seconds": 0.0,
+            "duration_seconds": 24.0
+          }
+        ]
+      },
+      "rhythm_onset_seconds": 4.0
+    },
+    {
+      "slug": "intro_minimal_percussion",
+      "file": "intro_minimal_percussion.wav",
+      "tier": "expanded",
+      "family": "sparse_minimal",
+      "scenario": "short_intro",
+      "prompt": null,
+      "expect": "rhythmic",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 1248000,
+      "duration_seconds": 26.0,
+      "sha256": "1ea1c1e408ef84365400c26739e7a140990e1d37d4f68542f404d565193a7a1d",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 2.0,
+          "expect": "beatless",
+          "librosa_bpm": 119.7
+        },
+        {
+          "start_seconds": 2.0,
+          "end_seconds": 26.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 72.1
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "pcm_concatenate",
+        "boundary": "hard",
+        "sources": [
+          {
+            "slug": "soundscape",
+            "start_seconds": 0.0,
+            "duration_seconds": 2.0
+          },
+          {
+            "slug": "minimal_percussion",
+            "start_seconds": 0.0,
+            "duration_seconds": 24.0
+          }
+        ]
+      },
+      "rhythm_onset_seconds": 2.0
+    },
+    {
+      "slug": "tempo_house_to_dub",
+      "file": "tempo_house_to_dub.wav",
+      "tier": "expanded",
+      "family": "tempo_change",
+      "scenario": "tempo_change",
+      "prompt": null,
+      "expect": "rhythmic",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 2304000,
+      "duration_seconds": 48.0,
+      "sha256": "3b22497cc66b337873a6a0142c561736d38bac624980c03293892f1bd5c18cff",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 119.7
+        },
+        {
+          "start_seconds": 24.0,
+          "end_seconds": 48.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 140.6
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "pcm_concatenate",
+        "boundary": "hard",
+        "sources": [
+          {
+            "slug": "house",
+            "start_seconds": 0.0,
+            "duration_seconds": 24.0
+          },
+          {
+            "slug": "dub",
+            "start_seconds": 0.0,
+            "duration_seconds": 24.0
+          }
+        ]
+      },
+      "change_at_seconds": 24.0
+    },
+    {
+      "slug": "tempo_dub_to_house",
+      "file": "tempo_dub_to_house.wav",
+      "tier": "expanded",
+      "family": "tempo_change",
+      "scenario": "tempo_change",
+      "prompt": null,
+      "expect": "rhythmic",
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "frames": 2304000,
+      "duration_seconds": 48.0,
+      "sha256": "90823134520593fca45e009fe1d20e077828b3d976844f6c7378e48c4cbc5845",
+      "segments": [
+        {
+          "start_seconds": 0.0,
+          "end_seconds": 24.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 140.6
+        },
+        {
+          "start_seconds": 24.0,
+          "end_seconds": 48.0,
+          "expect": "rhythmic",
+          "librosa_bpm": 119.7
+        }
+      ],
+      "targets": null,
+      "recipe": {
+        "kind": "pcm_concatenate",
+        "boundary": "hard",
+        "sources": [
+          {
+            "slug": "dub",
+            "start_seconds": 0.0,
+            "duration_seconds": 24.0
+          },
+          {
+            "slug": "house",
+            "start_seconds": 0.0,
+            "duration_seconds": 24.0
+          }
+        ]
+      },
+      "change_at_seconds": 24.0
+    }
+  ]
+}
