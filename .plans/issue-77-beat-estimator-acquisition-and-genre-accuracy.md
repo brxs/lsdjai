@@ -5,7 +5,7 @@ title: "Improve the beat estimator: acquisition speed and genre accuracy, behind
 date: 2026-07-10
 baseline: e2a0859
 main_at_draft: e2a0859
-status: in_progress
+status: complete
 ---
 
 # Plan: Improve beat-estimator acquisition and genre accuracy (#77)
@@ -41,7 +41,8 @@ status: in_progress
 - [x] Phase 5: pass corpus verification, Git LFS integrity, the clean-checkout
   corpus test, Clippy, Ruff, ESLint, TypeScript, and all backend/frontend/Rust
   workspace tests.
-- [ ] Phase 5: complete the live-audio/hardware listening checklist.
+- [x] Phase 5: owner completed and passed the live-audio/hardware listening
+  checklist on 2026-07-10.
 
 ## Problem
 
@@ -480,6 +481,6 @@ generation controls, and beat-consumer product behaviour.
   `mrt2_small` workers, acquired 130.13 BPM / 0.881 confidence on a real house
   stream, stayed blank for a 35-second real ambient/no-drums stream, and cleared
   published BPM/phase immediately on stop.
-- Remaining evidence is deliberately not conflated with simulation: the
-  unchecked listening/device checks in `docs/issue-77-hardware-checklist.md`
-  require a human to judge sound and musical timing before the issue is closed.
+- The owner completed the remaining listening/device checks in
+  `docs/issue-77-hardware-checklist.md` and confirmed all musical timing,
+  downstream-consumer, reset, and two-deck audio/CPU behaviour passed.
