@@ -81,7 +81,10 @@ def pcm16_wav(*, sample_rate=44_100, channels=2, sample_width=2, frames=16) -> b
 def generate_multipart(metadata, audio=None, extra=()):
     fields = [
         ("request", (None, json.dumps(metadata))),
-        ("init_audio", ("source.wav", audio or pcm16_wav(), "audio/wav")),
+        (
+            "init_audio",
+            ("source.wav", pcm16_wav() if audio is None else audio, "audio/wav"),
+        ),
     ]
     fields.extend(extra)
     return fields
@@ -365,11 +368,13 @@ def test_generate_treats_a_blank_negative_prompt_as_absent(client, monkeypatch):
 @pytest.mark.parametrize(
     "audio",
     [
+        b"",
         b"not a wave",
         pcm16_wav(sample_rate=48_000),
         pcm16_wav(channels=3),
         pcm16_wav(sample_width=1),
         pcm16_wav(frames=0),
+        pcm16_wav()[:-4],
     ],
 )
 def test_generate_rejects_unsupported_init_wav(client, monkeypatch, audio):

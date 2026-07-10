@@ -204,6 +204,7 @@ def _validate_init_wav(data: bytes) -> None:
             sample_rate = source.getframerate()
             frames = source.getnframes()
             compression = source.getcomptype()
+            pcm_bytes = source.readframes(frames)
     except (EOFError, wave.Error):
         raise HTTPException(
             status_code=422, detail="'init_audio' must be a valid WAV file"
@@ -214,6 +215,7 @@ def _validate_init_wav(data: bytes) -> None:
         or sample_width != 2
         or sample_rate != 44_100
         or frames == 0
+        or len(pcm_bytes) != frames * channels * sample_width
     ):
         raise HTTPException(
             status_code=422,
