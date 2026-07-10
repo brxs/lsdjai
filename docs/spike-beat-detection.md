@@ -90,6 +90,9 @@ is the honest price of never showing a drone a tempo.
 - The readout trails reality by the stability window on tempo changes
   (~3 s after the analysis window turns over).
 
-Re-run the measurement any time:
-`cd backend && uv run python scripts/spike_beat_corpus.py`, then
-`cd frontend && npx vitest run src/audio/beatCorpus.test.js`.
+Issue 77 supersedes this ten-clip evaluation surface with a committed,
+versioned twenty-clip Rust corpus and explicit acquisition/recovery metrics.
+Regenerate or verify it with `backend/scripts/spike_beat_corpus.py --generate`
+or `--verify`, then run the Rust measurement described in
+[spike-beat-detection-issue-77.md](spike-beat-detection-issue-77.md). That record
+contains the unchanged-estimator baseline, failures, and proposed targets.

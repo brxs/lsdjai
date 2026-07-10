@@ -191,3 +191,12 @@ everything else ADR-0010 decided.
 
 <!-- Status values: Proposed | Accepted | Rejected | Deprecated |
      Superseded by ADR-NNNN -->
+
+## Issue 77 refinement
+
+ADR-0035 supersedes this record's single band-envelope kernel and its measured
+12-second/4% internal constants with the expanded-corpus-selected adaptive
+detector. This record's architectural decision remains in force: analysis is
+still shell-side and non-realtime, only gated state is published, consumers and
+the `cpal` callback are unchanged, and every stream discontinuity resets the
+whole analysis state atomically.

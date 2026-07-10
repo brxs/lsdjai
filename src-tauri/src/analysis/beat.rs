@@ -17,6 +17,11 @@
 //! log-normal prior centred near club tempo. Confidence is the raw
 //! autocorrelation coefficient at the winning lag — periodicity, not prior.
 
+use std::sync::Arc;
+
+use rustfft::num_complex::Complex;
+use rustfft::{Fft, FftPlanner};
+
 /// One estimator reading. `anchor_frame` is the pushed-frame index of the
 /// most recent beat (M20): a recency-weighted fold of the onset envelope by
 /// the period, absent when the fold is incoherent — phase honesty mirrors
@@ -25,11 +30,23 @@
 pub struct BeatEstimate {
     pub bpm: f64,
     pub confidence: f64,
+    /// RMS / mean of the unsmoothed onset envelope. Sharp, sparse transients
+    /// score above smooth periodic modulation; issue 77 measures this as an
+    /// independent honesty signal rather than inflating periodicity confidence.
+    pub onset_impulsiveness: f64,
     pub anchor_frame: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnvelopeKind {
+    BandFlux,
+    SpectralFlux,
+}
+
 const HOP_FRAMES: usize = 512;
+#[cfg(test)]
 const WINDOW_SECONDS: f64 = 12.0;
+#[cfg(test)]
 const MIN_SECONDS: f64 = 6.0;
 const MIN_BPM: f64 = 60.0;
 const MAX_BPM: f64 = 200.0;
@@ -52,6 +69,80 @@ const SMOOTHING: [f64; 5] = [0.25, 0.5, 1.0, 0.5, 0.25];
 /// The anchor fold must concentrate at least this hard before a beat phase
 /// is reported (the meter's honesty floor, M20).
 const MIN_ANCHOR_RESULTANT: f64 = 0.25;
+const SPECTRAL_WINDOW_FRAMES: usize = 2048;
+
+struct SpectralFlux {
+    samples: Vec<f32>,
+    head: usize,
+    filled: usize,
+    fft_buffer: Vec<Complex<f32>>,
+    current_log_power: Vec<f32>,
+    previous_log_power: Vec<f32>,
+    has_previous_spectrum: bool,
+    fft: Arc<dyn Fft<f32>>,
+}
+
+impl SpectralFlux {
+    fn new() -> Self {
+        let mut planner = FftPlanner::new();
+        SpectralFlux {
+            samples: vec![0.0; SPECTRAL_WINDOW_FRAMES],
+            head: 0,
+            filled: 0,
+            fft_buffer: vec![Complex::default(); SPECTRAL_WINDOW_FRAMES],
+            current_log_power: vec![0.0; SPECTRAL_WINDOW_FRAMES / 2],
+            previous_log_power: vec![0.0; SPECTRAL_WINDOW_FRAMES / 2],
+            has_previous_spectrum: false,
+            fft: planner.plan_fft_forward(SPECTRAL_WINDOW_FRAMES),
+        }
+    }
+
+    fn push(&mut self, sample: f32) {
+        self.samples[self.head] = sample;
+        self.head = (self.head + 1) % self.samples.len();
+        self.filled = (self.filled + 1).min(self.samples.len());
+    }
+
+    fn flux(&mut self) -> Option<f32> {
+        if self.filled < self.samples.len() {
+            return None;
+        }
+        let denominator = (self.samples.len() - 1) as f32;
+        for (index, value) in self.fft_buffer.iter_mut().enumerate() {
+            let sample = self.samples[(self.head + index) % self.samples.len()];
+            let window =
+                0.5 - 0.5 * (2.0 * std::f32::consts::PI * index as f32 / denominator).cos();
+            *value = Complex::new(sample * window, 0.0);
+        }
+        self.fft.process(&mut self.fft_buffer);
+        let bins = self.samples.len() / 2;
+        let scale = (self.samples.len() * self.samples.len()) as f32;
+        for (bin, value) in self.current_log_power.iter_mut().enumerate().skip(1) {
+            *value = (self.fft_buffer[bin].norm_sqr() / scale + EPS as f32).ln();
+        }
+        if !self.has_previous_spectrum {
+            std::mem::swap(&mut self.current_log_power, &mut self.previous_log_power);
+            self.has_previous_spectrum = true;
+            return None;
+        }
+        let mut rise = 0.0f64;
+        for bin in 1..bins {
+            rise += (self.current_log_power[bin] - self.previous_log_power[bin]).max(0.0) as f64;
+        }
+        std::mem::swap(&mut self.current_log_power, &mut self.previous_log_power);
+        Some((rise / (bins - 1) as f64) as f32)
+    }
+
+    fn reset(&mut self) {
+        self.samples.fill(0.0);
+        self.head = 0;
+        self.filled = 0;
+        self.fft_buffer.fill(Complex::default());
+        self.current_log_power.fill(0.0);
+        self.previous_log_power.fill(0.0);
+        self.has_previous_spectrum = false;
+    }
+}
 
 fn tempo_prior(bpm: f64) -> f64 {
     let octaves = (bpm / PRIOR_CENTER_BPM).log2();
@@ -63,6 +154,10 @@ fn tempo_prior(bpm: f64) -> f64 {
 /// most ~once per second; [`BeatTracker::reset`] on stream discontinuities.
 pub struct BeatTracker {
     hop_seconds: f64,
+    min_seconds: f64,
+    min_flux_variance: f64,
+    envelope: EnvelopeKind,
+    spectral: Option<SpectralFlux>,
     capacity: usize,
     flux: Vec<f32>,
     /// The low band's LINEAR energy rise, for the beat anchor (M20):
@@ -85,11 +180,32 @@ pub struct BeatTracker {
 }
 
 impl BeatTracker {
+    #[cfg(test)]
     pub fn new(sample_rate: f64) -> Self {
+        Self::configured(
+            sample_rate,
+            EnvelopeKind::BandFlux,
+            WINDOW_SECONDS,
+            MIN_SECONDS,
+            MIN_FLUX_VARIANCE,
+        )
+    }
+
+    fn configured(
+        sample_rate: f64,
+        envelope: EnvelopeKind,
+        window_seconds: f64,
+        min_seconds: f64,
+        min_flux_variance: f64,
+    ) -> Self {
         let hop_seconds = HOP_FRAMES as f64 / sample_rate;
-        let capacity = ((WINDOW_SECONDS / hop_seconds).round() as usize).max(16);
+        let capacity = ((window_seconds / hop_seconds).round() as usize).max(16);
         BeatTracker {
             hop_seconds,
+            min_seconds,
+            min_flux_variance,
+            envelope,
+            spectral: (envelope == EnvelopeKind::SpectralFlux).then(SpectralFlux::new),
             capacity,
             flux: vec![0.0; capacity],
             low_flux: vec![0.0; capacity],
@@ -114,12 +230,19 @@ impl BeatTracker {
             (self.hop_energy[2] / HOP_FRAMES as f64 + EPS).ln(),
         ];
         let low_energy = self.hop_energy[0] / HOP_FRAMES as f64;
-        if let Some(previous) = self.previous_log_energy {
-            let mut rise = 0.0f64;
+        let band_rise = self.previous_log_energy.map(|previous| {
+            let mut rise = 0.0;
             for band in 0..log_energy.len() {
                 rise += (log_energy[band] - previous[band]).max(0.0);
             }
-            self.flux[self.head] = rise as f32;
+            rise as f32
+        });
+        let rise = match self.envelope {
+            EnvelopeKind::BandFlux => band_rise,
+            EnvelopeKind::SpectralFlux => self.spectral.as_mut().and_then(SpectralFlux::flux),
+        };
+        if let Some(rise) = rise {
+            self.flux[self.head] = rise;
             self.low_flux[self.head] = match self.previous_low_energy {
                 None => 0.0,
                 Some(p) => (low_energy - p).max(0.0) as f32,
@@ -138,6 +261,9 @@ impl BeatTracker {
     pub fn push(&mut self, samples: &[f32]) {
         for pair in samples.chunks_exact(2) {
             let mono = (pair[0] as f64 + pair[1] as f64) / 2.0;
+            if let Some(spectral) = &mut self.spectral {
+                spectral.push(mono as f32);
+            }
             self.low_state += self.low_alpha * (mono - self.low_state);
             self.high_state += self.high_alpha * (mono - self.high_state);
             let low = self.low_state;
@@ -157,16 +283,22 @@ impl BeatTracker {
 
     /// Latest estimate, or `None` while there is too little signal.
     pub fn estimate(&self) -> Option<BeatEstimate> {
-        if (self.filled as f64) * self.hop_seconds < MIN_SECONDS {
+        if (self.filled as f64) * self.hop_seconds < self.min_seconds {
             return None;
         }
         // Linearise the ring oldest-first, smooth, then remove the mean.
         let n = self.filled;
         let start = (self.head + self.capacity - self.filled) % self.capacity;
         let mut raw = vec![0.0f32; n];
+        let mut raw_sum = 0.0;
+        let mut raw_square_sum = 0.0;
         for (i, value) in raw.iter_mut().enumerate() {
             *value = self.flux[(start + i) % self.capacity];
+            raw_sum += *value as f64;
+            raw_square_sum += *value as f64 * *value as f64;
         }
+        let raw_mean = raw_sum / n as f64;
+        let onset_impulsiveness = (raw_square_sum / n as f64).sqrt() / (raw_mean + EPS);
         let mut x = vec![0.0f32; n];
         let half = (SMOOTHING.len() as isize - 1) / 2;
         let mut mean = 0.0f64;
@@ -194,7 +326,7 @@ impl BeatTracker {
         }
         // A flat envelope (silence, a steady tone, a beatless pad) has no
         // rhythm worth reporting.
-        if r0 / (n as f64) < MIN_FLUX_VARIANCE {
+        if r0 / (n as f64) < self.min_flux_variance {
             return None;
         }
 
@@ -293,6 +425,7 @@ impl BeatTracker {
         Some(BeatEstimate {
             bpm,
             confidence,
+            onset_impulsiveness,
             anchor_frame,
         })
     }
@@ -309,6 +442,105 @@ impl BeatTracker {
         self.hops_pushed = 0;
         self.low_flux.fill(0.0);
         self.previous_low_energy = None;
+        if let Some(spectral) = &mut self.spectral {
+            spectral.reset();
+        }
+    }
+}
+
+/// The adaptive issue-77 reading: the corpus-gated main estimate plus a fast
+/// spectral probe that may invalidate a held tempo but never displays directly.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdaptiveBeatEstimate {
+    pub estimate: Option<BeatEstimate>,
+    pub(crate) change_probe: Option<BeatEstimate>,
+}
+
+/// ADR-0035's measured detector. Two six-second onset views cover complementary
+/// material; a two-second spectral probe exists only for honest change
+/// invalidation. All three run on the existing non-realtime analysis thread.
+pub struct AdaptiveBeatTracker {
+    band: BeatTracker,
+    spectral: BeatTracker,
+    change_probe: BeatTracker,
+}
+
+const ADAPTIVE_WINDOW_SECONDS: f64 = 6.0;
+const ADAPTIVE_MIN_SECONDS: f64 = 6.0;
+const CHANGE_WINDOW_SECONDS: f64 = 2.0;
+const BAND_MIN_IMPULSIVENESS: f64 = 1.8;
+const SPECTRAL_MIN_IMPULSIVENESS: f64 = 1.4;
+const SPECTRAL_SUPPORTED_IMPULSIVENESS: f64 = 1.3;
+const BAND_SUPPORT_IMPULSIVENESS: f64 = 2.3;
+
+fn select_adaptive_estimate(
+    band: Option<BeatEstimate>,
+    spectral: Option<BeatEstimate>,
+) -> Option<BeatEstimate> {
+    let spectral_selected = spectral.filter(|estimate| {
+        estimate.confidence >= GATE_MIN_CONFIDENCE
+            && (estimate.onset_impulsiveness >= SPECTRAL_MIN_IMPULSIVENESS
+                || (estimate.onset_impulsiveness >= SPECTRAL_SUPPORTED_IMPULSIVENESS
+                    && band.is_some_and(|band| {
+                        band.onset_impulsiveness >= BAND_SUPPORT_IMPULSIVENESS
+                    })))
+    });
+    spectral_selected.or_else(|| {
+        band.filter(|band| {
+            spectral
+                .is_none_or(|spectral| metrically_agrees(band.bpm, spectral.bpm, GATE_TOLERANCE))
+                && band.confidence >= GATE_MIN_CONFIDENCE
+                && band.onset_impulsiveness >= BAND_MIN_IMPULSIVENESS
+        })
+    })
+}
+
+impl AdaptiveBeatTracker {
+    pub fn new(sample_rate: f64) -> Self {
+        AdaptiveBeatTracker {
+            band: BeatTracker::configured(
+                sample_rate,
+                EnvelopeKind::BandFlux,
+                ADAPTIVE_WINDOW_SECONDS,
+                ADAPTIVE_MIN_SECONDS,
+                MIN_FLUX_VARIANCE,
+            ),
+            spectral: BeatTracker::configured(
+                sample_rate,
+                EnvelopeKind::SpectralFlux,
+                ADAPTIVE_WINDOW_SECONDS,
+                ADAPTIVE_MIN_SECONDS,
+                MIN_FLUX_VARIANCE,
+            ),
+            change_probe: BeatTracker::configured(
+                sample_rate,
+                EnvelopeKind::SpectralFlux,
+                CHANGE_WINDOW_SECONDS,
+                CHANGE_WINDOW_SECONDS,
+                MIN_FLUX_VARIANCE,
+            ),
+        }
+    }
+
+    pub fn push(&mut self, samples: &[f32]) {
+        self.band.push(samples);
+        self.spectral.push(samples);
+        self.change_probe.push(samples);
+    }
+
+    pub fn estimate(&self) -> AdaptiveBeatEstimate {
+        let band = self.band.estimate();
+        let spectral = self.spectral.estimate();
+        AdaptiveBeatEstimate {
+            estimate: select_adaptive_estimate(band, spectral),
+            change_probe: self.change_probe.estimate(),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.band.reset();
+        self.spectral.reset();
+        self.change_probe.reset();
     }
 }
 
@@ -319,19 +551,37 @@ impl BeatTracker {
 /// the second consecutive miss drops the readout.
 pub const GATE_MIN_CONFIDENCE: f64 = 0.4;
 pub const GATE_STABLE_COUNT: usize = 3;
-pub const GATE_TOLERANCE: f64 = 0.04;
+pub const GATE_TOLERANCE: f64 = 0.08;
 pub const GATE_GRACE_MISSES: u32 = 1;
+const CHANGE_MIN_IMPULSIVENESS: f64 = 1.5;
+const RECOVERY_MIN_IMPULSIVENESS: f64 = 1.2;
+const CHANGE_STALE_MAIN_MIN_CONFIDENCE: f64 = 0.5;
+const CLOCK_TOLERANCE: f64 = 0.04;
+const CLOCK_LEVELS: [f64; 3] = [0.5, 1.0, 2.0];
+const METRICAL_LEVELS: [f64; 7] = [0.5, 2.0 / 3.0, 0.75, 1.0, 4.0 / 3.0, 1.5, 2.0];
 
 /// A confident estimate at a near-exact half or double of the anchor is
 /// the same rhythm read at another metrical level — fold it onto the
 /// anchor so octave-flapping reads as the agreement it is.
-fn fold_octave(bpm: f64, anchor: f64) -> f64 {
-    for factor in [0.5, 2.0] {
-        if (bpm * factor - anchor).abs() <= anchor * GATE_TOLERANCE {
+fn fold_levels(bpm: f64, anchor: f64, tolerance: f64, factors: &[f64]) -> f64 {
+    for factor in factors {
+        if (bpm * factor - anchor).abs() <= anchor * tolerance {
             return bpm * factor;
         }
     }
     bpm
+}
+
+fn metrically_agrees(left: f64, right: f64, tolerance: f64) -> bool {
+    METRICAL_LEVELS
+        .iter()
+        .any(|factor| (left * factor - right).abs() <= right * tolerance)
+}
+
+fn clock_agrees(left: f64, right: f64) -> bool {
+    CLOCK_LEVELS
+        .iter()
+        .any(|factor| (left * factor - right).abs() <= right * CLOCK_TOLERANCE)
 }
 
 pub struct BeatGate {
@@ -339,6 +589,13 @@ pub struct BeatGate {
     displayed: Option<f64>,
     misses: u32,
     unstable: usize,
+    min_confidence: f64,
+    stable_count: usize,
+    tolerance: f64,
+    grace_misses: u32,
+    min_impulsiveness: f64,
+    pending_change: Option<f64>,
+    recovery_reference: Option<f64>,
 }
 
 impl Default for BeatGate {
@@ -349,22 +606,117 @@ impl Default for BeatGate {
 
 impl BeatGate {
     pub fn new() -> Self {
+        Self::configured(
+            GATE_MIN_CONFIDENCE,
+            GATE_STABLE_COUNT,
+            GATE_TOLERANCE,
+            GATE_GRACE_MISSES,
+            0.0,
+        )
+    }
+
+    fn configured(
+        min_confidence: f64,
+        stable_count: usize,
+        tolerance: f64,
+        grace_misses: u32,
+        min_impulsiveness: f64,
+    ) -> Self {
+        assert!(
+            stable_count > 0,
+            "beat gate needs at least one stable estimate"
+        );
         BeatGate {
             recent: Vec::new(),
             displayed: None,
             misses: 0,
             unstable: 0,
+            min_confidence,
+            stable_count,
+            tolerance,
+            grace_misses,
+            min_impulsiveness,
+            pending_change: None,
+            recovery_reference: None,
         }
+    }
+
+    /// Feed ADR-0035's main estimate and short change probe. Two consecutive,
+    /// mutually consistent contradictions blank the readout; this limits a
+    /// real change to one stale display tick without letting one noisy short
+    /// window erase a stable tempo. Stale long-window estimates then stay in
+    /// quarantine until a confident probe agrees with the main detector.
+    pub fn push_adaptive(&mut self, reading: AdaptiveBeatEstimate) -> Option<f64> {
+        if let Some(displayed) = self.displayed {
+            // A short probe is allowed to overrule the display only while the
+            // long detector is confidently holding the displayed clock. If
+            // the long detector is weak or quarrelling too, the normal gate
+            // handles that uncertainty without treating a short-window alias
+            // as proof of a new tempo.
+            let confidently_stale_main = reading.estimate.is_some_and(|estimate| {
+                estimate.confidence >= CHANGE_STALE_MAIN_MIN_CONFIDENCE
+                    && metrically_agrees(displayed, estimate.bpm, GATE_TOLERANCE)
+            });
+            let corroborating_probe = reading.change_probe.filter(|probe| {
+                probe.onset_impulsiveness >= RECOVERY_MIN_IMPULSIVENESS
+                    && !clock_agrees(displayed, probe.bpm)
+            });
+            match (confidently_stale_main, corroborating_probe) {
+                (true, Some(probe))
+                    if self.pending_change.is_some_and(|pending| {
+                        metrically_agrees(pending, probe.bpm, GATE_TOLERANCE)
+                    }) =>
+                {
+                    self.recovery_reference = Some(probe.bpm);
+                    self.clear_tempo_state();
+                    return None;
+                }
+                (true, Some(probe)) if probe.onset_impulsiveness >= CHANGE_MIN_IMPULSIVENESS => {
+                    self.pending_change = Some(probe.bpm);
+                }
+                _ => self.pending_change = None,
+            }
+        } else {
+            self.pending_change = None;
+        }
+        if let Some(reference) = self.recovery_reference {
+            let confirmed_probe = reading.change_probe.filter(|estimate| {
+                estimate.confidence >= GATE_MIN_CONFIDENCE
+                    && estimate.onset_impulsiveness >= RECOVERY_MIN_IMPULSIVENESS
+            });
+            if let Some(probe) = confirmed_probe {
+                self.recovery_reference = Some(probe.bpm);
+            }
+            if confirmed_probe.is_some()
+                && reading.estimate.is_some_and(|estimate| {
+                    metrically_agrees(
+                        estimate.bpm,
+                        self.recovery_reference.unwrap_or(reference),
+                        GATE_TOLERANCE,
+                    )
+                })
+            {
+                self.recovery_reference = None;
+                return self.push(reading.estimate);
+            }
+            return None;
+        }
+        self.push(reading.estimate)
     }
 
     /// Feed the latest estimate; returns what may be displayed now.
     pub fn push(&mut self, estimate: Option<BeatEstimate>) -> Option<f64> {
         let estimate = match estimate {
-            Some(e) if e.confidence >= GATE_MIN_CONFIDENCE => e,
+            Some(e)
+                if e.confidence >= self.min_confidence
+                    && e.onset_impulsiveness >= self.min_impulsiveness =>
+            {
+                e
+            }
             _ => {
                 self.recent.clear();
                 self.misses += 1;
-                if self.misses > GATE_GRACE_MISSES {
+                if self.misses > self.grace_misses {
                     self.displayed = None;
                 }
                 return self.displayed;
@@ -374,24 +726,24 @@ impl BeatGate {
         let anchor = self.displayed.or_else(|| self.recent.last().copied());
         self.recent.push(match anchor {
             None => estimate.bpm,
-            Some(anchor) => fold_octave(estimate.bpm, anchor),
+            Some(anchor) => fold_levels(estimate.bpm, anchor, self.tolerance, &METRICAL_LEVELS),
         });
-        if self.recent.len() > GATE_STABLE_COUNT {
+        if self.recent.len() > self.stable_count {
             self.recent.remove(0);
         }
-        if self.recent.len() < GATE_STABLE_COUNT {
+        if self.recent.len() < self.stable_count {
             return self.displayed;
         }
         let mut sorted = self.recent.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).expect("gate bpm values are finite"));
         let median = sorted[sorted.len() / 2];
-        let stable = sorted[sorted.len() - 1] - sorted[0] <= median * GATE_TOLERANCE;
+        let stable = sorted[sorted.len() - 1] - sorted[0] <= median * self.tolerance;
         if stable {
             // Hysteresis: successive windows jitter by fractions of a bpm;
             // a locked readout holds still (and the synced echo's delay
             // stays put) until the median genuinely moves.
             match self.displayed {
-                Some(displayed) if (median - displayed).abs() <= displayed * GATE_TOLERANCE => {}
+                Some(displayed) if (median - displayed).abs() <= displayed * self.tolerance => {}
                 _ => self.displayed = Some(median),
             }
             self.unstable = 0;
@@ -400,7 +752,7 @@ impl BeatGate {
             // locking in), but a persistent quarrel means we no longer know
             // the tempo — showing the old number would be a lie.
             self.unstable += 1;
-            if self.unstable >= GATE_STABLE_COUNT {
+            if self.unstable >= self.stable_count {
                 self.displayed = None;
             }
         }
@@ -417,6 +769,12 @@ impl BeatGate {
 
     /// Back to blank instantly (stream reset).
     pub fn reset(&mut self) {
+        self.pending_change = None;
+        self.recovery_reference = None;
+        self.clear_tempo_state();
+    }
+
+    fn clear_tempo_state(&mut self) {
         self.recent.clear();
         self.displayed = None;
         self.misses = 0;
@@ -474,8 +832,8 @@ impl AnchorGate {
                 let previous = self.candidate;
                 self.candidate = Some(anchor);
                 if let Some(previous) = previous {
-                    let gap = (((anchor - previous) % period_frames) + period_frames)
-                        % period_frames;
+                    let gap =
+                        (((anchor - previous) % period_frames) + period_frames) % period_frames;
                     if gap.min(period_frames - gap) <= period_frames * 0.15 {
                         self.misses = 0;
                         self.live = Some(LiveBeat {
@@ -519,7 +877,7 @@ impl AnchorGate {
 /// mid-way keeps its last stable reading (the body is what gets mixed, not
 /// the outro).
 pub fn track_bpm(left: &[f32], right: &[f32], sample_rate: f64) -> Option<f64> {
-    let mut tracker = BeatTracker::new(sample_rate);
+    let mut tracker = AdaptiveBeatTracker::new(sample_rate);
     let mut gate = BeatGate::new();
     let mut last_stable = None;
     let chunk_frames = sample_rate as usize; // one second per push, the wire cadence
@@ -533,7 +891,7 @@ pub fn track_bpm(left: &[f32], right: &[f32], sample_rate: f64) -> Option<f64> {
             interleaved.push(right[frame]);
         }
         tracker.push(&interleaved);
-        if let Some(gated) = gate.push(tracker.estimate()) {
+        if let Some(gated) = gate.push_adaptive(tracker.estimate()) {
             last_stable = Some(gated);
         }
         start += chunk_frames;
@@ -606,8 +964,7 @@ pub(crate) mod fixtures {
             let since_beat = i % beat_period;
             let mut sample = noise() * 0.005;
             if since_beat < kick_frames {
-                sample += (2.0 * std::f64::consts::PI * 60.0 * since_beat as f64
-                    / sample_rate)
+                sample += (2.0 * std::f64::consts::PI * 60.0 * since_beat as f64 / sample_rate)
                     .sin()
                     * 0.8
                     * (1.0 - since_beat as f64 / kick_frames as f64);
@@ -723,8 +1080,132 @@ mod tests {
         Some(BeatEstimate {
             bpm,
             confidence: 0.8,
+            onset_impulsiveness: f64::INFINITY,
             anchor_frame: None,
         })
+    }
+
+    fn estimate(bpm: f64, confidence: f64, onset_impulsiveness: f64) -> BeatEstimate {
+        BeatEstimate {
+            bpm,
+            confidence,
+            onset_impulsiveness,
+            anchor_frame: None,
+        }
+    }
+
+    fn adaptive(main: BeatEstimate, change_probe: BeatEstimate) -> AdaptiveBeatEstimate {
+        AdaptiveBeatEstimate {
+            estimate: Some(main),
+            change_probe: Some(change_probe),
+        }
+    }
+
+    fn locked_gate(bpm: f64) -> BeatGate {
+        let mut gate = BeatGate::new();
+        gate.push(confident(bpm));
+        gate.push(confident(bpm));
+        gate.push(confident(bpm));
+        assert!(gate.current().is_some());
+        gate
+    }
+
+    #[test]
+    fn adaptive_selector_prefers_an_impulsive_spectral_reading() {
+        let band = estimate(120.0, 0.8, 2.4);
+        let spectral = estimate(128.0, 0.7, SPECTRAL_MIN_IMPULSIVENESS);
+        assert_eq!(
+            select_adaptive_estimate(Some(band), Some(spectral)),
+            Some(spectral)
+        );
+    }
+
+    #[test]
+    fn adaptive_selector_requires_agreement_for_band_fallback() {
+        let band = estimate(128.0, 0.8, BAND_MIN_IMPULSIVENESS);
+        let weak_agreeing = estimate(129.0, 0.8, 1.0);
+        let weak_conflicting = estimate(150.0, 0.8, 1.0);
+        assert_eq!(
+            select_adaptive_estimate(Some(band), Some(weak_agreeing)),
+            Some(band)
+        );
+        assert_eq!(
+            select_adaptive_estimate(Some(band), Some(weak_conflicting)),
+            None
+        );
+    }
+
+    #[test]
+    fn adaptive_selector_accepts_supported_borderline_spectral_flux() {
+        let supporting_band = estimate(120.0, 0.8, BAND_SUPPORT_IMPULSIVENESS);
+        let spectral = estimate(120.0, 0.8, SPECTRAL_SUPPORTED_IMPULSIVENESS);
+        assert_eq!(
+            select_adaptive_estimate(Some(supporting_band), Some(spectral)),
+            Some(spectral)
+        );
+    }
+
+    #[test]
+    fn adaptive_gate_needs_two_corroborated_change_probes() {
+        let mut gate = locked_gate(120.0);
+        let stale = estimate(120.0, 0.7, 2.0);
+        assert_eq!(
+            gate.push_adaptive(adaptive(stale, estimate(86.0, 0.1, 1.8))),
+            Some(120.0)
+        );
+        assert_eq!(
+            gate.push_adaptive(adaptive(stale, estimate(91.0, 0.1, 1.3))),
+            None
+        );
+    }
+
+    #[test]
+    fn adaptive_gate_ignores_an_isolated_or_weak_main_contradiction() {
+        let mut gate = locked_gate(135.0);
+        let strong_main = estimate(135.0, 0.7, 2.0);
+        let weak_main = estimate(135.0, 0.49, 2.0);
+        assert_eq!(
+            gate.push_adaptive(adaptive(strong_main, estimate(107.0, 0.5, 2.3))),
+            Some(135.0)
+        );
+        assert_eq!(
+            gate.push_adaptive(adaptive(weak_main, estimate(76.0, 0.5, 2.2))),
+            Some(135.0)
+        );
+        assert_eq!(
+            gate.push_adaptive(adaptive(strong_main, estimate(107.0, 0.5, 2.3))),
+            Some(135.0)
+        );
+    }
+
+    #[test]
+    fn adaptive_gate_quarantines_stale_main_then_reacquires() {
+        let mut gate = locked_gate(120.0);
+        let stale = estimate(120.0, 0.7, 2.0);
+        gate.push_adaptive(adaptive(stale, estimate(86.0, 0.1, 1.8)));
+        assert_eq!(
+            gate.push_adaptive(adaptive(stale, estimate(91.0, 0.1, 1.3))),
+            None
+        );
+        assert_eq!(
+            gate.push_adaptive(adaptive(stale, estimate(91.0, 0.7, 1.5))),
+            None
+        );
+
+        let recovered = estimate(138.0, 0.7, 1.6);
+        let agreeing_probe = estimate(92.0, 0.7, 1.5);
+        assert_eq!(
+            gate.push_adaptive(adaptive(recovered, agreeing_probe)),
+            None
+        );
+        assert_eq!(
+            gate.push_adaptive(adaptive(recovered, agreeing_probe)),
+            None
+        );
+        assert_eq!(
+            gate.push_adaptive(adaptive(recovered, agreeing_probe)),
+            Some(138.0)
+        );
     }
 
     #[test]
@@ -748,6 +1229,7 @@ mod tests {
         let weak = Some(BeatEstimate {
             bpm: 128.0,
             confidence: GATE_MIN_CONFIDENCE - 0.01,
+            onset_impulsiveness: f64::INFINITY,
             anchor_frame: None,
         });
         assert_eq!(gate.push(weak), Some(128.0));
@@ -941,169 +1423,5 @@ mod tests {
         assert!(anchors.current().is_some());
         assert_eq!(anchors.push(None, None), None);
         assert_eq!(anchors.current(), None);
-    }
-}
-
-#[cfg(test)]
-mod corpus {
-    //! The ADR-0025 cutover gate: the SHIPPING estimator over the
-    //! deterministic spike corpus, replayed exactly like the live feed —
-    //! 40 ms chunks, one estimate through the gate per simulated second —
-    //! against the locked librosa manifest. A port of
-    //! `frontend/src/audio/beatCorpus.test.js`; the pass rule and metrical
-    //! tolerance set are the measurement's, unchanged. Skips (loudly) when
-    //! the corpus WAVs are absent.
-
-    use std::path::{Path, PathBuf};
-
-    use serde::Deserialize;
-
-    use super::{BeatGate, BeatTracker};
-
-    #[derive(Deserialize)]
-    struct Entry {
-        file: String,
-        librosa_bpm: f64,
-        expect: String,
-    }
-
-    fn corpus_dir() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend/spike_corpus")
-    }
-
-    /// Interleaved stereo f32 from a 16-bit PCM WAV — the deck wire format
-    /// (`readWav.js` semantics: mono duplicates, /32768).
-    fn read_wav(path: &Path) -> (f64, Vec<f32>) {
-        let mut reader = hound::WavReader::open(path)
-            .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        let spec = reader.spec();
-        assert_eq!(spec.bits_per_sample, 16, "{}: not 16-bit", path.display());
-        assert_eq!(
-            spec.sample_format,
-            hound::SampleFormat::Int,
-            "{}: not PCM",
-            path.display()
-        );
-        let raw: Vec<i16> = reader
-            .samples::<i16>()
-            .collect::<Result<_, _>>()
-            .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        let channels = spec.channels as usize;
-        let frames = raw.len() / channels;
-        let mut samples = vec![0.0f32; frames * 2];
-        for i in 0..frames {
-            let left = (raw[i * channels] as f64 / 32768.0) as f32;
-            let right = if channels > 1 {
-                (raw[i * channels + 1] as f64 / 32768.0) as f32
-            } else {
-                left
-            };
-            samples[2 * i] = left;
-            samples[2 * i + 1] = right;
-        }
-        (spec.sample_rate as f64, samples)
-    }
-
-    /// Trackers disagree along standard metrical levels (the dnb clip's
-    /// librosa tempogram has 89.3 and 119.7 nearly tied — a 4:3 relation),
-    /// so accept the binary and ternary relatives, the usual tempo-eval
-    /// practice. The hardware checklist's hand-count is the final arbiter.
-    const METRICAL_LEVELS: [f64; 7] = [0.5, 2.0 / 3.0, 0.75, 1.0, 4.0 / 3.0, 1.5, 2.0];
-
-    fn metrically_matches(estimate: f64, reference: f64) -> bool {
-        METRICAL_LEVELS
-            .iter()
-            .any(|factor| (estimate * factor - reference).abs() / reference <= 0.08)
-    }
-
-    #[test]
-    fn the_spike_corpus_verdicts_hold_in_rust() {
-        let manifest = corpus_dir().join("manifest.json");
-        if !manifest.exists() {
-            eprintln!(
-                "corpus not generated (backend/scripts/spike_beat_corpus.py) — skipping"
-            );
-            return;
-        }
-        let entries: Vec<Entry> = serde_json::from_str(
-            &std::fs::read_to_string(&manifest).expect("manifest reads"),
-        )
-        .expect("manifest parses");
-        assert!(!entries.is_empty(), "manifest is empty");
-
-        for entry in &entries {
-            let (sample_rate, samples) = read_wav(&corpus_dir().join(&entry.file));
-            let mut tracker = BeatTracker::new(sample_rate);
-            let mut gate = BeatGate::new();
-
-            // Stream exactly like the live feed: 40 ms chunks, an estimate
-            // through the gate once per second.
-            let chunk = (0.04 * sample_rate).round() as usize * 2;
-            let per_second = (sample_rate * 2.0).round() as usize;
-            let mut since_estimate = 0usize;
-            let mut displayed_seconds = 0u32;
-            let mut total_seconds = 0u32;
-            let mut first_shown_at: Option<u32> = None;
-            let mut i = 0usize;
-            while i < samples.len() {
-                let end = (i + chunk).min(samples.len());
-                tracker.push(&samples[i..end]);
-                since_estimate += chunk;
-                if since_estimate >= per_second {
-                    since_estimate = 0;
-                    total_seconds += 1;
-                    let estimate = tracker.estimate();
-                    if gate.push(estimate).is_some() {
-                        displayed_seconds += 1;
-                        first_shown_at.get_or_insert(total_seconds);
-                    }
-                }
-                i += chunk;
-            }
-
-            let final_bpm = gate.current();
-            println!(
-                "{:<16} librosa {:>6} | shown {:>6} | displayed {}/{}s | first at {}",
-                entry.file,
-                entry.librosa_bpm,
-                final_bpm.map_or("     —".into(), |b| format!("{b:.1}")),
-                displayed_seconds,
-                total_seconds,
-                first_shown_at.map_or("—".into(), |s| s.to_string()),
-            );
-
-            match entry.expect.as_str() {
-                "rhythmic" => {
-                    let shown = final_bpm
-                        .unwrap_or_else(|| panic!("{}: rhythmic style stayed blank", entry.file));
-                    assert!(
-                        metrically_matches(shown, entry.librosa_bpm),
-                        "{}: shown {shown:.1} does not octave-match librosa {}",
-                        entry.file,
-                        entry.librosa_bpm
-                    );
-                }
-                "beatless" => {
-                    assert!(
-                        final_bpm.is_none(),
-                        "{}: beatless style displayed {:?}",
-                        entry.file,
-                        final_bpm
-                    );
-                }
-                _ => {
-                    // Ambiguous material: a blank is honest, a shown tempo
-                    // must still sit on a metrical level of the reference.
-                    if let Some(shown) = final_bpm {
-                        assert!(
-                            metrically_matches(shown, entry.librosa_bpm),
-                            "{}: shown {shown:.1} does not octave-match librosa {}",
-                            entry.file,
-                            entry.librosa_bpm
-                        );
-                    }
-                }
-            }
-        }
     }
 }

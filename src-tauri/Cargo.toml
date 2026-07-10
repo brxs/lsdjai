@@ -85,6 +85,9 @@ symphonia = { version = "=0.5.5", features = ["mp3", "aac", "alac", "isomp4", "a
 # same crate, pin, and feature the engine's output path justified (ADR-0029);
 # this use is allocating and non-RT (a load, not a callback).
 rubato = { version = "=3.0.0", default-features = false, features = ["fft_resampler"] }
+# Issue 77's corpus-selected spectral-flux detector (ADR-0035). Directly pinned
+# instead of relying on rubato/realfft's transitive copy.
+rustfft = "=6.4.1"
 
 [dev-dependencies]
 # The ADR-0025 corpus regression replays the spike WAVs (16-bit PCM) through
@@ -111,4 +114,3 @@ opt-level = 2
 
 [profile.dev.package."*"]
 opt-level = 3
-
