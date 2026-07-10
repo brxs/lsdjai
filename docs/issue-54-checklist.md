@@ -62,6 +62,6 @@ inside/outside RMS `0.08108330` / `0.00651554` (**12.445x** concentration).
       play as before.
 - [ ] Compose one SA3 medium track in Media Explorer: it saves and loads as
       before.
-- [ ] With the SA3 checkout unavailable, `/api/generate` still returns 503 with
+- [x] With the SA3 checkout unavailable, `/api/generate` still returns 503 with
       the setup hint; a forced CLI failure still maps to 502 rather than crashing
-      the generation server.
+      the generation server (covered by the controller regression tests).
