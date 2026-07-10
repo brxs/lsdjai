@@ -17,7 +17,7 @@ status: implementation-ready
 - [x] Settle the three product/contract decisions in **Decisions**.
 - [x] Mark this plan implementation-ready.
 - [x] Implement the SA3 CLI adapter and exact argv/init-file regression tests.
-- [ ] Implement JSON/multipart HTTP parsing and trust-boundary validation.
+- [x] Implement JSON/multipart HTTP parsing and trust-boundary validation.
 - [ ] Add automated and API-level model-loaded verification.
 - [ ] Run the full check suite and complete the API/by-ear checklist.
 

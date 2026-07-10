@@ -33,6 +33,19 @@ MAX_SECONDS_FOR = {"sfx": MAX_SECONDS, "music": MAX_SECONDS, "track": TRACK_MAX_
 # truncates beyond its own window anyway.
 MAX_PROMPT_LENGTH = 32000
 
+# Issue #54 generation controls. These are trust-boundary limits, mirrored by
+# `controller.generate_audio`; the CLI itself is wider in places, but unbounded
+# loopback input must not become unbounded argv, model guidance, or memory use.
+MIN_INIT_NOISE_LEVEL = 0.01
+MAX_INIT_NOISE_LEVEL = 5.0
+MIN_CFG = -20.0
+MAX_CFG = 20.0
+MIN_APG = 0.0
+MAX_APG = 1.0
+MAX_SEED = 2**31 - 1
+MAX_INIT_AUDIO_BYTES = 16 * 1024 * 1024
+MAX_GENERATE_METADATA_BYTES = 64 * 1024
+
 # Measured small-DiT generation is ~1.5 s; the margin covers a cold
 # filesystem cache and slower machines, not a first-ever weight download
 # (see SETUP_HINT).
