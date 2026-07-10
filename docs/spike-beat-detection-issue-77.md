@@ -11,7 +11,7 @@ genre family, two short-intro scenarios, and two opposed tempo-change
 scenarios. Its manifest SHA-256 is
 `922443f1481cd457b21813f36aa0d96321eb07fdc03a0cba3b525191a8799ddb`.
 
-Reproduce the fixture and shipping-code measurements:
+Reproduce the locked fixtures and final shipping-code measurement:
 
 ```sh
 cd backend
@@ -19,9 +19,14 @@ cd backend
 
 cd ../src-tauri
 cargo test -p lsdj-app \
-  analysis::beat_corpus::the_expanded_spike_corpus_reports_shipping_metrics \
+  analysis::beat_corpus::the_expanded_spike_corpus_meets_approved_targets \
   -- --nocapture
 ```
+
+The unchanged-estimator table below is preserved at commit `0e48487`; its
+manifest still contains the proposed-target checkpoint. The final approved
+manifest SHA-256 is
+`a43e7481f1fa93ed11f8f3af3a27ce91b6e572a607eddcebbe9812170fbcb62d`.
 
 The generator itself was also rerun after the corpus was locked. All twenty
 SHA-256 comparisons passed, proving deterministic regeneration under
@@ -109,11 +114,10 @@ beatless clip displays at any tick.
 - No faster-but-wrong or beatless display is present in the steady/intro
   baseline. That zero is the hard honesty margin candidate work must retain.
 
-## Proposed numeric targets — owner approval gate
+## Approved numeric targets
 
-These targets are recorded in every manifest entry with `status: proposed`.
-The Rust runner validates their shape but deliberately does not enforce them
-until the owner approves this checkpoint and their status flips to `approved`.
+The owner approved these targets on 2026-07-10. They are recorded in every
+manifest entry with `status: approved`, and the Rust runner enforces them.
 
 1. **Acquisition:** every rhythmic steady or short-intro clip, including all
    original rhythmic styles, shows a correct metrical match within **10 seconds
@@ -138,4 +142,60 @@ Why 10 / 8 / 1:
 - One wrong second preserves the explicit grace already accepted by ADR-0010;
   permitting three would convert gate inertia into knowingly stale display.
 
-Candidate work is paused until these numbers are accepted or replaced.
+## Candidate matrix
+
+Every candidate replayed the same 20 clips through the live 40 ms input and
+one-second verdict cadence. A row was rejected immediately when it crossed an
+honesty gate; exact per-clip data is retained above for the unchanged baseline
+and below for the only candidate that cleared all targets.
+
+| Candidate | Main history / gate | Envelope rule | Corpus result | Decision |
+| --- | --- | --- | --- | --- |
+| Shipping baseline | band 12 s, 6 s minimum; confidence 0.4; 3 stable; 4% | band flux only | acquisition 9–20 s or absent; recovery 15–16 s | Baseline only |
+| Short band history | band 6 s; stable count/threshold variants | band flux only | faster, but ambient displayed for 3–10 s and sparse/minimal coverage remained incomplete | Reject: honesty and coverage |
+| Spectral-only | spectral 6 s, 2048-frame FFT | spectral flux only | acquired minimal percussion and most rhythmic clips, but displayed ambient and soundscape | Reject: beatless false positives |
+| Lower confidence / fewer stable ticks | 6–12 s; confidence below 0.4 and/or fewer than 3 stable | band or spectral | increased false displays without repairing envelope disagreement | Reject: weakened honesty |
+| Band-and-spectral consensus | both 6 s; 3 stable | require both estimates to agree | suppressed false positives but also suppressed clips spectral flux was meant to recover | Reject: acquisition |
+| Adaptive dual envelope | both 6 s; confidence 0.4; 3 stable; 8% metrical folding | impulsive spectral priority; supported borderline spectral; agreeing band fallback | all 20 approved profiles pass | Select |
+
+The selected detector also adds a two-second spectral change probe. It needs
+two agreeing contradictions while the main estimator confidently holds the old
+clock, then quarantines the stale long-window result until the main and probe
+agree. Thresholds are: band impulsiveness 1.8, spectral 1.4, supported spectral
+1.3 with band support 2.3, change-start 1.5, recovery/corroboration 1.2, and
+stale-main confidence 0.5. `rustfft` 6.4.1 is pinned directly. No runtime mode,
+clip identity, genre label, prompt, or per-style exception ships.
+
+## Selected-candidate result
+
+Measured at implementation commit `3109e4e` over 534 seconds of audio:
+
+| Clip | Final | Correct / total | Wrong | Raw | First | Raw recover | Recover | Confidence |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| techno | 131.9 | 16 / 24 | 0 | 7 | 9 | — | — | 0.58–0.84 |
+| house | 120.0 | 16 / 24 | 0 | 7 | 9 | — | — | 0.70–0.76 |
+| dnb | 119.5 | 16 / 24 | 0 | 7 | 9 | — | — | 0.58–0.76 |
+| hiphop | 95.0 | 16 / 24 | 0 | 7 | 9 | — | — | 0.58–0.73 |
+| garage | 135.1 | 16 / 24 | 0 | 7 | 9 | — | — | 0.40–0.68 |
+| dub | 93.6 | 13 / 24 | 0 | 7 | 9 | — | — | 0.51–0.78 |
+| triphop | — | 0 / 24 | 0 | — | — | — | — | — |
+| ambient | — | 0 / 24 | 0 | — | — | — | — | — |
+| soundscape | — | 0 / 24 | 0 | — | — | — | — | — |
+| piano | — | 0 / 24 | 0 | — | — | — | — | — |
+| jungle amen | 114.1 | 16 / 24 | 0 | 7 | 9 | — | — | 0.62–0.86 |
+| jungle rolling | — | 10 / 24 | 0 | 7 | 9 | — | — | 0.64–0.84 |
+| swung house | 125.2 | 16 / 24 | 0 | 7 | 9 | — | — | 0.62–0.88 |
+| garage two-step | — | 12 / 24 | 0 | 7 | 9 | — | — | 0.47–0.62 |
+| minimal percussion | — | 3 / 24 | 0 | 7 | 9 | — | — | 0.43–0.50 |
+| sparse dub | — | 10 / 24 | 0 | 7 | 9 | — | — | 0.40–0.67 |
+| 4 s intro → jungle amen | 114.3 | 20 / 28 | 0 | 3 | 5 | — | — | 0.62–0.86 |
+| 2 s intro → minimal percussion | — | 3 / 26 | 0 | 7 | 9 | — | — | 0.41–0.58 |
+| house → dub | 93.6 | 30 / 48 | 1 | 7 | 9 | 6 | 8 | 0.43–0.78 |
+| dub → house | 120.1 | 32 / 48 | 0 | 7 | 9 | 1 | 1 | 0.51–0.78 |
+
+The selected path acquires every required rhythmic profile within nine seconds,
+versus 9–20 seconds or never for the baseline. Recovery improves from 16 to 8
+seconds and from 15 to 1 second. Steady, intro, ambiguous, and beatless wrong
+display seconds remain zero; change errors improve from 1/3 seconds to 1/0.
+The final harness processed the corpus in 1.851 seconds, about 288× realtime on
+the validation machine, while retaining the existing non-realtime thread.

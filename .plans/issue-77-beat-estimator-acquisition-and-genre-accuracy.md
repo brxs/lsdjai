@@ -34,10 +34,14 @@ status: in_progress
 - [x] Phase 2 owner gate: owner approved the proposed 10 s / 8 s / 0-or-1
   targets on 2026-07-10. Candidate tuning may begin; flip the manifest status
   to `approved` with the measured winner so the committed branch stays green.
-- [ ] Phase 3: run corpus-wide candidate experiments and make the ADR decision.
-- [ ] Phase 4: ship the smallest winning estimator/gate change and turn the
+- [x] Phase 3: run corpus-wide candidate experiments and accept ADR-0035 for
+  the measured dual-envelope/change-invalidation design.
+- [x] Phase 4: ship the smallest winning estimator/gate change and turn the
   frozen targets into regression gates.
-- [ ] Phase 5: run automated checks and complete the live-audio checklist.
+- [x] Phase 5: pass corpus verification, Git LFS integrity, the clean-checkout
+  corpus test, Clippy, Ruff, ESLint, TypeScript, and all backend/frontend/Rust
+  workspace tests.
+- [ ] Phase 5: complete the live-audio/hardware listening checklist.
 
 ## Problem
 
@@ -431,3 +435,47 @@ generation controls, and beat-consumer product behaviour.
   required ADR path completed.
 - `just check`, the targeted corpus report, corpus verification, and the live
   hardware checklist all pass.
+
+## Implementation retrospective
+
+### Outcome
+
+- The measurement checkpoint did its job: it prevented a superficially faster
+  gate tweak from shipping after shorter band windows and spectral-only trials
+  crossed the beatless honesty boundary.
+- The smallest passing design was still architectural enough to warrant
+  ADR-0035: complementary six-second band/spectral envelopes, an explicit
+  impulsiveness signal, and a two-second change probe behind corroboration and
+  recovery quarantine.
+- The approved results are met without genre/file branches: all required
+  rhythmic profiles acquire within nine seconds, the two changes recover in
+  eight and one seconds, steady/intro/beatless wrong displays stay at zero, and
+  change wrong displays are one and zero seconds.
+
+### What changed from the draft plan
+
+- A constants-only solution did not survive the expanded corpus. The final path
+  adds a directly pinned FFT dependency and ADR-0035, while preserving the
+  planned non-realtime thread, published state, reset ordering, phase anchor,
+  and live/offline parity.
+- Immediate one-probe invalidation passed the target profiles but falsely
+  blanked the legacy garage clip on short-window aliases. The production rule
+  therefore requires two mutually consistent contradictions while the main
+  detector still confidently holds the old metrical clock. That uses, but does
+  not exceed, the approved one-stale-second budget.
+- FFT scratch and spectrum buffers are reused. The complete 534-second corpus
+  runs in about 1.8 seconds on the validation machine, comfortably off the
+  realtime callback.
+
+### Verification evidence
+
+- `backend/.venv/bin/python backend/scripts/spike_beat_corpus.py --verify`:
+  20 clips / 97.8 MiB verified; `git lfs fsck` passes.
+- A fresh local clone plus `git lfs pull`, frontend build, model-free verifier,
+  and the approved Rust corpus test all pass from clean tracked state.
+- `just check` passes: 176 backend tests, 572 frontend tests, 210 shell tests
+  (one diagnostic ignored), 109 engine tests, plus Ruff, ESLint, TypeScript,
+  and Clippy with warnings denied.
+- Remaining evidence is deliberately not conflated with simulation: the
+  listening/device checks in `docs/issue-77-hardware-checklist.md` require a
+  human with actual output hardware before the issue is closed.

@@ -54,12 +54,15 @@ the measured issue-77 winner, not runtime modes.
 
 The honesty gate keeps three-stable acquisition and one-miss grace. Agreement
 and folding now cover the same binary/ternary metrical levels the corpus verdict
-already accepts, within 8%. When the fast probe sharply contradicts a displayed
-clock, the gate blanks immediately and enters recovery quarantine: it cannot
-re-acquire the stale long-window value. Recovery resumes only after a confident
-probe and the main detector agree at an accepted metrical level. Stream reset
-still atomically clears all trackers, arbitration, gate, anchor gate, and frame
-origin.
+already accepts, within 8%. A fast probe may invalidate a held tempo only when
+the six-second detector is still confidently holding that old metrical clock.
+Two consecutive short-window contradictions must agree with each other; the
+first is the single stale tick permitted by the approved target, and the second
+blanks the display and enters recovery quarantine. This corroboration prevents
+isolated or weak-main short-window aliases from erasing a steady readout.
+Recovery resumes only after a confident probe and the main detector agree at an
+accepted metrical level. Stream reset still atomically clears all trackers,
+pending-change evidence, gate, anchor gate, and frame origin.
 
 The selected constants and full candidate table live in
 `docs/spike-beat-detection-issue-77.md`. The final committed corpus test is the
@@ -68,13 +71,13 @@ contract; no per-style branch or prompt/file identity enters production.
 ## Consequences
 
 - Every rhythmic corpus clip, including both sparse/minimal fixtures, acquires
-  correctly in at most 9 seconds. The two tempo changes recover in 8 and 7
-  seconds. No steady, intro, or beatless fixture displays a wrong BPM, and both
-  change fixtures record zero stale/wrong seconds for the winning candidate.
-- Blank-when-unsure becomes stricter at a detected change: a high-transient
-  contradiction invalidates the held number immediately instead of spending
-  grace on a value the short view has disproved. Ordinary isolated misses retain
-  the one-miss grace.
+  correctly in at most 9 seconds. The two tempo changes recover in 8 and 1
+  seconds. No steady, intro, or beatless fixture displays a wrong BPM; the
+  slower-to-faster change uses its one permitted stale second and the reverse
+  change uses none.
+- Blank-when-unsure becomes stricter at a corroborated change: two consistent
+  high-transient contradictions invalidate the held number while isolated
+  short-window aliases do not. Ordinary misses retain the one-miss grace.
 - Beat detection performs two FFT envelopes plus one band envelope per deck.
   They remain allocating/non-realtime analysis work; the `cpal` callback, engine
   crate, bounded sidecar tee, published snapshot, and consumers are untouched.
