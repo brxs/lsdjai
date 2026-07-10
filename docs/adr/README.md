@@ -57,3 +57,4 @@ scaffolds the file from the template.
 | [0030](0030-track-decode-and-offline-track-analysis-in-the-rust-shell.md) | Track decode and offline track analysis in the Rust shell | Accepted |
 | [0031](0031-native-midi-in-the-rust-core-superseding-web-midi.md) | Native MIDI in the Rust core, superseding Web MIDI | Accepted |
 | [0032](0032-standalone-midi-keyboard-window.md) | Standalone MIDI keyboard window, routing decoupled from steering | Accepted |
+| [0035](0035-dual-envelope-beat-detection-with-fast-change-invalidation.md) | Dual-envelope beat detection with fast change invalidation | Accepted |
