@@ -10,6 +10,7 @@ the generation RPC: /api/render (the third Magenta engine), /api/generate
 import argparse
 import asyncio
 import contextlib
+import io
 import json
 import logging
 import math
@@ -17,11 +18,14 @@ import multiprocessing as mp
 import os
 import queue
 import time
+import wave
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from starlette.datastructures import UploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import engine, sa3
 from .worker import run_deck_worker
@@ -65,6 +69,12 @@ RENDER_READY_TIMEOUT_SECONDS = 180
 # (docs/spike-mrt2.md) a 3-minute render holds the single worker ~97 s —
 # the boundary between a visible pending state and an outage.
 RENDER_MAX_SECONDS = 180.0
+
+# Multipart framing/headers are small but not zero. Content-Length is only an
+# early rejection; `_read_init_audio` remains the authoritative file-size gate.
+MAX_MULTIPART_BODY_BYTES = (
+    sa3.MAX_INIT_AUDIO_BYTES + sa3.MAX_GENERATE_METADATA_BYTES + 128 * 1024
+)
 
 
 def render_timeout_for(seconds: float) -> float:
@@ -168,6 +178,305 @@ def float32_wav(pcm: bytes, sample_rate: int, channels: int) -> bytes:
     return header + pcm
 
 
+def _generation_number(
+    parsed: dict, name: str, minimum: float, maximum: float
+) -> float | None:
+    if name not in parsed:
+        return None
+    value = parsed[name]
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or not minimum <= value <= maximum
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=f"'{name}' must be between {minimum:g} and {maximum:g}",
+        )
+    return float(value)
+
+
+def _validate_init_wav(data: bytes) -> None:
+    try:
+        with wave.open(io.BytesIO(data), "rb") as source:
+            channels = source.getnchannels()
+            sample_width = source.getsampwidth()
+            sample_rate = source.getframerate()
+            frames = source.getnframes()
+            compression = source.getcomptype()
+            pcm_bytes = source.readframes(frames)
+    except (EOFError, wave.Error):
+        raise HTTPException(
+            status_code=422, detail="'init_audio' must be a valid WAV file"
+        ) from None
+    if (
+        compression != "NONE"
+        or channels not in (1, 2)
+        or sample_width != 2
+        or sample_rate != 44_100
+        or frames == 0
+        or len(pcm_bytes) != frames * channels * sample_width
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "'init_audio' must be non-empty 44.1 kHz 16-bit PCM WAV "
+                "with one or two channels"
+            ),
+        )
+
+
+async def _read_init_audio(upload: UploadFile) -> bytes:
+    chunks = []
+    size = 0
+    while chunk := await upload.read(64 * 1024):
+        size += len(chunk)
+        if size > sa3.MAX_INIT_AUDIO_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"'init_audio' must be at most {sa3.MAX_INIT_AUDIO_BYTES} bytes"
+                ),
+            )
+        chunks.append(chunk)
+    data = b"".join(chunks)
+    _validate_init_wav(data)
+    return data
+
+
+async def _read_capped_body(request: Request, limit: int, detail: str) -> bytes:
+    """Stream the request body, rejecting with 413 once it passes `limit`.
+
+    A chunked request can omit or lie about Content-Length, so the ceiling is
+    enforced while reading rather than trusting the header.
+    """
+    chunks = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            raise HTTPException(status_code=413, detail=detail)
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _bounded_multipart_request(request: Request) -> Request:
+    body = await _read_capped_body(
+        request, MAX_MULTIPART_BODY_BYTES, "multipart body is too large"
+    )
+    sent = False
+
+    async def receive() -> dict:
+        nonlocal sent
+        if sent:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(request.scope, receive)
+
+
+async def _parse_generate_body(request: Request) -> tuple[dict, bytes | None]:
+    content_type = request.headers.get("content-type", "")
+    media_type = content_type.partition(";")[0].strip().lower()
+    if media_type == "application/json":
+        body = await _read_capped_body(
+            request, sa3.MAX_GENERATE_METADATA_BYTES, "request body is too large"
+        )
+        try:
+            parsed = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise HTTPException(status_code=422, detail="body must be JSON") from None
+        return parsed, None
+    if media_type != "multipart/form-data":
+        raise HTTPException(
+            status_code=422,
+            detail="content type must be application/json or multipart/form-data",
+        )
+
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared_size = int(content_length)
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail="invalid Content-Length"
+            ) from None
+        if declared_size < 0:
+            raise HTTPException(status_code=422, detail="invalid Content-Length")
+        if declared_size > MAX_MULTIPART_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="multipart body is too large")
+
+    multipart_request = await _bounded_multipart_request(request)
+    try:
+        # `max_part_size` guards only non-file parts and Starlette maps a breach to
+        # a generic 422. Leave it at the whole-body bound (already the memory
+        # ceiling) so the explicit, charset-correct metadata check below is the
+        # authoritative gate and returns a consistent 413 for oversized metadata.
+        async with multipart_request.form(
+            max_files=1,
+            max_fields=1,
+            max_part_size=MAX_MULTIPART_BODY_BYTES,
+        ) as form:
+            items = form.multi_items()
+            request_fields = [value for name, value in items if name == "request"]
+            audio_fields = [value for name, value in items if name == "init_audio"]
+            if (
+                len(items) != 2
+                or len(request_fields) != 1
+                or len(audio_fields) != 1
+                or not isinstance(request_fields[0], str)
+                or not isinstance(audio_fields[0], UploadFile)
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "multipart body must contain one 'request' JSON field "
+                        "and one 'init_audio' WAV file"
+                    ),
+                )
+            metadata_text = request_fields[0]
+            if len(metadata_text.encode("utf-8")) > sa3.MAX_GENERATE_METADATA_BYTES:
+                raise HTTPException(
+                    status_code=413, detail="'request' metadata is too large"
+                )
+            try:
+                parsed = json.loads(metadata_text)
+            except json.JSONDecodeError:
+                raise HTTPException(
+                    status_code=422, detail="'request' must be JSON"
+                ) from None
+            init_audio = await _read_init_audio(audio_fields[0])
+    except StarletteHTTPException as error:
+        if error.status_code != 400:
+            raise
+        raise HTTPException(status_code=422, detail=str(error.detail)) from None
+    return parsed, init_audio
+
+
+def _validate_generate_request(
+    parsed: object, init_audio: bytes | None
+) -> tuple[str, float, str, dict]:
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=422, detail="body must be a JSON object")
+    prompt = parsed.get("prompt")
+    if not (isinstance(prompt, str) and prompt.strip()):
+        raise HTTPException(
+            status_code=422, detail="'prompt' must be a non-empty string"
+        )
+    prompt = prompt.strip()
+    if len(prompt) > sa3.MAX_PROMPT_LENGTH:
+        raise HTTPException(
+            status_code=422,
+            detail=f"'prompt' must be at most {sa3.MAX_PROMPT_LENGTH} characters",
+        )
+    kind = parsed.get("kind")
+    if not isinstance(kind, str) or kind not in sa3.KINDS:
+        raise HTTPException(
+            status_code=422, detail=f"'kind' must be one of {sorted(sa3.KINDS)}"
+        )
+    max_seconds = sa3.MAX_SECONDS_FOR[kind]
+    seconds = parsed.get("seconds")
+    if (
+        isinstance(seconds, bool)
+        or not isinstance(seconds, (int, float))
+        or not math.isfinite(seconds)
+        or not sa3.MIN_SECONDS <= seconds <= max_seconds
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=f"'seconds' must be {sa3.MIN_SECONDS}-{max_seconds:g}",
+        )
+
+    options = {}
+    init_noise_level = _generation_number(
+        parsed,
+        "init_noise_level",
+        sa3.MIN_INIT_NOISE_LEVEL,
+        sa3.MAX_INIT_NOISE_LEVEL,
+    )
+    cfg = _generation_number(parsed, "cfg", sa3.MIN_CFG, sa3.MAX_CFG)
+    apg = _generation_number(parsed, "apg", sa3.MIN_APG, sa3.MAX_APG)
+    if init_noise_level is not None:
+        options["init_noise_level"] = init_noise_level
+    if cfg is not None:
+        options["cfg"] = cfg
+    if apg is not None:
+        if cfg is None or cfg == 1.0:
+            raise HTTPException(
+                status_code=422, detail="'apg' requires 'cfg' other than 1"
+            )
+        options["apg"] = apg
+
+    if "negative_prompt" in parsed:
+        negative_prompt = parsed["negative_prompt"]
+        if not isinstance(negative_prompt, str):
+            raise HTTPException(
+                status_code=422, detail="'negative_prompt' must be a string"
+            )
+        negative_prompt = negative_prompt.strip()
+        if negative_prompt:
+            if len(negative_prompt) > sa3.MAX_PROMPT_LENGTH:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "'negative_prompt' must be at most "
+                        f"{sa3.MAX_PROMPT_LENGTH} characters"
+                    ),
+                )
+            if cfg is None or cfg == 1.0:
+                raise HTTPException(
+                    status_code=422,
+                    detail="'negative_prompt' requires 'cfg' other than 1",
+                )
+            options["negative_prompt"] = negative_prompt
+
+    if "seed" in parsed:
+        seed = parsed["seed"]
+        if (
+            isinstance(seed, bool)
+            or not isinstance(seed, int)
+            or not 0 <= seed <= sa3.MAX_SEED
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=f"'seed' must be an integer from 0-{sa3.MAX_SEED}",
+            )
+        options["seed"] = seed
+
+    if "inpaint_range" in parsed:
+        inpaint_range = parsed["inpaint_range"]
+        if not isinstance(inpaint_range, list) or len(inpaint_range) != 2:
+            raise HTTPException(
+                status_code=422,
+                detail="'inpaint_range' must be a two-number array",
+            )
+        start, end = inpaint_range
+        if (
+            isinstance(start, bool)
+            or isinstance(end, bool)
+            or not isinstance(start, (int, float))
+            or not isinstance(end, (int, float))
+            or not math.isfinite(start)
+            or not math.isfinite(end)
+            or not 0 <= start < end <= seconds
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=("'inpaint_range' must satisfy 0 <= start < end <= seconds"),
+            )
+        if init_audio is None:
+            raise HTTPException(
+                status_code=422, detail="'inpaint_range' requires 'init_audio'"
+            )
+        options["inpaint_range"] = (float(start), float(end))
+
+    if init_audio is not None:
+        options["init_audio"] = init_audio
+    return prompt, float(seconds), kind, options
+
+
 @app.post("/api/render")
 async def render_clip(request: Request) -> Response:
     """Render a pad clip with the third Magenta engine (M18).
@@ -255,48 +564,15 @@ async def render_clip(request: Request) -> Response:
 async def generate_audio(request: Request) -> Response:
     """Generate a pad clip with Stable Audio 3 (M18, ADR-0012).
 
-    Body: JSON {prompt, seconds, kind} with kind in {sfx, music}. Returns
-    the WAV. Generation runs in a spawned subprocess and is serialised, so
-    a busy moment queues (~3 s) rather than stacking memory.
+    Body: JSON generation metadata, or multipart with that JSON in `request`
+    plus an `init_audio` WAV. Returns the WAV. Generation runs in a spawned
+    subprocess and is serialised, so a busy moment queues rather than stacking
+    memory.
     """
+    parsed, init_audio = await _parse_generate_body(request)
+    prompt, seconds, kind, options = _validate_generate_request(parsed, init_audio)
     try:
-        parsed = await request.json()
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=422, detail="body must be JSON") from None
-    if not isinstance(parsed, dict):
-        raise HTTPException(status_code=422, detail="body must be a JSON object")
-    prompt = parsed.get("prompt")
-    if not (isinstance(prompt, str) and prompt.strip()):
-        raise HTTPException(
-            status_code=422, detail="'prompt' must be a non-empty string"
-        )
-    prompt = prompt.strip()
-    if len(prompt) > sa3.MAX_PROMPT_LENGTH:
-        raise HTTPException(
-            status_code=422,
-            detail=f"'prompt' must be at most {sa3.MAX_PROMPT_LENGTH} characters",
-        )
-    kind = parsed.get("kind")
-    if kind not in sa3.KINDS:
-        raise HTTPException(
-            status_code=422, detail=f"'kind' must be one of {sorted(sa3.KINDS)}"
-        )
-    # Tracks (M19) run the medium DiT and may be minutes long; pads keep
-    # the small-model ceiling.
-    max_seconds = sa3.MAX_SECONDS_FOR[kind]
-    seconds = parsed.get("seconds")
-    if (
-        isinstance(seconds, bool)
-        or not isinstance(seconds, (int, float))
-        or not math.isfinite(seconds)
-        or not sa3.MIN_SECONDS <= seconds <= max_seconds
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail=f"'seconds' must be {sa3.MIN_SECONDS}-{max_seconds:g}",
-        )
-    try:
-        wav = await sa3.generate(prompt, float(seconds), kind)
+        wav = await sa3.generate(prompt, seconds, kind, **options)
     except sa3.GenerationUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from None
     except sa3.GenerationFailed as error:

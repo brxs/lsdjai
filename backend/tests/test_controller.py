@@ -5,7 +5,10 @@ enter without one.
 """
 
 import asyncio
+import io
+import json
 import queue
+import wave
 
 import pytest
 from fastapi.testclient import TestClient
@@ -65,6 +68,28 @@ def generate_request(**overrides):
     return body
 
 
+def pcm16_wav(*, sample_rate=44_100, channels=2, sample_width=2, frames=16) -> bytes:
+    out = io.BytesIO()
+    with wave.open(out, "wb") as target:
+        target.setframerate(sample_rate)
+        target.setnchannels(channels)
+        target.setsampwidth(sample_width)
+        target.writeframes(b"\x00" * frames * channels * sample_width)
+    return out.getvalue()
+
+
+def generate_multipart(metadata, audio=None, extra=()):
+    fields = [
+        ("request", (None, json.dumps(metadata))),
+        (
+            "init_audio",
+            ("source.wav", pcm16_wav() if audio is None else audio, "audio/wav"),
+        ),
+    ]
+    fields.extend(extra)
+    return fields
+
+
 def test_generate_returns_wav_and_strips_the_prompt(client, monkeypatch):
     calls = []
 
@@ -82,6 +107,136 @@ def test_generate_returns_wav_and_strips_the_prompt(client, monkeypatch):
     assert calls == [("deep house loop", 3.0, "sfx")]
 
 
+def test_generate_forwards_optional_json_controls(client, monkeypatch):
+    calls = []
+
+    async def fake_generate(prompt, seconds, kind, **options):
+        calls.append((prompt, seconds, kind, options))
+        return b"RIFFwav"
+
+    monkeypatch.setattr(controller.sa3, "generate", fake_generate)
+    response = client.post(
+        "/api/generate",
+        json=generate_request(
+            init_noise_level=0.6,
+            negative_prompt="  vocals  ",
+            cfg=4.5,
+            apg=0.75,
+            seed=12345,
+        ),
+    )
+    assert response.status_code == 200
+    assert calls == [
+        (
+            "vinyl spinback",
+            3.0,
+            "sfx",
+            {
+                "init_noise_level": 0.6,
+                "cfg": 4.5,
+                "apg": 0.75,
+                "negative_prompt": "vocals",
+                "seed": 12345,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize("channels", [1, 2])
+def test_generate_forwards_multipart_init_audio_and_inpaint(
+    client, monkeypatch, channels
+):
+    calls = []
+    source = pcm16_wav(channels=channels)
+    metadata = generate_request(
+        seconds=3.0,
+        init_noise_level=0.55,
+        inpaint_range=[0.0, 3.0],
+        seed=7,
+    )
+
+    async def fake_generate(prompt, seconds, kind, **options):
+        calls.append((prompt, seconds, kind, options))
+        return b"RIFFwav"
+
+    monkeypatch.setattr(controller.sa3, "generate", fake_generate)
+    response = client.post("/api/generate", files=generate_multipart(metadata, source))
+    assert response.status_code == 200
+    assert calls == [
+        (
+            "vinyl spinback",
+            3.0,
+            "sfx",
+            {
+                "init_noise_level": 0.55,
+                "seed": 7,
+                "inpaint_range": (0.0, 3.0),
+                "init_audio": source,
+            },
+        )
+    ]
+
+
+def test_generate_accepts_the_optional_control_boundaries(client, monkeypatch):
+    calls = []
+
+    async def fake_generate(prompt, seconds, kind, **options):
+        calls.append(options)
+        return b"RIFFwav"
+
+    monkeypatch.setattr(controller.sa3, "generate", fake_generate)
+    response = client.post(
+        "/api/generate",
+        json=generate_request(
+            init_noise_level=sa3.MIN_INIT_NOISE_LEVEL,
+            negative_prompt="kick",
+            cfg=sa3.MIN_CFG,
+            apg=sa3.MIN_APG,
+            seed=sa3.MAX_SEED,
+        ),
+    )
+    assert response.status_code == 200
+    assert calls == [
+        {
+            "init_noise_level": sa3.MIN_INIT_NOISE_LEVEL,
+            "cfg": sa3.MIN_CFG,
+            "apg": sa3.MIN_APG,
+            "negative_prompt": "kick",
+            "seed": sa3.MAX_SEED,
+        }
+    ]
+
+
+def test_generate_accepts_the_optional_control_upper_boundaries(client, monkeypatch):
+    calls = []
+
+    async def fake_generate(prompt, seconds, kind, **options):
+        calls.append(options)
+        return b"RIFFwav"
+
+    monkeypatch.setattr(controller.sa3, "generate", fake_generate)
+    response = client.post(
+        "/api/generate",
+        json=generate_request(
+            init_noise_level=sa3.MAX_INIT_NOISE_LEVEL,
+            negative_prompt="kick",
+            cfg=sa3.MAX_CFG,
+            apg=sa3.MAX_APG,
+            seed=0,
+        ),
+    )
+    assert response.status_code == 200
+    assert calls == [
+        {
+            "init_noise_level": sa3.MAX_INIT_NOISE_LEVEL,
+            "cfg": sa3.MAX_CFG,
+            "apg": sa3.MAX_APG,
+            "negative_prompt": "kick",
+            "seed": 0,
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -91,6 +246,7 @@ def test_generate_returns_wav_and_strips_the_prompt(client, monkeypatch):
         generate_request(prompt="x" * (sa3.MAX_PROMPT_LENGTH + 1)),
         generate_request(kind="banger"),
         generate_request(kind=None),
+        generate_request(kind=[]),
         generate_request(seconds=0.1),
         generate_request(seconds=33.0),
         generate_request(kind="track", seconds=381.0),
@@ -138,6 +294,194 @@ def test_generate_rejects_nan_seconds(client, monkeypatch):
         headers={"content-type": "application/json"},
     )
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"init_noise_level": None},
+        {"init_noise_level": True},
+        {"init_noise_level": 0.009},
+        {"init_noise_level": 5.01},
+        {"init_noise_level": float("nan")},
+        {"cfg": None},
+        {"cfg": True},
+        {"cfg": -20.01},
+        {"cfg": 20.01},
+        {"cfg": float("inf")},
+        {"apg": None},
+        {"apg": True},
+        {"apg": -0.01, "cfg": 2},
+        {"apg": 1.01, "cfg": 2},
+        {"apg": 0.5},
+        {"apg": 0.5, "cfg": 1},
+        {"negative_prompt": None, "cfg": 2},
+        {"negative_prompt": 7, "cfg": 2},
+        {"negative_prompt": "vocals"},
+        {"negative_prompt": "vocals", "cfg": 1},
+        {"negative_prompt": "x" * (sa3.MAX_PROMPT_LENGTH + 1), "cfg": 2},
+        {"seed": None},
+        {"seed": True},
+        {"seed": 1.5},
+        {"seed": -1},
+        {"seed": sa3.MAX_SEED + 1},
+        {"inpaint_range": None},
+        {"inpaint_range": []},
+        {"inpaint_range": [0]},
+        {"inpaint_range": [0, 1, 2]},
+        {"inpaint_range": [True, 1]},
+        {"inpaint_range": [0, float("nan")]},
+        {"inpaint_range": [-1, 1]},
+        {"inpaint_range": [2, 1]},
+        {"inpaint_range": [0, 4]},
+        {"inpaint_range": [0, 1]},
+    ],
+)
+def test_generate_rejects_invalid_optional_controls(client, monkeypatch, overrides):
+    async def fake_generate(prompt, seconds, kind, **options):  # pragma: no cover
+        raise AssertionError("invalid input must not reach generation")
+
+    monkeypatch.setattr(controller.sa3, "generate", fake_generate)
+    response = client.post(
+        "/api/generate",
+        content=json.dumps(generate_request(**overrides)),
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code == 422
+
+
+def test_generate_treats_a_blank_negative_prompt_as_absent(client, monkeypatch):
+    calls = []
+
+    async def fake_generate(prompt, seconds, kind, **options):
+        calls.append(options)
+        return b"RIFFwav"
+
+    monkeypatch.setattr(controller.sa3, "generate", fake_generate)
+    response = client.post(
+        "/api/generate", json=generate_request(negative_prompt="   ")
+    )
+    assert response.status_code == 200
+    assert calls == [{}]
+
+
+@pytest.mark.parametrize(
+    "audio",
+    [
+        b"",
+        b"not a wave",
+        pcm16_wav(sample_rate=48_000),
+        pcm16_wav(channels=3),
+        pcm16_wav(sample_width=1),
+        pcm16_wav(frames=0),
+        pcm16_wav()[:-4],
+    ],
+)
+def test_generate_rejects_unsupported_init_wav(client, monkeypatch, audio):
+    async def fake_generate(prompt, seconds, kind, **options):  # pragma: no cover
+        raise AssertionError("invalid audio must not reach generation")
+
+    monkeypatch.setattr(controller.sa3, "generate", fake_generate)
+    response = client.post(
+        "/api/generate", files=generate_multipart(generate_request(), audio)
+    )
+    assert response.status_code == 422
+
+
+def test_generate_rejects_an_oversized_init_file(client, monkeypatch):
+    monkeypatch.setattr(sa3, "MAX_INIT_AUDIO_BYTES", 48)
+    response = client.post(
+        "/api/generate", files=generate_multipart(generate_request(), pcm16_wav())
+    )
+    assert response.status_code == 413
+
+
+def test_generate_rejects_an_oversized_multipart_body_before_parsing(
+    client, monkeypatch
+):
+    monkeypatch.setattr(controller, "MAX_MULTIPART_BODY_BYTES", 1)
+    response = client.post(
+        "/api/generate", files=generate_multipart(generate_request())
+    )
+    assert response.status_code == 413
+
+
+def test_generate_rejects_oversized_multipart_metadata(client, monkeypatch):
+    monkeypatch.setattr(sa3, "MAX_GENERATE_METADATA_BYTES", 8)
+    response = client.post(
+        "/api/generate", files=generate_multipart(generate_request())
+    )
+    assert response.status_code == 413
+
+
+def test_generate_rejects_an_oversized_json_body(client, monkeypatch):
+    monkeypatch.setattr(sa3, "MAX_GENERATE_METADATA_BYTES", 8)
+    response = client.post("/api/generate", json=generate_request())
+    assert response.status_code == 413
+
+
+def test_generate_bounds_a_chunked_multipart_stream_without_content_length(monkeypatch):
+    monkeypatch.setattr(controller, "MAX_MULTIPART_BODY_BYTES", 5)
+    messages = iter(
+        [
+            {"type": "http.request", "body": b"123", "more_body": True},
+            {"type": "http.request", "body": b"456", "more_body": False},
+        ]
+    )
+
+    async def receive():
+        return next(messages)
+
+    request = controller.Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/generate",
+            "headers": [],
+        },
+        receive,
+    )
+    with pytest.raises(controller.HTTPException) as caught:
+        asyncio.run(controller._bounded_multipart_request(request))
+    assert caught.value.status_code == 413
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        [("request", (None, json.dumps(generate_request())))],
+        [("init_audio", ("source.wav", pcm16_wav(), "audio/wav"))],
+        generate_multipart(
+            generate_request(),
+            extra=[("extra", (None, "surprise"))],
+        ),
+        [
+            ("request", (None, json.dumps(generate_request()))),
+            ("request", (None, json.dumps(generate_request()))),
+            ("init_audio", ("source.wav", pcm16_wav(), "audio/wav")),
+        ],
+    ],
+)
+def test_generate_rejects_bad_multipart_shape(client, files):
+    response = client.post("/api/generate", files=files)
+    assert response.status_code == 422
+
+
+def test_generate_rejects_bad_content_types_and_malformed_bodies(client):
+    unsupported = client.post(
+        "/api/generate", content="hello", headers={"content-type": "text/plain"}
+    )
+    malformed_json = client.post(
+        "/api/generate", content="{", headers={"content-type": "application/json"}
+    )
+    malformed_multipart = client.post(
+        "/api/generate",
+        content="not multipart",
+        headers={"content-type": "multipart/form-data"},
+    )
+    assert unsupported.status_code == 422
+    assert malformed_json.status_code == 422
+    assert malformed_multipart.status_code == 422
 
 
 def test_generate_maps_missing_checkout_to_503(client, monkeypatch):
