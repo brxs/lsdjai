@@ -46,14 +46,14 @@ inside/outside RMS `0.08108330` / `0.00651554` (**12.445x** concentration).
 
 ## Listen
 
-- [ ] **Text baseline:** `text-baseline.wav` is a valid prompt-only generation.
-- [ ] **Audio-to-audio:** `audio-variation.wav` is audibly related to the source
+- [x] **Text baseline:** `text-baseline.wav` is a valid prompt-only generation.
+- [x] **Audio-to-audio:** `audio-variation.wav` is audibly related to the source
       but is not the source and is not the text-only baseline.
-- [ ] **Inpaint:** `inpaint.wav` changes the middle half selected by the default
+- [x] **Inpaint:** `inpaint.wav` changes the middle half selected by the default
       range while the opening and ending remain recognisably the source.
-- [ ] **Negative CFG/APG:** `negative-cfg.wav` audibly steers away from the
+- [x] **Negative CFG/APG:** `negative-cfg.wav` audibly steers away from the
       supplied negative prompt compared with `text-baseline.wav`.
-- [ ] **Seed:** `seed-repeat.wav` sounds identical to `text-baseline.wav`, in
+- [x] **Seed:** `seed-repeat.wav` sounds identical to `text-baseline.wav`, in
       agreement with their byte-identical hashes.
 
 ## Existing app regression
