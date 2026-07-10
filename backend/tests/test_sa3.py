@@ -14,17 +14,20 @@ from lsdj import sa3
 
 FAKE_WAV = b"RIFFfakewavdata"
 
-# Writes the fake WAV to whatever follows --out and records argv beside
-# itself (.venv/bin/argv.txt) so tests can assert the CLI contract.
+# Writes the fake WAV to whatever follows --out and records one argv element per
+# line beside itself (.venv/bin/argv.txt) so tests can assert the exact CLI
+# contract. If init audio is present, copy it before the temporary dir disappears.
 SUCCESS_STUB = """#!/bin/sh
 out=""
 prev=""
+: > "$(dirname "$0")/argv.txt"
 for arg in "$@"; do
     if [ "$prev" = "--out" ]; then out="$arg"; fi
+    if [ "$prev" = "--init-audio" ]; then cp "$arg" "$(dirname "$0")/init.wav"; fi
+    printf '%s\\n' "$arg" >> "$(dirname "$0")/argv.txt"
     prev="$arg"
 done
 printf 'RIFFfakewavdata' > "$out"
-echo "$@" > "$(dirname "$0")/argv.txt"
 """
 
 FAILURE_STUB = """#!/bin/sh
@@ -97,25 +100,71 @@ class TestGenerate:
         wav = asyncio.run(sa3.generate("vinyl spinback", 3.0, "sfx"))
         assert wav == FAKE_WAV
 
-    def test_passes_the_cli_contract(self, checkout):
+    def test_default_cli_argv_is_unchanged(self, checkout):
         mlx_dir = checkout(SUCCESS_STUB)
         asyncio.run(sa3.generate("deep house loop", 7.74, "music"))
-        argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text()
-        assert "--prompt deep house loop" in argv
-        assert "--dit sm-music" in argv
-        assert "--decoder same-s" in argv
-        assert "--seconds 7.74" in argv
-        assert "--steps 8" in argv
+        argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text().splitlines()
+        assert argv[:-1] == [
+            str(mlx_dir / "scripts" / "sa3_mlx.py"),
+            "--prompt",
+            "deep house loop",
+            "--dit",
+            "sm-music",
+            "--decoder",
+            "same-s",
+            "--seconds",
+            "7.74",
+            "--steps",
+            "8",
+            "--out",
+        ]
+        assert pathlib.Path(argv[-1]).name == "out.wav"
+
+    def test_passes_the_full_generation_surface_and_init_bytes(self, checkout):
+        mlx_dir = checkout(SUCCESS_STUB)
+        init_audio = b"RIFFsource-WAVE"
+        asyncio.run(
+            sa3.generate(
+                "warm dub loop",
+                8.0,
+                "music",
+                init_audio=init_audio,
+                init_noise_level=0.6,
+                inpaint_range=(1.25, 2.5),
+                negative_prompt="vocals",
+                cfg=4.5,
+                apg=0.75,
+                seed=12345,
+            )
+        )
+        argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text().splitlines()
+        init_index = argv.index("--init-audio")
+        assert pathlib.Path(argv[init_index + 1]).name == "init.wav"
+        assert argv[init_index + 2 :] == [
+            "--init-noise-level",
+            "0.6",
+            "--inpaint-range",
+            "1.25,2.5",
+            "--negative-prompt",
+            "vocals",
+            "--cfg",
+            "4.5",
+            "--apg",
+            "0.75",
+            "--seed",
+            "12345",
+        ]
+        assert (mlx_dir / ".venv" / "bin" / "init.wav").read_bytes() == init_audio
 
     def test_tracks_run_the_medium_dit_with_its_decoder(self, checkout):
         # M19 (ADR-0013): tracks pair the medium DiT with SAME-L; the
         # pad kinds keep the small DiTs with SAME-S.
         mlx_dir = checkout(SUCCESS_STUB)
         asyncio.run(sa3.generate("late night dub techno", 120.0, "track"))
-        argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text()
-        assert "--dit medium" in argv
-        assert "--decoder same-l" in argv
-        assert "--seconds 120" in argv
+        argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text().splitlines()
+        assert argv[argv.index("--dit") + 1] == "medium"
+        assert argv[argv.index("--decoder") + 1] == "same-l"
+        assert argv[argv.index("--seconds") + 1] == "120"
 
     def test_timeout_scales_with_the_requested_length(self):
         assert sa3.timeout_for(3.0) == sa3.TIMEOUT_SECONDS + 3.0

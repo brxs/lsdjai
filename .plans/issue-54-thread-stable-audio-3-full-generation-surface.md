@@ -16,7 +16,8 @@ status: implementation-ready
 - [x] Verify the currently pinned SA3 CLI flags and defaults.
 - [x] Settle the three product/contract decisions in **Decisions**.
 - [x] Mark this plan implementation-ready.
-- [ ] Implement backend CLI and HTTP plumbing.
+- [x] Implement the SA3 CLI adapter and exact argv/init-file regression tests.
+- [ ] Implement JSON/multipart HTTP parsing and trust-boundary validation.
 - [ ] Add automated and API-level model-loaded verification.
 - [ ] Run the full check suite and complete the API/by-ear checklist.
 

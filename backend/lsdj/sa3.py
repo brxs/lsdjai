@@ -149,7 +149,19 @@ def readiness(env: dict | None = None, home: pathlib.Path | None = None) -> dict
     return {"state": STATE_MISSING, "checkout": None, "mlx_dir": None}
 
 
-async def generate(prompt: str, seconds: float, kind: str) -> bytes:
+async def generate(
+    prompt: str,
+    seconds: float,
+    kind: str,
+    *,
+    init_audio: bytes | None = None,
+    init_noise_level: float | None = None,
+    inpaint_range: tuple[float, float] | None = None,
+    negative_prompt: str | None = None,
+    cfg: float | None = None,
+    apg: float | None = None,
+    seed: int | None = None,
+) -> bytes:
     """Run one generation and return the WAV bytes.
 
     Raises GenerationUnavailable when no checkout resolves and
@@ -162,7 +174,7 @@ async def generate(prompt: str, seconds: float, kind: str) -> bytes:
     async with _generation_lock:
         with tempfile.TemporaryDirectory(prefix="sa3-") as tmp:
             out_path = pathlib.Path(tmp) / "out.wav"
-            process = await asyncio.create_subprocess_exec(
+            argv = [
                 str(mlx_dir / ".venv" / "bin" / "python"),
                 str(mlx_dir / "scripts" / "sa3_mlx.py"),
                 "--prompt",
@@ -177,6 +189,26 @@ async def generate(prompt: str, seconds: float, kind: str) -> bytes:
                 str(SAMPLER_STEPS),
                 "--out",
                 str(out_path),
+            ]
+            if init_audio is not None:
+                init_path = pathlib.Path(tmp) / "init.wav"
+                init_path.write_bytes(init_audio)
+                argv.extend(("--init-audio", str(init_path)))
+            if init_noise_level is not None:
+                argv.extend(("--init-noise-level", f"{init_noise_level:g}"))
+            if inpaint_range is not None:
+                start, end = inpaint_range
+                argv.extend(("--inpaint-range", f"{start:g},{end:g}"))
+            if negative_prompt is not None:
+                argv.extend(("--negative-prompt", negative_prompt))
+            if cfg is not None:
+                argv.extend(("--cfg", f"{cfg:g}"))
+            if apg is not None:
+                argv.extend(("--apg", f"{apg:g}"))
+            if seed is not None:
+                argv.extend(("--seed", str(seed)))
+            process = await asyncio.create_subprocess_exec(
+                *argv,
                 cwd=mlx_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
