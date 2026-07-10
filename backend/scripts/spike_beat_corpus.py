@@ -281,16 +281,11 @@ def reference_tempo(path: Path) -> float:
     return round(float(np.atleast_1d(tempo)[0]), 1)
 
 
-def proposed_targets(expect: str, scenario: str) -> dict[str, str | int | float | None]:
-    """Issue-77 targets derived from the frozen shipping baseline.
-
-    They remain non-enforcing until the owner approves Phase 2. The Rust
-    harness recognises `proposed` versus `approved` explicitly, so committing
-    the measurement checkpoint never hides a red target behind a skipped test.
-    """
+def approved_targets(expect: str, scenario: str) -> dict[str, str | int | float | None]:
+    """Owner-approved issue-77 targets derived from the frozen baseline."""
 
     return {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": 10.0 if expect == "rhythmic" else None,
         "max_recovery_seconds": 8.0 if scenario == "tempo_change" else None,
         "max_wrong_display_seconds": 1 if scenario == "tempo_change" else 0,
@@ -318,7 +313,7 @@ def entry_for_style(style: Style, path: Path, bpm: float) -> dict[str, Any]:
                 "librosa_bpm": bpm,
             }
         ],
-        "targets": proposed_targets(style.expect, "steady"),
+        "targets": approved_targets(style.expect, "steady"),
         "recipe": {
             "kind": "mrt2_generate",
             "frames": GENERATION_FRAMES,
@@ -365,7 +360,7 @@ def entry_for_scenario(
         **metadata,
         "sha256": sha256(path),
         "segments": segments,
-        "targets": proposed_targets("rhythmic", scenario["kind"]),
+        "targets": approved_targets("rhythmic", scenario["kind"]),
         "recipe": {
             "kind": "pcm_concatenate",
             "boundary": "hard",

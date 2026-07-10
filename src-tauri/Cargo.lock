@@ -2462,6 +2462,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rmcp",
  "rubato",
+ "rustfft",
  "schemars 1.2.1",
  "serde",
  "serde_json",

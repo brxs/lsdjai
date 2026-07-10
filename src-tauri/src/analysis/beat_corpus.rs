@@ -1,15 +1,13 @@
-//! Issue 77's corpus measurement: replay the shipping tracker/gate at the live
-//! cadence and report correctness, acquisition, and tempo-change recovery.
-//!
-//! This stays test-only so `hound` remains a dev dependency. The runner uses
-//! the real [`BeatTracker`] and [`BeatGate`], never a measurement-only clone.
+//! Issue 77's corpus contract: replay the shipping adaptive tracker/gate at
+//! the live cadence and enforce correctness, acquisition, and recovery targets.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use serde::Deserialize;
 
-use super::beat::{BeatEstimate, BeatGate, BeatTracker, GATE_MIN_CONFIDENCE};
+use super::beat::{AdaptiveBeatTracker, BeatEstimate, BeatGate, GATE_MIN_CONFIDENCE};
 
 const CORPUS_SCHEMA_VERSION: u32 = 2;
 const STREAM_CHUNK_SECONDS: f64 = 0.04;
@@ -42,7 +40,7 @@ struct Entry {
     segments: Vec<Segment>,
     rhythm_onset_seconds: Option<f64>,
     change_at_seconds: Option<f64>,
-    targets: Option<Targets>,
+    targets: Targets,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +85,15 @@ struct Summary {
 
 fn corpus_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend/spike_corpus")
+}
+
+fn read_manifest() -> Manifest {
+    let path = corpus_dir().join("manifest.json");
+    serde_json::from_str(
+        &std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{}: {error}; run `git lfs pull`", path.display())),
+    )
+    .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
 /// Interleaved stereo f32 from a PCM16 WAV — the live deck wire shape. Mono is
@@ -136,7 +143,7 @@ fn metrically_matches(estimate: f64, reference: f64) -> bool {
 
 /// A tick at exactly a scenario boundary has heard audio only up to that
 /// boundary, so it belongs to the segment that just ended. The next tick is
-/// the first one that has actually consumed the new segment.
+/// the first one that has consumed the new segment.
 fn segment_at(entry: &Entry, elapsed_seconds: f64) -> &Segment {
     entry
         .segments
@@ -166,8 +173,8 @@ fn summarize(entry: &Entry, observations: &[Observation]) -> Summary {
     let mut recovery_seconds = None;
     let mut confidence_min: Option<f64> = None;
     let mut confidence_max: Option<f64> = None;
-
     let onset = entry.rhythm_onset_seconds.unwrap_or(0.0);
+
     for observation in observations {
         let segment = segment_at(entry, observation.elapsed_seconds);
         if let Some(estimate) = observation.estimate {
@@ -186,8 +193,7 @@ fn summarize(entry: &Entry, observations: &[Observation]) -> Summary {
                 }
                 if let Some(change) = entry.change_at_seconds {
                     if observation.elapsed_seconds > change {
-                        raw_recovery_seconds
-                            .get_or_insert(observation.elapsed_seconds - change);
+                        raw_recovery_seconds.get_or_insert(observation.elapsed_seconds - change);
                     }
                 }
             }
@@ -220,18 +226,20 @@ fn summarize(entry: &Entry, observations: &[Observation]) -> Summary {
         first_correct_display_seconds,
         time_to_first_correct_display_seconds: first_correct_display_seconds
             .map(|seconds| seconds - onset),
-        time_to_first_correct_confident_estimate_seconds:
-            first_correct_confident_estimate_seconds.map(|seconds| seconds - onset),
+        time_to_first_correct_confident_estimate_seconds: first_correct_confident_estimate_seconds
+            .map(|seconds| seconds - onset),
         raw_recovery_seconds,
         recovery_seconds,
         confidence_min,
         confidence_max,
-        final_bpm: observations.last().and_then(|observation| observation.displayed),
+        final_bpm: observations
+            .last()
+            .and_then(|observation| observation.displayed),
     }
 }
 
 fn replay(entry: &Entry, sample_rate: f64, samples: &[f32]) -> Vec<Observation> {
-    let mut tracker = BeatTracker::new(sample_rate);
+    let mut tracker = AdaptiveBeatTracker::new(sample_rate);
     let mut gate = BeatGate::new();
     let chunk_samples = (STREAM_CHUNK_SECONDS * sample_rate).round() as usize * 2;
     let per_second_samples = sample_rate.round() as usize * 2;
@@ -246,11 +254,11 @@ fn replay(entry: &Entry, sample_rate: f64, samples: &[f32]) -> Vec<Observation> 
         while since_estimate >= per_second_samples {
             since_estimate -= per_second_samples;
             elapsed_seconds += 1;
-            let estimate = tracker.estimate();
+            let reading = tracker.estimate();
             observations.push(Observation {
                 elapsed_seconds: f64::from(elapsed_seconds),
-                estimate,
-                displayed: gate.push(estimate),
+                estimate: reading.estimate,
+                displayed: gate.push_adaptive(reading),
             });
         }
         start = end;
@@ -309,19 +317,12 @@ fn assert_legacy(entry: &Entry, observations: &[Observation], summary: &Summary)
 }
 
 fn assert_targets(entry: &Entry, summary: &Summary) {
-    let Some(targets) = &entry.targets else {
-        return;
-    };
-    assert!(
-        matches!(targets.status.as_str(), "proposed" | "approved"),
-        "{}: invalid target status {}",
-        entry.file,
-        targets.status
+    assert_eq!(
+        entry.targets.status, "approved",
+        "{}: targets must be owner-approved before shipping",
+        entry.file
     );
-    if targets.status == "proposed" {
-        return;
-    }
-    if let Some(limit) = targets.max_first_correct_display_seconds {
+    if let Some(limit) = entry.targets.max_first_correct_display_seconds {
         let actual = summary
             .time_to_first_correct_display_seconds
             .unwrap_or(f64::INFINITY);
@@ -331,7 +332,7 @@ fn assert_targets(entry: &Entry, summary: &Summary) {
             entry.file
         );
     }
-    if let Some(limit) = targets.max_recovery_seconds {
+    if let Some(limit) = entry.targets.max_recovery_seconds {
         let actual = summary.recovery_seconds.unwrap_or(f64::INFINITY);
         assert!(
             actual <= limit,
@@ -339,7 +340,7 @@ fn assert_targets(entry: &Entry, summary: &Summary) {
             entry.file
         );
     }
-    if let Some(limit) = targets.max_wrong_display_seconds {
+    if let Some(limit) = entry.targets.max_wrong_display_seconds {
         assert!(
             summary.wrong_display_seconds <= limit,
             "{}: wrong display {}s exceeds {limit}s",
@@ -360,7 +361,11 @@ fn validate_coverage(manifest: &Manifest) {
     let mut short_intros = 0;
     let mut tempo_changes = 0;
     for entry in &manifest.entries {
-        assert!(slugs.insert(entry.slug.as_str()), "duplicate slug {}", entry.slug);
+        assert!(
+            slugs.insert(entry.slug.as_str()),
+            "duplicate slug {}",
+            entry.slug
+        );
         if entry.tier == "expanded" && entry.scenario == "steady" {
             *family_counts.entry(entry.family.as_str()).or_default() += 1;
         }
@@ -368,7 +373,12 @@ fn validate_coverage(manifest: &Manifest) {
             short_intros += 1;
         } else if entry.scenario == "tempo_change" {
             tempo_changes += 1;
-            assert_eq!(entry.segments.len(), 2, "{}: change needs two segments", entry.file);
+            assert_eq!(
+                entry.segments.len(),
+                2,
+                "{}: change needs two segments",
+                entry.file
+            );
             let first = entry.segments[0].librosa_bpm;
             let second = entry.segments[1].librosa_bpm;
             assert!(
@@ -396,14 +406,15 @@ fn validate_coverage(manifest: &Manifest) {
 }
 
 #[test]
-fn the_expanded_spike_corpus_reports_shipping_metrics() {
-    let path = corpus_dir().join("manifest.json");
-    let manifest: Manifest = serde_json::from_str(
-        &std::fs::read_to_string(&path)
-            .unwrap_or_else(|error| panic!("{}: {error}; run `git lfs pull`", path.display())),
-    )
-    .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+fn the_expanded_spike_corpus_meets_approved_targets() {
+    let manifest = read_manifest();
     validate_coverage(&manifest);
+    let started = Instant::now();
+    let total_audio_seconds: f64 = manifest
+        .entries
+        .iter()
+        .map(|entry| entry.duration_seconds)
+        .sum();
 
     println!(
         "{:<30} {:<12} {:<13} {:<7} {:<12} {:<6} {:<7} {:<7} {:<7} {:<7} {:<11}",
@@ -420,8 +431,7 @@ fn the_expanded_spike_corpus_reports_shipping_metrics() {
         "confidence"
     );
     for entry in &manifest.entries {
-        let wav_path = corpus_dir().join(&entry.file);
-        let (sample_rate, samples) = read_wav(&wav_path);
+        let (sample_rate, samples) = read_wav(&corpus_dir().join(&entry.file));
         let observations = replay(entry, sample_rate, &samples);
         let summary = summarize(entry, &observations);
         let confidence = match (summary.confidence_min, summary.confidence_max) {
@@ -446,6 +456,11 @@ fn the_expanded_spike_corpus_reports_shipping_metrics() {
         assert_legacy(entry, &observations, &summary);
         assert_targets(entry, &summary);
     }
+    let elapsed = started.elapsed().as_secs_f64();
+    println!(
+        "processed {total_audio_seconds:.0}s in {elapsed:.3}s ({:.0}x realtime)",
+        total_audio_seconds / elapsed
+    );
 }
 
 #[cfg(test)]
@@ -456,6 +471,7 @@ mod metric_tests {
         Some(BeatEstimate {
             bpm,
             confidence,
+            onset_impulsiveness: f64::INFINITY,
             anchor_frame: None,
         })
     }
@@ -472,7 +488,12 @@ mod metric_tests {
             rhythm_onset_seconds: (scenario == "short_intro").then_some(2.0),
             change_at_seconds: (scenario == "tempo_change").then_some(3.0),
             segments,
-            targets: None,
+            targets: Targets {
+                status: "approved".into(),
+                max_first_correct_display_seconds: None,
+                max_recovery_seconds: None,
+                max_wrong_display_seconds: None,
+            },
         }
     }
 
@@ -532,7 +553,7 @@ mod metric_tests {
     }
 
     #[test]
-    fn tempo_change_recovery_starts_after_the_boundary_and_counts_stale_display() {
+    fn tempo_change_recovery_counts_stale_display() {
         let entry = entry(
             "tempo_change",
             vec![

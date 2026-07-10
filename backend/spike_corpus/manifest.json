@@ -48,7 +48,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": 10.0,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -81,7 +81,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": 10.0,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -114,7 +114,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": 10.0,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -147,7 +147,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": 10.0,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -180,7 +180,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": 10.0,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -213,7 +213,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": 10.0,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -246,7 +246,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": null,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -279,7 +279,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": null,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -312,7 +312,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": null,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -345,7 +345,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": null,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -378,7 +378,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": 10.0,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -411,7 +411,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": 10.0,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -444,7 +444,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": 10.0,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -477,7 +477,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": 10.0,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -510,7 +510,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": 10.0,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -543,7 +543,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": 10.0,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -582,7 +582,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": 10.0,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -634,7 +634,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": 10.0,
         "max_recovery_seconds": null,
         "max_wrong_display_seconds": 0
@@ -686,7 +686,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": 10.0,
         "max_recovery_seconds": 8.0,
         "max_wrong_display_seconds": 1
@@ -738,7 +738,7 @@
         }
       ],
       "targets": {
-        "status": "proposed",
+        "status": "approved",
         "max_first_correct_display_seconds": 10.0,
         "max_recovery_seconds": 8.0,
         "max_wrong_display_seconds": 1

@@ -18,7 +18,7 @@ use lsdj_engine::host::Host;
 use lsdj_engine::{DECK_COUNT, SAMPLE_RATE};
 use tauri::{AppHandle, Manager};
 
-use super::beat::{AnchorGate, BeatGate, BeatTracker};
+use super::beat::{AdaptiveBeatTracker, AnchorGate, BeatGate};
 use crate::store::{AnalysisSnap, InterfaceStore, LiveBeatSnap};
 
 /// One estimate through the gate per second of PUSHED audio — the corpus
@@ -54,7 +54,7 @@ enum Msg {
 /// the thread so the cadence, gating, and reset semantics unit-test without
 /// Tauri (the store/engine publishing is the thread's few lines).
 pub struct DeckAnalysis {
-    tracker: BeatTracker,
+    tracker: AdaptiveBeatTracker,
     gate: BeatGate,
     anchors: AnchorGate,
     origin_frames: f64,
@@ -64,7 +64,7 @@ pub struct DeckAnalysis {
 impl DeckAnalysis {
     pub fn new() -> Self {
         DeckAnalysis {
-            tracker: BeatTracker::new(SAMPLE_RATE as f64),
+            tracker: AdaptiveBeatTracker::new(SAMPLE_RATE as f64),
             gate: BeatGate::new(),
             anchors: AnchorGate::new(SAMPLE_RATE as f64),
             origin_frames: 0.0,
@@ -80,8 +80,9 @@ impl DeckAnalysis {
         let mut out = Vec::new();
         while self.since_estimate >= ESTIMATE_FRAMES {
             self.since_estimate -= ESTIMATE_FRAMES;
-            let estimate = self.tracker.estimate();
-            let displayed = self.gate.push(estimate);
+            let reading = self.tracker.estimate();
+            let estimate = reading.estimate;
+            let displayed = self.gate.push_adaptive(reading);
             let live = self
                 .anchors
                 .push(displayed, estimate.and_then(|e| e.anchor_frame));
@@ -253,7 +254,12 @@ mod tests {
 
     /// Feed `seconds` of a click train in ~1 s wire chunks (the worker's
     /// pacing), collecting every published snapshot.
-    fn feed_clicks(state: &mut DeckAnalysis, bpm: f64, seconds: usize, seed: u32) -> Vec<AnalysisSnap> {
+    fn feed_clicks(
+        state: &mut DeckAnalysis,
+        bpm: f64,
+        seconds: usize,
+        seed: u32,
+    ) -> Vec<AnalysisSnap> {
         let samples = click_track(bpm, seconds as f64, SR, seed);
         let chunk = SAMPLE_RATE as usize * 2;
         let mut snaps = Vec::new();
