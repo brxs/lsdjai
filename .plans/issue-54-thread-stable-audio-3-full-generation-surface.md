@@ -4,7 +4,7 @@ url: https://github.com/brxs/lsdjai/issues/54
 title: "Thread Stable Audio 3's full generation surface through the pipeline"
 date: 2026-07-10
 baseline: 76466aa
-status: implementation-in-progress
+status: implementation-complete-pending-human-verification
 ---
 
 # Plan: Thread Stable Audio 3's full generation surface (#54)
@@ -21,7 +21,11 @@ status: implementation-in-progress
 - [x] Add automated and API-level model-loaded verification.
 - [x] Run the model-loaded verifier through JSON and multipart; machine verdict
   passes (fixed seed exact, inpaint concentration 12.445x).
-- [ ] Run the full check suite and complete the API/by-ear checklist.
+- [x] Run `just check` after final hardening: 174 backend, 572 frontend, and
+  308 Rust tests pass; Ruff, ESLint, TypeScript, Clippy, and format gates pass.
+- [x] Run `npx tsc -p tsconfig.app.json --noEmit` from `frontend/`.
+- [ ] Complete the listening and unchanged-app regression sections in
+  `docs/issue-54-checklist.md`.
 
 ## Problem
 
