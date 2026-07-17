@@ -18,6 +18,14 @@ vi.mock('../audio/nativeEngine', async (importOriginal) => {
 })
 vi.mock('../audio/interfaceStore', () => ({ useInterfaceStore: vi.fn(() => null) }))
 
+// The installed-adapter list (issue #66) is stubbed per test; the default is
+// none, which hides the LoRA pickers entirely.
+const useLorasMock = vi.fn<() => import('../audio/nativeEngine').LoraAdapter[]>(() => [])
+vi.mock('../models/useLoras', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../models/useLoras')>()
+  return { ...original, useLoras: () => useLorasMock() }
+})
+
 type Handlers = {
   onLoadPreset?: (deck: DeckId, preset: StylePreset) => void
   onLoadTrack?: (deck: DeckId, source: TrackSource, title: string) => Promise<boolean>
@@ -99,6 +107,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.mocked(useInterfaceStore).mockReturnValue(null)
   vi.mocked(togglePianoWindow).mockClear()
+  useLorasMock.mockReturnValue([])
 })
 
 describe('MediaExplorer', () => {
@@ -204,6 +213,53 @@ describe('MediaExplorer', () => {
         .getAllByText('Track (SA3 medium)')
         .some((element) => element.classList.contains('media__meta')),
     ).toBe(true)
+  })
+
+  it('rides the chosen LoRA adapter + strength on a track compose (issue #66)', async () => {
+    useLorasMock.mockReturnValue([
+      {
+        name: 'medium/maqam',
+        base: 'medium',
+        slug: 'maqam',
+        sizeBytes: 200_000_000,
+        source: null,
+        adapterType: 'lora',
+        rank: 64,
+      },
+      // Small adapters never reach the track picker (tracks ride medium).
+      {
+        name: 'small/crackle',
+        base: 'small',
+        slug: 'crackle',
+        sizeBytes: 50_000_000,
+        source: null,
+        adapterType: 'lora',
+        rank: 8,
+      },
+    ])
+    const fetchMock = stubFetch()
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    const picker = screen.getByLabelText('LoRA')
+    expect(
+      Array.from(picker.querySelectorAll('option')).map((option) => option.value),
+    ).toEqual(['none', 'medium/maqam'])
+    fireEvent.change(picker, { target: { value: 'medium/maqam' } })
+    fireEvent.change(screen.getByLabelText('Strength'), {
+      target: { value: '1.5' },
+    })
+    await composeTrack('maqam study')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/generate',
+      expect.objectContaining({
+        body: JSON.stringify({
+          prompt: 'maqam study',
+          seconds: 120,
+          kind: 'track',
+          lora: { name: 'medium/maqam', strength: 1.5 },
+        }),
+      }),
+    )
   })
 
   it('previews a take in the headphones and toggles it off', async () => {

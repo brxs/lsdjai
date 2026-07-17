@@ -976,6 +976,26 @@ describe('useDeck generated pads', () => {
     expect(result.current.loop.active).toBeNull()
   })
 
+  it('rides a LoRA adapter + strength on an SA3 pad generation (issue #66)', async () => {
+    const fetchMock = stubFetchOk()
+    const { engine } = makeFakeEngine()
+    const { result } = await playingDeck(engine)
+
+    act(() =>
+      result.current.generateToPad('oud phrase', 'sfx', true, {
+        name: 'small/maqam',
+        strength: 0.75,
+      }),
+    )
+    await act(async () => {})
+    expect(requestBody(fetchMock)).toEqual({
+      prompt: 'oud phrase',
+      seconds: 4,
+      kind: 'sfx',
+      lora: { name: 'small/maqam', strength: 0.75 },
+    })
+  })
+
   it('auto-saves a generated pad to the samples library (raw WAV + metadata)', async () => {
     stubFetchOk()
     const { engine, channel } = makeFakeEngine()

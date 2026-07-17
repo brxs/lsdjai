@@ -45,6 +45,12 @@ import {
   type SyncResult,
   type TrackState,
 } from './useDeck'
+import {
+  adaptersForKind,
+  LORA_STRENGTHS,
+  useLoras,
+  type LoraChoice,
+} from '../models/useLoras'
 import './deck.css'
 
 // The worker holds ~3s of lead (see backend worker pacing); the meter shows
@@ -124,7 +130,12 @@ type DeckColumnProps = {
   onSetLoopSeconds: (seconds: number) => void
   /** Generated pads (M18): fill the first empty slot from a prompt,
    * with the chosen engine and one-shot/loop behaviour. */
-  onGenerateToPad: (prompt: string, engine: GenerateEngine, oneShot: boolean) => void
+  onGenerateToPad: (
+    prompt: string,
+    engine: GenerateEngine,
+    oneShot: boolean,
+    lora?: LoraChoice | null,
+  ) => void
   generateError: string | null
   /** Gated tempo readout (M14): null shows an honest dash. */
   bpm: number | null
@@ -268,6 +279,11 @@ export function DeckColumn({
   } | null>(null)
   const [generateEngine, setGenerateEngine] = useState<GenerateEngine>('sfx')
   const [generateOneShot, setGenerateOneShot] = useState(true)
+  // Per-deck LoRA choice (issue #66): both pad kinds ride the small DiTs, so
+  // one picker covers them; Magenta has no adapter path and hides it.
+  const loras = useLoras()
+  const [generateLora, setGenerateLora] = useState('none')
+  const [generateLoraStrength, setGenerateLoraStrength] = useState(1)
   const [targetDraft, setTargetDraft] = useState('')
   // In-place prompt editing: which row is open and its draft text.
   const [editing, setEditing] = useState<{ text: string; draft: string } | null>(
@@ -296,9 +312,19 @@ export function DeckColumn({
     connected &&
     Boolean(generateDraft.trim()) &&
     loop.slots.some((slot) => slot.state === 'empty')
+  // Pads only ever ride the small DiTs; a stale choice (deleted adapter)
+  // displays — and requests — as none.
+  const padAdapters = adaptersForKind(loras, 'sfx')
+  const padLora = padAdapters.some((adapter) => adapter.name === generateLora)
+    ? generateLora
+    : 'none'
   const fireGenerate = () => {
     if (!canGenerate) return
-    onGenerateToPad(generateDraft, generateEngine, generateOneShot)
+    const lora =
+      generateEngine === 'magenta' || padLora === 'none'
+        ? null
+        : { name: padLora, strength: generateLoraStrength }
+    onGenerateToPad(generateDraft, generateEngine, generateOneShot, lora)
   }
   const statusKey =
     mode === 'playback'
@@ -915,6 +941,31 @@ export function DeckColumn({
             ]}
             onChange={(value) => setGenerateOneShot(value === 'oneshot')}
           />
+          {generateEngine !== 'magenta' && padAdapters.length > 0 && (
+            <Select
+              label={t('deck.generate.lora')}
+              value={padLora}
+              options={[
+                { value: 'none', label: t('media.generate.loraNone') },
+                ...padAdapters.map((adapter) => ({
+                  value: adapter.name,
+                  label: adapter.slug,
+                })),
+              ]}
+              onChange={setGenerateLora}
+            />
+          )}
+          {generateEngine !== 'magenta' && padLora !== 'none' && (
+            <Select
+              label={t('media.generate.loraStrength')}
+              value={String(generateLoraStrength)}
+              options={LORA_STRENGTHS.map((value) => ({
+                value: String(value),
+                label: t('media.generate.loraStrengthValue', { value }),
+              }))}
+              onChange={(value) => setGenerateLoraStrength(Number(value))}
+            />
+          )}
         </div>
         <div className="deck__generate-row">
           <div className="deck__generate-prompt">

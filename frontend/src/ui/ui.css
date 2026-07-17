@@ -1235,6 +1235,18 @@
   font-size: var(--text-xs);
   margin-top: var(--space-1);
 }
+/* The LoRA import controls (issue #66): repo field + base + actions in one row,
+   matching the adapter rows above. */
+.modelmgr__import {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+.modelmgr__import-repo {
+  flex: 1;
+  min-width: 0;
+}
 .modelmgr__empty {
   color: var(--color-text-muted);
   font-size: var(--text-s);

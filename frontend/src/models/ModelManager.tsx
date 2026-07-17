@@ -3,14 +3,20 @@ import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '../ui/Button'
+import { Select } from '../ui/Select'
+import { TextField } from '../ui/TextField'
 import {
   cancelInstall,
+  deleteLora,
+  installLora,
   installModel,
+  invoke,
   modelStatus,
   openModelFolder,
   subscribeModelProgress,
   subscribeModelsChanged,
   updateModel,
+  type LoraBase,
   type ModelFamily,
   type ModelProgress,
   type ModelStatus,
@@ -34,6 +40,10 @@ export function ModelManager() {
   const [status, setStatus] = useState<ModelStatus | null>(null)
   const [progress, setProgress] = useState<ModelProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // The LoRA import controls (issue #66): a HuggingFace repo id draft and the
+  // base override ('auto' = infer from the adapter's shapes, the normal case).
+  const [loraRepo, setLoraRepo] = useState('')
+  const [loraBase, setLoraBase] = useState<'auto' | LoraBase>('auto')
 
   const refresh = useCallback(() => {
     modelStatus().then(setStatus).catch(() => {})
@@ -82,6 +92,43 @@ export function ModelManager() {
     })
   }, [])
 
+  const onInstallLora = useCallback(
+    (source: { hfRepo: string } | { path: string }, name: string) => {
+      setError(null)
+      // The display name mirrors the Rust spec's display_name (the progress
+      // event key), so the pending label shows before the first event lands.
+      setProgress({ family: 'lora', name, stage: 'fetch', message: null, file: null })
+      installLora(source, loraBase === 'auto' ? undefined : loraBase).catch((e: unknown) => {
+        setProgress(null)
+        setError(String(e))
+      })
+    },
+    [loraBase],
+  )
+
+  const onImportLoraFile = useCallback(() => {
+    void (async () => {
+      // The native file picker (dialog plugin) — WKWebView has no File System
+      // Access API. Only .safetensors is offered (ADR-0028's trust boundary;
+      // the shell refuses anything else anyway).
+      const path = await invoke<string | null>('plugin:dialog|open', {
+        options: {
+          multiple: false,
+          filters: [{ name: t('modelManager.loraFileFilter'), extensions: ['safetensors'] }],
+        },
+      }).catch(() => null)
+      if (!path) return // the user dismissed the picker
+      const name = path.replace(/\/+$/, '').split('/').pop() || path
+      onInstallLora({ path }, name)
+    })()
+  }, [onInstallLora, t])
+
+  const onDeleteLora = useCallback((name: string) => {
+    setError(null)
+    // The follow-up `models://changed` refreshes the list.
+    deleteLora(name).catch((e: unknown) => setError(String(e)))
+  }, [])
+
   if (!status) {
     return <p className="modelmgr__empty">{t('modelManager.loading')}</p>
   }
@@ -109,6 +156,15 @@ export function ModelManager() {
   const sa3Present = sa3.state !== 'missing'
   const sa3Ready = sa3.state === 'ready'
   const sa3Label = installLabel('sa3', '')
+  // The in-flight LoRA import's label, keyed by the display name the spec
+  // derives (the repo id or file name) — live event or status snapshot.
+  const loraLabel =
+    progress?.family === 'lora'
+      ? progressLabel(progress)
+      : snapshot?.family === 'lora'
+        ? t('modelManager.installing')
+        : null
+  const loraRepoDraft = loraRepo.trim()
 
   // Cancel while this row's install is in flight (label set), else its primary
   // action (Install / Repair, or nothing).
@@ -214,6 +270,76 @@ export function ModelManager() {
             )}
           </div>
         </div>
+      </section>
+
+      <section className="modelmgr__section">
+        <div className="modelmgr__section-head">
+          <h4 className="modelmgr__subheading">{t('modelManager.loras')}</h4>
+          <Button onClick={() => openModelFolder('lora')}>{t('modelManager.openFolder')}</Button>
+        </div>
+        {status.loras.length === 0 && (
+          <p className="modelmgr__empty">{t('modelManager.loraNone')}</p>
+        )}
+        {status.loras.map((adapter) => (
+          <div className="modelmgr__row" key={adapter.name}>
+            <div className="modelmgr__row-main">
+              <div className="modelmgr__name">{adapter.slug}</div>
+              <div className="modelmgr__meta">
+                {t(`modelManager.loraBase.${adapter.base}`)}
+                {` · ${formatBytes(adapter.sizeBytes)}`}
+              </div>
+            </div>
+            <div className="modelmgr__actions">
+              <Button
+                aria-label={t('modelManager.loraDelete', { name: adapter.slug })}
+                onClick={() => onDeleteLora(adapter.name)}
+              >
+                ✕
+              </Button>
+            </div>
+          </div>
+        ))}
+        <div className="modelmgr__import">
+          <div className="modelmgr__import-repo">
+            <TextField
+              label={t('modelManager.loraRepo')}
+              value={loraRepo}
+              placeholder={t('modelManager.loraRepoPlaceholder')}
+              onChange={(event) => setLoraRepo(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && loraRepoDraft && !isInstalling) {
+                  onInstallLora({ hfRepo: loraRepoDraft }, loraRepoDraft)
+                }
+              }}
+            />
+          </div>
+          <Select
+            label={t('modelManager.loraBaseLabel')}
+            value={loraBase}
+            options={[
+              { value: 'auto', label: t('modelManager.loraBaseAuto') },
+              { value: 'small', label: t('modelManager.loraBase.small') },
+              { value: 'medium', label: t('modelManager.loraBase.medium') },
+            ]}
+            onChange={(value) => setLoraBase(value as 'auto' | LoraBase)}
+          />
+          {installAction(
+            loraLabel,
+            <>
+              <Button
+                variant="primary"
+                disabled={!loraRepoDraft || isInstalling}
+                onClick={() => onInstallLora({ hfRepo: loraRepoDraft }, loraRepoDraft)}
+              >
+                {t('modelManager.install')}
+              </Button>
+              <Button disabled={isInstalling} onClick={onImportLoraFile}>
+                {t('modelManager.loraImportFile')}
+              </Button>
+            </>,
+          )}
+        </div>
+        {loraLabel && <div className="modelmgr__progress">{loraLabel}</div>}
       </section>
     </div>
   )
