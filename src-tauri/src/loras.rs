@@ -417,12 +417,8 @@ impl ImportSpec {
             }
         }
         match (self.hf_repo.as_deref(), self.path.as_deref()) {
-            (Some(repo), None) => {
-                if !valid_hf_repo(repo) {
-                    return Err(format!("'{repo}' is not a HuggingFace repo id"));
-                }
-                Ok(repo.to_string())
-            }
+            (Some(repo), None) => normalize_hf_repo(repo)
+                .ok_or_else(|| format!("'{repo}' is not a HuggingFace repo id")),
             (None, Some(path)) => Ok(Path::new(path)
                 .file_name()
                 .unwrap_or_default()
@@ -440,6 +436,29 @@ fn valid_hf_repo(repo: &str) -> bool {
         Some((owner, name)) => valid_slug(owner) && valid_slug(name),
         None => false,
     }
+}
+
+/// Accept what people actually paste as a repo: a bare `owner/name` id or a
+/// full huggingface.co URL (scheme/host, a `/tree/…` suffix, query, fragment).
+/// Returns the canonical id, or `None` when no valid id is inside.
+fn normalize_hf_repo(input: &str) -> Option<String> {
+    let mut rest = input.trim();
+    for prefix in ["https://", "http://"] {
+        if let Some(stripped) = rest.strip_prefix(prefix) {
+            rest = stripped;
+            break;
+        }
+    }
+    for host in ["www.huggingface.co/", "huggingface.co/", "hf.co/"] {
+        if let Some(stripped) = rest.strip_prefix(host) {
+            rest = stripped;
+            break;
+        }
+    }
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    let mut segments = rest.split('/').filter(|segment| !segment.is_empty());
+    let repo = format!("{}/{}", segments.next()?, segments.next()?);
+    valid_hf_repo(&repo).then_some(repo)
 }
 
 /// A registry slug derived from a repo/file name: invalid characters become
@@ -530,7 +549,11 @@ pub(crate) fn install(
     spec: &ImportSpec,
 ) -> Result<(), String> {
     let staged = match (spec.hf_repo.as_deref(), spec.path.as_deref()) {
-        (Some(repo), None) => fetch_hf_adapter(progress, shared, repo)?,
+        (Some(repo), None) => {
+            let repo = normalize_hf_repo(repo)
+                .ok_or_else(|| format!("'{repo}' is not a HuggingFace repo id"))?;
+            fetch_hf_adapter(progress, shared, &repo)?
+        }
         (None, Some(path)) => stage_local_adapter(Path::new(path))?,
         _ => return Err("exactly one of a HuggingFace repo or a local path is required".into()),
     };
@@ -997,6 +1020,40 @@ mod tests {
         ] {
             assert!(!valid_hf_repo(hostile), "accepted {hostile:?}");
         }
+    }
+
+    #[test]
+    fn pasted_repo_forms_normalize_to_the_canonical_id() {
+        let id = "motiftechnologies/stable-audio-3-maqam-lora";
+        let pasted_forms = [
+            id.to_string(),
+            format!("  {id}  "),
+            format!("https://huggingface.co/{id}"),
+            format!("https://huggingface.co/{id}/"),
+            format!("https://huggingface.co/{id}/tree/main"),
+            format!("https://huggingface.co/{id}?not-for-all-audiences=true"),
+            format!("http://www.huggingface.co/{id}#model-card"),
+            format!("hf.co/{id}"),
+            format!("huggingface.co/{id}"),
+        ];
+        for pasted in &pasted_forms {
+            assert_eq!(
+                normalize_hf_repo(pasted).as_deref(),
+                Some(id),
+                "failed to normalize {pasted:?}"
+            );
+        }
+        for rejected in ["", "no-slash", "https://huggingface.co", "a/../b"] {
+            assert_eq!(normalize_hf_repo(rejected), None, "accepted {rejected:?}");
+        }
+        // A foreign URL degrades to its first two path-ish segments — a
+        // nonexistent HF repo id that 404s at huggingface.co. The id can never
+        // route a request to the foreign host (the API/resolve URLs are built
+        // on our own base), so this is harmless, not a smuggling vector.
+        assert_eq!(
+            normalize_hf_repo("https://evil.example/a/b?x").as_deref(),
+            Some("evil.example/a")
+        );
     }
 
     #[test]

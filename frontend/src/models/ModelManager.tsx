@@ -22,6 +22,21 @@ import {
   type ModelStatus,
 } from '../audio/nativeEngine'
 
+/** Accept what people actually paste as a repo: a bare `owner/name` id or a
+ * full huggingface.co URL (scheme/host, a /tree/… suffix, query, fragment).
+ * Best-effort — anything without a recognisable id inside passes through
+ * unchanged and the shell's validation names the problem. Mirrors the Rust
+ * `loras::normalize_hf_repo`. */
+function normalizeHfRepo(input: string): string {
+  const rest = input
+    .trim()
+    .replace(/^https?:\/\//, '')
+    .replace(/^(www\.)?(huggingface\.co|hf\.co)\//, '')
+    .split(/[?#]/)[0]
+  const segments = rest.split('/').filter(Boolean)
+  return segments.length >= 2 ? `${segments[0]}/${segments[1]}` : input.trim()
+}
+
 function formatBytes(bytes: number): string {
   if (bytes <= 0) return '0 MB'
   const gb = bytes / 1e9
@@ -164,7 +179,7 @@ export function ModelManager() {
       : snapshot?.family === 'lora'
         ? t('modelManager.installing')
         : null
-  const loraRepoDraft = loraRepo.trim()
+  const loraRepoDraft = normalizeHfRepo(loraRepo)
 
   // Cancel while this row's install is in flight (label set), else its primary
   // action (Install / Repair, or nothing).

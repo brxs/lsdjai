@@ -247,6 +247,23 @@ describe('ModelManager', () => {
     expect(installLora).toHaveBeenCalledWith({ hfRepo: 'owner/my-lora' }, undefined)
   })
 
+  it('accepts a pasted huggingface.co URL and installs the canonical repo id', async () => {
+    modelStatus.mockResolvedValue(status())
+    render(<ModelManager />)
+    await screen.findByText('mrt2_base')
+    fireEvent.change(screen.getByLabelText('HuggingFace repo'), {
+      target: {
+        value: 'https://huggingface.co/motiftechnologies/stable-audio-3-maqam-lora',
+      },
+    })
+    const installs = screen.getAllByText('Install')
+    fireEvent.click(installs[installs.length - 1])
+    expect(installLora).toHaveBeenCalledWith(
+      { hfRepo: 'motiftechnologies/stable-audio-3-maqam-lora' },
+      undefined,
+    )
+  })
+
   it('passes an explicit base override to a repo import', async () => {
     modelStatus.mockResolvedValue(status())
     render(<ModelManager />)

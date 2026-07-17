@@ -384,7 +384,7 @@
       "medium": "Medium DiT (tracks)"
     },
     "loraRepo": "HuggingFace repo",
-    "loraRepoPlaceholder": "owner/adapter-repo",
+    "loraRepoPlaceholder": "owner/adapter-repo or huggingface.co link",
     "loraImportFile": "Import file…",
     "loraFileFilter": "LoRA adapter",
     "loraDelete": "Delete adapter {{name}}"
