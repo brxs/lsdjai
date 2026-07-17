@@ -174,6 +174,8 @@ async def generate(
     cfg: float | None = None,
     apg: float | None = None,
     seed: int | None = None,
+    lora_dir: str | None = None,
+    lora_strength: float | None = None,
 ) -> bytes:
     """Run one generation and return the WAV bytes.
 
@@ -220,6 +222,12 @@ async def generate(
                 argv.extend(("--apg", f"{apg:g}"))
             if seed is not None:
                 argv.extend(("--seed", str(seed)))
+            if lora_dir is not None:
+                # The adapter directory (ADR-0028): the CLI resolves the
+                # .safetensors inside it, and the merge happens at DiT load.
+                argv.extend(("--lora", lora_dir))
+                if lora_strength is not None:
+                    argv.extend(("--lora-strength", f"{lora_strength:g}"))
             process = await asyncio.create_subprocess_exec(
                 *argv,
                 cwd=mlx_dir,

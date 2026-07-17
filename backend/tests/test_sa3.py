@@ -156,6 +156,35 @@ class TestGenerate:
         ]
         assert (mlx_dir / ".venv" / "bin" / "init.wav").read_bytes() == init_audio
 
+    def test_passes_the_lora_adapter_dir_and_strength(self, checkout):
+        # Issue #66 (ADR-0028): the adapter directory rides the argv as
+        # --lora; the strength knob only appears when set.
+        mlx_dir = checkout(SUCCESS_STUB)
+        asyncio.run(
+            sa3.generate(
+                "maqam phrasing",
+                120.0,
+                "track",
+                lora_dir="/adapters/medium/maqam",
+                lora_strength=0.75,
+            )
+        )
+        argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text().splitlines()
+        lora_index = argv.index("--lora")
+        assert argv[lora_index + 1] == "/adapters/medium/maqam"
+        assert argv[argv.index("--lora-strength") + 1] == "0.75"
+
+    def test_lora_without_strength_omits_the_flag(self, checkout):
+        mlx_dir = checkout(SUCCESS_STUB)
+        asyncio.run(
+            sa3.generate(
+                "vinyl spinback", 3.0, "sfx", lora_dir="/adapters/small/crackle"
+            )
+        )
+        argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text().splitlines()
+        assert argv[argv.index("--lora") + 1] == "/adapters/small/crackle"
+        assert "--lora-strength" not in argv
+
     def test_tracks_run_the_medium_dit_with_its_decoder(self, checkout):
         # M19 (ADR-0013): tracks pair the medium DiT with SAME-L; the
         # pad kinds keep the small DiTs with SAME-S.

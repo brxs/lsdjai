@@ -27,7 +27,7 @@ from fastapi.responses import Response
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import engine, sa3
+from . import engine, loras, sa3
 from .worker import run_deck_worker
 
 logger = logging.getLogger(__name__)
@@ -444,6 +444,43 @@ def _validate_generate_request(
                 detail=f"'seed' must be an integer from 0-{sa3.MAX_SEED}",
             )
         options["seed"] = seed
+
+    if "lora" in parsed:
+        lora = parsed["lora"]
+        if not isinstance(lora, dict):
+            raise HTTPException(status_code=422, detail="'lora' must be an object")
+        name = lora.get("name")
+        if not isinstance(name, str):
+            raise HTTPException(status_code=422, detail="'lora.name' must be a string")
+        try:
+            adapter_dir, base = loras.resolve(name)
+        except loras.UnknownAdapter as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        if loras.KIND_BASES[kind] != base:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"adapter '{name}' rides the {base} DiT and cannot apply "
+                    f"to kind '{kind}'"
+                ),
+            )
+        options["lora_dir"] = str(adapter_dir)
+        if "strength" in lora:
+            strength = lora["strength"]
+            if (
+                isinstance(strength, bool)
+                or not isinstance(strength, (int, float))
+                or not math.isfinite(strength)
+                or not loras.MIN_LORA_STRENGTH <= strength <= loras.MAX_LORA_STRENGTH
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "'lora.strength' must be "
+                        f"{loras.MIN_LORA_STRENGTH:g}-{loras.MAX_LORA_STRENGTH:g}"
+                    ),
+                )
+            options["lora_strength"] = float(strength)
 
     if "inpaint_range" in parsed:
         inpaint_range = parsed["inpaint_range"]

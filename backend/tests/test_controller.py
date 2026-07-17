@@ -142,6 +142,118 @@ def test_generate_forwards_optional_json_controls(client, monkeypatch):
     ]
 
 
+@pytest.fixture
+def lora_registry(tmp_path, monkeypatch):
+    """A registry with one adapter per base, pointed at via the env override."""
+    for base, slug in (("small", "crackle"), ("medium", "maqam")):
+        adapter_dir = tmp_path / base / slug
+        adapter_dir.mkdir(parents=True)
+        (adapter_dir / "adapter_model.safetensors").write_bytes(b"fake")
+    monkeypatch.setenv("SA3_LORAS_HOME", str(tmp_path))
+    return tmp_path
+
+
+def test_generate_forwards_the_lora_adapter_and_strength(
+    client, monkeypatch, lora_registry
+):
+    calls = []
+
+    async def fake_generate(prompt, seconds, kind, **options):
+        calls.append(options)
+        return b"RIFFwav"
+
+    monkeypatch.setattr(controller.sa3, "generate", fake_generate)
+    response = client.post(
+        "/api/generate",
+        json=generate_request(lora={"name": "small/crackle", "strength": 1.5}),
+    )
+    assert response.status_code == 200
+    assert calls == [
+        {
+            "lora_dir": str(lora_registry / "small" / "crackle"),
+            "lora_strength": 1.5,
+        }
+    ]
+
+
+@pytest.mark.parametrize("strength", [0.0, 4.0])
+def test_generate_accepts_the_lora_strength_boundaries(
+    client, monkeypatch, lora_registry, strength
+):
+    # 0 is the bit-exact bypass (ADR-0028), 4 the guard-rail ceiling.
+    calls = []
+
+    async def fake_generate(prompt, seconds, kind, **options):
+        calls.append(options)
+        return b"RIFFwav"
+
+    monkeypatch.setattr(controller.sa3, "generate", fake_generate)
+    response = client.post(
+        "/api/generate",
+        json=generate_request(lora={"name": "small/crackle", "strength": strength}),
+    )
+    assert response.status_code == 200
+    assert calls[0]["lora_strength"] == strength
+
+
+def test_generate_lora_strength_is_optional(client, monkeypatch, lora_registry):
+    calls = []
+
+    async def fake_generate(prompt, seconds, kind, **options):
+        calls.append(options)
+        return b"RIFFwav"
+
+    monkeypatch.setattr(controller.sa3, "generate", fake_generate)
+    response = client.post(
+        "/api/generate", json=generate_request(lora={"name": "small/crackle"})
+    )
+    assert response.status_code == 200
+    assert calls == [{"lora_dir": str(lora_registry / "small" / "crackle")}]
+
+
+@pytest.mark.parametrize(
+    "lora",
+    [
+        "small/crackle",  # not an object
+        {"name": None},
+        {"name": "small/absent"},  # not installed
+        {"name": "small/../crackle"},  # traversal
+        {"name": "medium/maqam"},  # medium adapter cannot ride an sfx (small) DiT
+        {"name": "small/crackle", "strength": -0.1},
+        {"name": "small/crackle", "strength": 4.1},
+        {"name": "small/crackle", "strength": True},
+        {"name": "small/crackle", "strength": "1"},
+    ],
+)
+def test_generate_rejects_invalid_lora_requests(
+    client, monkeypatch, lora_registry, lora
+):
+    async def fake_generate(prompt, seconds, kind, **options):  # pragma: no cover
+        raise AssertionError("invalid input must not reach generation")
+
+    monkeypatch.setattr(controller.sa3, "generate", fake_generate)
+    response = client.post("/api/generate", json=generate_request(lora=lora))
+    assert response.status_code == 422
+
+
+def test_generate_rejects_a_nan_lora_strength(client, monkeypatch, lora_registry):
+    # httpx's json= encoder refuses NaN, but Python's json.loads parses it —
+    # so it can reach the server, and the boundary must catch it.
+    async def fake_generate(prompt, seconds, kind, **options):  # pragma: no cover
+        raise AssertionError("invalid input must not reach generation")
+
+    monkeypatch.setattr(controller.sa3, "generate", fake_generate)
+    response = client.post(
+        "/api/generate",
+        content=(
+            '{"prompt": "x", "seconds": 3, "kind": "sfx", '
+            '"lora": {"name": "small/crackle", "strength": NaN}}'
+        ),
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code == 422
+
+
 @pytest.mark.parametrize("channels", [1, 2])
 def test_generate_forwards_multipart_init_audio_and_inpaint(
     client, monkeypatch, channels
