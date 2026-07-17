@@ -310,6 +310,7 @@
     "models": "Deck realtime models",
     "modelDeck": "Deck {{id}}",
     "modelLibrary": "Model library",
+    "loraLibrary": "LoRA Library",
     "recording": "Recording",
     "recordingFolder": "Recordings folder",
     "recordingFolderDefault": "Downloads (default)",

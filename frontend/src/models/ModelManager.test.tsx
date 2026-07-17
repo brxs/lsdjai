@@ -11,9 +11,6 @@ const installModel = vi.fn<(family: string, name?: string) => Promise<void>>(asy
 const updateModel = vi.fn<(family: string) => Promise<void>>(async () => {})
 const cancelInstall = vi.fn(async () => {})
 const openModelFolder = vi.fn<(family: string) => Promise<void>>(async () => {})
-const installLora = vi.fn<(source: object, base?: string) => Promise<void>>(async () => {})
-const deleteLora = vi.fn<(name: string) => Promise<void>>(async () => {})
-const invoke = vi.fn<(cmd: string, args?: object) => Promise<unknown>>(async () => null)
 
 vi.mock('../audio/nativeEngine', () => ({
   modelStatus: () => modelStatus(),
@@ -21,9 +18,6 @@ vi.mock('../audio/nativeEngine', () => ({
   updateModel: (family: string) => updateModel(family),
   cancelInstall: () => cancelInstall(),
   openModelFolder: (family: string) => openModelFolder(family),
-  installLora: (source: object, base?: string) => installLora(source, base),
-  deleteLora: (name: string) => deleteLora(name),
-  invoke: (cmd: string, args?: object) => invoke(cmd, args),
   subscribeModelsChanged: (cb: () => void) => {
     changedCb = cb
     return () => {}
@@ -138,14 +132,12 @@ describe('ModelManager', () => {
     )
     render(<ModelManager />)
     await screen.findByText('mrt2_small')
-    const buttons = screen.getAllByText('Open folder') // Magenta + SA3 (present) + LoRA
-    expect(buttons).toHaveLength(3)
+    const buttons = screen.getAllByText('Open folder') // Magenta + SA3 (present)
+    expect(buttons).toHaveLength(2)
     fireEvent.click(buttons[0])
     expect(openModelFolder).toHaveBeenCalledWith('magenta')
     fireEvent.click(buttons[1])
     expect(openModelFolder).toHaveBeenCalledWith('sa3')
-    fireEvent.click(buttons[2])
-    expect(openModelFolder).toHaveBeenCalledWith('lora')
   })
 
   it('treats a cancel as a clean stop, not an error', async () => {
@@ -211,87 +203,4 @@ describe('ModelManager', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('no weights')
   })
 
-  it('lists installed LoRA adapters with base and size, and deletes one', async () => {
-    modelStatus.mockResolvedValue(
-      status({
-        loras: [
-          {
-            name: 'medium/maqam',
-            base: 'medium',
-            slug: 'maqam',
-            sizeBytes: 200_000_000,
-            source: 'motiftechnologies/stable-audio-3-maqam-lora',
-            adapterType: 'lora',
-            rank: 64,
-          },
-        ],
-      }),
-    )
-    render(<ModelManager />)
-    expect(await screen.findByText('maqam')).toBeInTheDocument()
-    expect(screen.getByText('Medium DiT (tracks) · 200 MB')).toBeInTheDocument()
-    fireEvent.click(screen.getByLabelText('Delete adapter maqam'))
-    expect(deleteLora).toHaveBeenCalledWith('medium/maqam')
-  })
-
-  it('imports an adapter from a HuggingFace repo id', async () => {
-    modelStatus.mockResolvedValue(status())
-    render(<ModelManager />)
-    await screen.findByText('mrt2_base')
-    fireEvent.change(screen.getByLabelText('HuggingFace repo'), {
-      target: { value: 'owner/my-lora' },
-    })
-    // The lora Install is the last one in the DOM (after the model rows).
-    const installs = screen.getAllByText('Install')
-    fireEvent.click(installs[installs.length - 1])
-    expect(installLora).toHaveBeenCalledWith({ hfRepo: 'owner/my-lora' }, undefined)
-  })
-
-  it('accepts a pasted huggingface.co URL and installs the canonical repo id', async () => {
-    modelStatus.mockResolvedValue(status())
-    render(<ModelManager />)
-    await screen.findByText('mrt2_base')
-    fireEvent.change(screen.getByLabelText('HuggingFace repo'), {
-      target: {
-        value: 'https://huggingface.co/motiftechnologies/stable-audio-3-maqam-lora',
-      },
-    })
-    const installs = screen.getAllByText('Install')
-    fireEvent.click(installs[installs.length - 1])
-    expect(installLora).toHaveBeenCalledWith(
-      { hfRepo: 'motiftechnologies/stable-audio-3-maqam-lora' },
-      undefined,
-    )
-  })
-
-  it('passes an explicit base override to a repo import', async () => {
-    modelStatus.mockResolvedValue(status())
-    render(<ModelManager />)
-    await screen.findByText('mrt2_base')
-    fireEvent.change(screen.getByLabelText('HuggingFace repo'), {
-      target: { value: 'owner/xs-lora' },
-    })
-    fireEvent.change(screen.getByLabelText('Base'), { target: { value: 'medium' } })
-    const installs = screen.getAllByText('Install')
-    fireEvent.click(installs[installs.length - 1])
-    expect(installLora).toHaveBeenCalledWith({ hfRepo: 'owner/xs-lora' }, 'medium')
-  })
-
-  it('imports an adapter file through the native picker', async () => {
-    modelStatus.mockResolvedValue(status())
-    invoke.mockResolvedValue('/downloads/maqam.safetensors')
-    render(<ModelManager />)
-    await screen.findByText('mrt2_base')
-    fireEvent.click(screen.getByText('Import file…'))
-    await waitFor(() =>
-      expect(installLora).toHaveBeenCalledWith(
-        { path: '/downloads/maqam.safetensors' },
-        undefined,
-      ),
-    )
-    expect(invoke).toHaveBeenCalledWith(
-      'plugin:dialog|open',
-      expect.objectContaining({ options: expect.anything() }),
-    )
-  })
 })
