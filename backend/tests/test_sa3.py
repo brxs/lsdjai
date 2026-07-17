@@ -156,9 +156,10 @@ class TestGenerate:
         ]
         assert (mlx_dir / ".venv" / "bin" / "init.wav").read_bytes() == init_audio
 
-    def test_passes_the_lora_stack_with_aligned_strengths(self, checkout):
-        # Issue #66 (ADR-0028): the adapter directories ride the argv as one
-        # --lora list, with one --lora-strength value per adapter in order.
+    def test_passes_one_lora_group_per_adapter_with_its_strength(self, checkout):
+        # Issue #66 (ADR-0028): each adapter rides the argv as its own
+        # --lora group — the directory plus a strength=S option (the
+        # upstream PR #57/#65 CLI syntax).
         mlx_dir = checkout(SUCCESS_STUB)
         asyncio.run(
             sa3.generate(
@@ -170,15 +171,18 @@ class TestGenerate:
             )
         )
         argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text().splitlines()
-        lora_index = argv.index("--lora")
-        assert argv[lora_index + 1 : lora_index + 3] == [
+        first = argv.index("--lora")
+        assert argv[first : first + 6] == [
+            "--lora",
             "/adapters/medium/maqam",
+            "strength=0.75",
+            "--lora",
             "/adapters/medium/breaks",
+            "strength=1.5",
         ]
-        strength_index = argv.index("--lora-strength")
-        assert argv[strength_index + 1 : strength_index + 3] == ["0.75", "1.5"]
 
-    def test_lora_without_strengths_omits_the_flag(self, checkout):
+    def test_lora_without_strengths_omits_the_option(self, checkout):
+        # No strengths → bare --lora groups; the CLI's default (1.0) applies.
         mlx_dir = checkout(SUCCESS_STUB)
         asyncio.run(
             sa3.generate(
@@ -186,7 +190,9 @@ class TestGenerate:
             )
         )
         argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text().splitlines()
-        assert argv[argv.index("--lora") + 1] == "/adapters/small/crackle"
+        lora_index = argv.index("--lora")
+        assert argv[lora_index + 1] == "/adapters/small/crackle"
+        assert not any(arg.startswith("strength=") for arg in argv)
         assert "--lora-strength" not in argv
 
     def test_tracks_run_the_medium_dit_with_its_decoder(self, checkout):

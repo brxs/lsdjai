@@ -4,7 +4,7 @@ Issue #66 builds the production importer for Stable Audio 3 LoRA finetunes on
 top of the spike's merge-at-load runtime (ADR-0028, `docs/spike-sa3-lora.md`):
 a `sa3-loras/<base>/<slug>/` registry in the app data dir owned by the Rust
 shell, a `lora` field on `/api/generate` that rides `--lora`/`--lora-strength`
-into the pinned fork's CLI, adapter pickers in the generate surfaces, and a
+into the pinned CLI, adapter pickers in the generate surfaces, and a
 manager section with import (HuggingFace repo id or local `.safetensors`) and
 in-app delete.
 
@@ -80,12 +80,13 @@ into the stack grows a trim knob (double-click parks it at ×1, ×0 dims the
 slot — bit-exact bypass). `/api/generate` now takes `loras` (a list of up to
 4 `{name, strength}` entries) instead of the single `lora` object.
 
-**Fork prerequisite (before anything below):** apply
-[`sa3-lora-stack.patch`](sa3-lora-stack.patch) to the `brxs/stable-audio-3`
-checkout (`git apply -p1`), push, and bump the commit in `sa3-pin.json` —
-the pinned CLI takes multiple `--lora` adapters but only a single global
-`--lora-strength` until then. The app-side code always sends one strength
-per adapter, which the old CLI's argparse would refuse.
+**Prerequisite (before anything below):** the pin is back on upstream
+`Stability-AI/stable-audio-3` (our LoRA support landed as PR #57; PR #65
+added the per-adapter `--lora PATH strength=S` syntax the app now emits).
+Settings drawer → Model library → the SA3 row shows **Update available** —
+run the update so the installed checkout matches the pin. On the old fork
+checkout, a multi-adapter generation fails in argparse
+(`unrecognized arguments`); a hand-patched checkout is replaced cleanly.
 
 - [ ] With two medium adapters installed: chip both into the Generate tab's
       rack, distinct trims (e.g. ×1 and ×0.5) — the backend log shows
