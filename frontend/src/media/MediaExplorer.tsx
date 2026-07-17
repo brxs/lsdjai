@@ -1112,18 +1112,16 @@ export function MediaExplorer({
               {t('media.generate.action')}
             </Button>
           </div>
-          {trackAdapters.length > 0 && (
-            <LoraRack
-              adapters={trackAdapters.map((adapter) => ({
-                name: adapter.name,
-                label: adapter.slug,
-              }))}
-              value={trackStack.stack}
-              onToggle={trackStack.toggle}
-              onStrength={trackStack.setStrength}
-              max={MAX_LORA_STACK}
-            />
-          )}
+          <LoraRack
+            adapters={trackAdapters.map((adapter) => ({
+              name: adapter.name,
+              label: adapter.slug,
+            }))}
+            value={trackStack.stack}
+            onToggle={trackStack.toggle}
+            onStrength={trackStack.setStrength}
+            max={MAX_LORA_STACK}
+          />
           {tracks.length === 0 ? (
             <p className="media__empty">{t('media.generate.empty')}</p>
           ) : (
@@ -1281,18 +1279,16 @@ export function MediaExplorer({
               {t('media.generate.action')}
             </Button>
           </div>
-          {sampleAdapters.length > 0 && (
-            <LoraRack
-              adapters={sampleAdapters.map((adapter) => ({
-                name: adapter.name,
-                label: adapter.slug,
-              }))}
-              value={sampleStack.stack}
-              onToggle={sampleStack.toggle}
-              onStrength={sampleStack.setStrength}
-              max={MAX_LORA_STACK}
-            />
-          )}
+          <LoraRack
+            adapters={sampleAdapters.map((adapter) => ({
+              name: adapter.name,
+              label: adapter.slug,
+            }))}
+            value={sampleStack.stack}
+            onToggle={sampleStack.toggle}
+            onStrength={sampleStack.setStrength}
+            max={MAX_LORA_STACK}
+          />
           {samples.length === 0 ? (
             <p className="media__empty">{t('media.samples.empty')}</p>
           ) : (

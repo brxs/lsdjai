@@ -28,11 +28,13 @@ type LoraRackProps = {
   max?: number
 }
 
-/** The LoRA stack as an FX rack (issue #66 follow-up): every adapter is a
- * toggle chip; clicking one into the stack grows a trim knob (double-click
- * parks it at ×1). At ×0 the slot dims — in the stack, bit-exact silent.
- * Order never matters (the merge is order-independent, ADR-0028), so slots
- * stay in library order. */
+/** The LoRA stack as a one-line FX rack strip (issue #66 follow-up): every
+ * adapter is a toggle chip; clicking one into the stack grows a trim knob
+ * beside it (double-click parks it at ×1). At ×0 the slot dims — in the
+ * stack, bit-exact silent. Order never matters (the merge is
+ * order-independent, ADR-0028), so slots stay in library order. Renders
+ * nothing without adapters — the rack owns its empty state, callers don't
+ * guard. */
 export function LoraRack({
   adapters,
   value,
@@ -42,7 +44,14 @@ export function LoraRack({
   max = 4,
 }: LoraRackProps) {
   const { t } = useTranslation()
-  const full = value.length >= max
+  // The cap counts only slots the rack can show — a stale entry (adapter
+  // deleted mid-session) must not hold a slot hostage.
+  const present = value.filter((entry) =>
+    adapters.some((adapter) => adapter.name === entry.name),
+  )
+  const full = present.length >= max
+
+  if (adapters.length === 0) return null
 
   return (
     <div className={`ui-lorarack ui-lorarack--${accent}`}>

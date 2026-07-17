@@ -939,7 +939,7 @@ export function DeckColumn({
             onChange={(value) => setGenerateOneShot(value === 'oneshot')}
           />
         </div>
-        {generateEngine !== 'magenta' && padAdapters.length > 0 && (
+        {generateEngine !== 'magenta' && (
           <LoraRack
             accent={deckId}
             adapters={padAdapters.map((adapter) => ({

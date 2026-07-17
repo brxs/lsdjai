@@ -10,6 +10,13 @@ const ADAPTERS = [
 ]
 
 describe('LoraRack', () => {
+  it('renders nothing at all without adapters', () => {
+    const { container } = render(
+      <LoraRack adapters={[]} value={[]} onToggle={() => {}} onStrength={() => {}} />,
+    )
+    expect(container).toBeEmptyDOMElement()
+  })
+
   it('renders every adapter as a chip and marks the stacked ones', () => {
     render(
       <LoraRack

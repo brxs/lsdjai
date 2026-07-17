@@ -543,14 +543,16 @@
 
 /* ---------- LoRA rack (issue #66 follow-up) ---------- */
 
-/* The adapter stack as an FX rack: one slot per installed adapter, chip on
-   top, and — once toggled into the stack — a trim knob in an inset well
-   below. Accent follows the host (deck a/b or master), like the knob. */
+/* The adapter stack as an FX rack strip: one slot per installed adapter,
+   and — once toggled into the stack — the slot grows a trim knob BESIDE the
+   chip behind a hairline divider, keeping the whole rack one control line
+   (tray height belongs to the library list). Accent follows the host
+   (deck a/b or master), like the knob. */
 .ui-lorarack {
   --rack-accent: var(--color-accent);
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  align-items: center;
+  gap: var(--space-3);
 }
 
 .ui-lorarack--a {
@@ -566,18 +568,19 @@
   letter-spacing: var(--silkscreen-spacing);
   text-transform: uppercase;
   color: var(--color-text-silkscreen);
+  flex: none;
 }
 
 .ui-lorarack__slots {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-  align-items: flex-start;
+  align-items: stretch;
 }
 
 .ui-lorarack__slot {
   display: flex;
-  flex-direction: column;
+  align-items: stretch;
   border: 1px solid var(--color-border-strong);
   background: var(--color-surface-raised);
 }
@@ -620,10 +623,23 @@
 
 .ui-lorarack__trim {
   display: flex;
-  justify-content: center;
-  padding: var(--space-2);
-  border-top: 1px solid var(--color-border);
+  align-items: center;
+  padding: 0 var(--space-2);
+  border-left: 1px solid var(--color-border);
   background: var(--color-surface-inset);
+}
+
+/* The knob lies on its side in the strip: dial then ×value, one line. The
+   readout gets a floor width so the slot doesn't resize under a drag as
+   "×1" becomes "×0.25". */
+.ui-lorarack__trim .ui-knob {
+  flex-direction: row;
+  gap: var(--space-2);
+}
+
+.ui-lorarack__trim .ui-knob__label {
+  min-width: 1.9rem;
+  text-align: left;
 }
 
 /* ×0 = the bit-exact bypass: in the stack but silent, so the slot dims
