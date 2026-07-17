@@ -20,11 +20,12 @@ import { useControlBus } from '../control/busContext'
 import { CrateBrowser } from '../crates/CrateBrowser'
 import {
   adaptersForKind,
-  LORA_STRENGTHS,
+  MAX_LORA_STACK,
+  stackForKind,
   useLoras,
-  type LoraChoice,
+  useLoraStack,
 } from '../models/useLoras'
-import type { LoraAdapter } from '../audio/nativeEngine'
+import { LoraRack } from '../ui/LoraRack'
 import type { StylePreset } from '../presets'
 import { Button } from '../ui/Button'
 import { Panel } from '../ui/Panel'
@@ -137,20 +138,6 @@ const ENGINES = Object.keys(ENGINE_LENGTHS) as TrackEngine[]
 // the full set so `asTrackEngine` still recognises an older song saved as sfx/music.
 const TRACK_ENGINES: TrackEngine[] = ['track', 'magenta']
 const SAMPLE_ENGINES: SampleEngine[] = ['sfx', 'music']
-
-/** A form's LoRA choice as the `/api/generate` `lora` field, or null when it
- * no longer resolves (adapter deleted, or the engine switched to the other
- * base) — the request then simply rides without an adapter. */
-function loraChoiceFor(
-  loras: LoraAdapter[],
-  kind: 'sfx' | 'music' | 'track',
-  name: string,
-  strength: number,
-): LoraChoice | null {
-  if (name === 'none') return null
-  const matches = adaptersForKind(loras, kind).some((adapter) => adapter.name === name)
-  return matches ? { name, strength } : null
-}
 
 function formatLength(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
@@ -330,15 +317,13 @@ export function MediaExplorer({
   const [engine, setEngine] = useState<TrackEngine>('track')
   const [seconds, setSeconds] = useState(120)
   const [generateError, setGenerateError] = useState<string | null>(null)
-  // The installed SA3 LoRA adapters (issue #66) and each form's choice: an
-  // adapter name or 'none', plus the merge strength. The pickers only offer
-  // base-matched adapters; a choice that stops resolving (deleted, or the
-  // engine switched base) falls back to none at request time.
+  // The installed SA3 LoRA adapters (issue #66) and each form's stack: the
+  // adapters riding the next generation, each at a trim strength. The racks
+  // only offer base-matched adapters; a slot that stops resolving (adapter
+  // deleted) silently drops from the request.
   const loras = useLoras()
-  const [loraName, setLoraName] = useState('none')
-  const [loraStrength, setLoraStrength] = useState(1)
-  const [sampleLoraName, setSampleLoraName] = useState('none')
-  const [sampleLoraStrength, setSampleLoraStrength] = useState(1)
+  const trackStack = useLoraStack()
+  const sampleStack = useLoraStack()
   // Auto-save runs after a take is composed; its failure is separate from a
   // generation failure (the take is already playable from memory).
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -683,12 +668,7 @@ export function MediaExplorer({
     if (!trimmedPrompt) return
     const id = nextIdRef.current++
     const requestEngine = sampleEngine
-    const requestLora = loraChoiceFor(
-      loras,
-      requestEngine,
-      sampleLoraName,
-      sampleLoraStrength,
-    )
+    const requestLoras = stackForKind(sampleStack.stack, loras, requestEngine)
     const oneShot = sampleOneShot
     const clipTitle = sampleTitle.trim() || randomSongTitle()
     // A loop asks for the surplus tail the engine folds away on reload; a one-shot is
@@ -717,7 +697,7 @@ export function MediaExplorer({
             prompt: trimmedPrompt,
             seconds: requestSeconds,
             kind: requestEngine,
-            ...(requestLora ? { lora: requestLora } : {}),
+            ...(requestLoras.length > 0 ? { loras: requestLoras } : {}),
           }),
         })
         if (!response.ok) {
@@ -791,10 +771,10 @@ export function MediaExplorer({
     if (!trimmedPrompt) return
     const id = nextIdRef.current++
     const requestEngine = engine
-    const requestLora =
+    const requestLoras =
       requestEngine === 'magenta'
-        ? null
-        : loraChoiceFor(loras, requestEngine, loraName, loraStrength)
+        ? []
+        : stackForKind(trackStack.stack, loras, requestEngine)
     // The name (and on-disk filename) come from the Title field, NOT the prompt — a
     // blank title gets a random song title so a long/JSON prompt never becomes the
     // name. The row appends a session-unique #id to tell same-title siblings apart.
@@ -820,7 +800,7 @@ export function MediaExplorer({
                     prompt: trimmedPrompt,
                     seconds,
                     kind: requestEngine,
-                    ...(requestLora ? { lora: requestLora } : {}),
+                    ...(requestLoras.length > 0 ? { loras: requestLoras } : {}),
                   },
             ),
           },
@@ -917,24 +897,10 @@ export function MediaExplorer({
   }
 
   const lengths = ENGINE_LENGTHS[engine]
-  // The pickers offer only base-matched adapters; a stale choice (deleted, or
-  // the engine switched base) displays — and requests — as none.
+  // The racks offer only base-matched adapters; Magenta hides the rack
+  // entirely (no adapter path).
   const trackAdapters = engine === 'magenta' ? [] : adaptersForKind(loras, engine)
-  const trackLora = trackAdapters.some((adapter) => adapter.name === loraName)
-    ? loraName
-    : 'none'
   const sampleAdapters = adaptersForKind(loras, sampleEngine)
-  const sampleLora = sampleAdapters.some((adapter) => adapter.name === sampleLoraName)
-    ? sampleLoraName
-    : 'none'
-  const loraOptions = (adapters: LoraAdapter[]) => [
-    { value: 'none', label: t('media.generate.loraNone') },
-    ...adapters.map((adapter) => ({ value: adapter.name, label: adapter.slug })),
-  ]
-  const strengthOptions = LORA_STRENGTHS.map((value) => ({
-    value: String(value),
-    label: t('media.generate.loraStrengthValue', { value }),
-  }))
 
   function loadButtons(onLoad: (deck: DeckId) => void, name: string) {
     return (['a', 'b'] as const).map((deck) => (
@@ -1133,22 +1099,6 @@ export function MediaExplorer({
                 }
               }}
             />
-            {trackAdapters.length > 0 && (
-              <Select
-                label={t('media.generate.lora')}
-                value={trackLora}
-                options={loraOptions(trackAdapters)}
-                onChange={setLoraName}
-              />
-            )}
-            {trackLora !== 'none' && (
-              <Select
-                label={t('media.generate.loraStrength')}
-                value={String(loraStrength)}
-                options={strengthOptions}
-                onChange={(value) => setLoraStrength(Number(value))}
-              />
-            )}
             <Select
               label={t('media.generate.length')}
               value={String(seconds)}
@@ -1162,6 +1112,18 @@ export function MediaExplorer({
               {t('media.generate.action')}
             </Button>
           </div>
+          {trackAdapters.length > 0 && (
+            <LoraRack
+              adapters={trackAdapters.map((adapter) => ({
+                name: adapter.name,
+                label: adapter.slug,
+              }))}
+              value={trackStack.stack}
+              onToggle={trackStack.toggle}
+              onStrength={trackStack.setStrength}
+              max={MAX_LORA_STACK}
+            />
+          )}
           {tracks.length === 0 ? (
             <p className="media__empty">{t('media.generate.empty')}</p>
           ) : (
@@ -1298,22 +1260,6 @@ export function MediaExplorer({
                 }
               }}
             />
-            {sampleAdapters.length > 0 && (
-              <Select
-                label={t('media.generate.lora')}
-                value={sampleLora}
-                options={loraOptions(sampleAdapters)}
-                onChange={setSampleLoraName}
-              />
-            )}
-            {sampleLora !== 'none' && (
-              <Select
-                label={t('media.generate.loraStrength')}
-                value={String(sampleLoraStrength)}
-                options={strengthOptions}
-                onChange={(value) => setSampleLoraStrength(Number(value))}
-              />
-            )}
             <Select
               label={t('media.generate.length')}
               value={String(sampleSeconds)}
@@ -1335,6 +1281,18 @@ export function MediaExplorer({
               {t('media.generate.action')}
             </Button>
           </div>
+          {sampleAdapters.length > 0 && (
+            <LoraRack
+              adapters={sampleAdapters.map((adapter) => ({
+                name: adapter.name,
+                label: adapter.slug,
+              }))}
+              value={sampleStack.stack}
+              onToggle={sampleStack.toggle}
+              onStrength={sampleStack.setStrength}
+              max={MAX_LORA_STACK}
+            />
+          )}
           {samples.length === 0 ? (
             <p className="media__empty">{t('media.samples.empty')}</p>
           ) : (

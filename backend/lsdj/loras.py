@@ -30,6 +30,11 @@ KIND_BASES = {"sfx": "small", "music": "small", "track": "medium"}
 MIN_LORA_STRENGTH = 0.0
 MAX_LORA_STRENGTH = 4.0
 
+# Adapters per generation. The merge stacks linearly (ADR-0028), but an
+# unbounded list is unbounded argv and load time — and past a few adapters
+# the summed deltas swamp the base anyway. Mirrored by the LoraRack UI.
+MAX_LORA_STACK = 4
+
 # One path segment of an adapter name: no separators, no leading dot — the
 # name a client sends can only ever address a directory INSIDE the registry.
 _SLUG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")

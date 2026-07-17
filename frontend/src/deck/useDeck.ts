@@ -207,12 +207,13 @@ export type DeckControls = {
    * pending state). One-shots overlay, loops replace like captures;
    * music-model loops snap to whole bars while the tempo gate is
    * locked and respect the quality floor. An SA3 engine can ride a LoRA
-   * adapter + strength (issue #66); Magenta has no adapter path. */
+   * stack — adapters + per-adapter strengths (issue #66); Magenta has no
+   * adapter path. */
   generateToPad: (
     prompt: string,
     engine: GenerateEngine,
     oneShot: boolean,
-    lora?: LoraChoice | null,
+    loras?: LoraChoice[] | null,
   ) => void
   /** Load a saved sample (ADR-0022) into the first empty loop slot, as a loop or
    * one-shot per the sample. Resolves false when every slot is full, the deck isn't
@@ -1429,7 +1430,7 @@ export function useDeck(deckId: DeckId): DeckControls {
       prompt: string,
       engine: GenerateEngine,
       oneShot: boolean,
-      lora?: LoraChoice | null,
+      loras?: LoraChoice[] | null,
     ) => {
       const trimmed = prompt.trim()
       if (!trimmed) return
@@ -1481,7 +1482,7 @@ export function useDeck(deckId: DeckId): DeckControls {
                         prompt: requestPrompt,
                         seconds: requestSeconds,
                         kind: engine,
-                        ...(lora ? { lora } : {}),
+                        ...(loras && loras.length > 0 ? { loras } : {}),
                       },
                 ),
               },

@@ -529,6 +529,113 @@
   opacity: 0.4;
 }
 
+/* Small dial ('s'): the in-row trim (LoRA rack). The viewBox is 28 so the
+   stroke scales down a step to keep the arc weight proportional. */
+.ui-knob--s .ui-knob__dial {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.ui-knob--s .ui-knob__track,
+.ui-knob--s .ui-knob__value {
+  stroke-width: 2.6;
+}
+
+/* ---------- LoRA rack (issue #66 follow-up) ---------- */
+
+/* The adapter stack as an FX rack: one slot per installed adapter, chip on
+   top, and — once toggled into the stack — a trim knob in an inset well
+   below. Accent follows the host (deck a/b or master), like the knob. */
+.ui-lorarack {
+  --rack-accent: var(--color-accent);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.ui-lorarack--a {
+  --rack-accent: var(--color-deck-a);
+}
+
+.ui-lorarack--b {
+  --rack-accent: var(--color-deck-b);
+}
+
+.ui-lorarack__label {
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-silkscreen);
+}
+
+.ui-lorarack__slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+
+.ui-lorarack__slot {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface-raised);
+}
+
+.ui-lorarack__chip {
+  font: 600 var(--text-s) var(--font-ui);
+  line-height: var(--control-line);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.ui-lorarack__chip:not(:disabled):hover {
+  color: var(--color-text);
+}
+
+/* Stack full: the freeze-pad disabled convention. */
+.ui-lorarack__chip:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ui-lorarack__chip:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
+/* In the stack: accent-lit, the icon-picker active convention. */
+.ui-lorarack__slot--on {
+  border-color: var(--rack-accent);
+}
+
+.ui-lorarack__slot--on .ui-lorarack__chip {
+  color: var(--rack-accent);
+}
+
+.ui-lorarack__trim {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-2);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface-inset);
+}
+
+/* ×0 = the bit-exact bypass: in the stack but silent, so the slot dims
+   toward the surface instead of holding the full accent. */
+.ui-lorarack__slot--bypass {
+  border-color: color-mix(in srgb, var(--rack-accent) 45%, var(--color-surface));
+}
+
+.ui-lorarack__slot--bypass .ui-lorarack__chip {
+  color: color-mix(in srgb, var(--rack-accent) 55%, var(--color-surface));
+}
+
 /* ---------- phase meter (M20) ---------- */
 
 .ui-phasemeter {

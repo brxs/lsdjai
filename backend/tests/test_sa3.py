@@ -156,29 +156,33 @@ class TestGenerate:
         ]
         assert (mlx_dir / ".venv" / "bin" / "init.wav").read_bytes() == init_audio
 
-    def test_passes_the_lora_adapter_dir_and_strength(self, checkout):
-        # Issue #66 (ADR-0028): the adapter directory rides the argv as
-        # --lora; the strength knob only appears when set.
+    def test_passes_the_lora_stack_with_aligned_strengths(self, checkout):
+        # Issue #66 (ADR-0028): the adapter directories ride the argv as one
+        # --lora list, with one --lora-strength value per adapter in order.
         mlx_dir = checkout(SUCCESS_STUB)
         asyncio.run(
             sa3.generate(
                 "maqam phrasing",
                 120.0,
                 "track",
-                lora_dir="/adapters/medium/maqam",
-                lora_strength=0.75,
+                lora_dirs=["/adapters/medium/maqam", "/adapters/medium/breaks"],
+                lora_strengths=[0.75, 1.5],
             )
         )
         argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text().splitlines()
         lora_index = argv.index("--lora")
-        assert argv[lora_index + 1] == "/adapters/medium/maqam"
-        assert argv[argv.index("--lora-strength") + 1] == "0.75"
+        assert argv[lora_index + 1 : lora_index + 3] == [
+            "/adapters/medium/maqam",
+            "/adapters/medium/breaks",
+        ]
+        strength_index = argv.index("--lora-strength")
+        assert argv[strength_index + 1 : strength_index + 3] == ["0.75", "1.5"]
 
-    def test_lora_without_strength_omits_the_flag(self, checkout):
+    def test_lora_without_strengths_omits_the_flag(self, checkout):
         mlx_dir = checkout(SUCCESS_STUB)
         asyncio.run(
             sa3.generate(
-                "vinyl spinback", 3.0, "sfx", lora_dir="/adapters/small/crackle"
+                "vinyl spinback", 3.0, "sfx", lora_dirs=["/adapters/small/crackle"]
             )
         )
         argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text().splitlines()

@@ -12,6 +12,7 @@ import asyncio
 import os
 import pathlib
 import tempfile
+from collections.abc import Sequence
 
 # CLI vocabulary of scripts/sa3_mlx.py at the pinned commit (bccf5b7).
 # Pads use the small DiTs with the SAME-S decoder; tracks (M19, ADR-0013)
@@ -174,8 +175,8 @@ async def generate(
     cfg: float | None = None,
     apg: float | None = None,
     seed: int | None = None,
-    lora_dir: str | None = None,
-    lora_strength: float | None = None,
+    lora_dirs: Sequence[str] | None = None,
+    lora_strengths: Sequence[float] | None = None,
 ) -> bytes:
     """Run one generation and return the WAV bytes.
 
@@ -222,12 +223,15 @@ async def generate(
                 argv.extend(("--apg", f"{apg:g}"))
             if seed is not None:
                 argv.extend(("--seed", str(seed)))
-            if lora_dir is not None:
-                # The adapter directory (ADR-0028): the CLI resolves the
-                # .safetensors inside it, and the merge happens at DiT load.
-                argv.extend(("--lora", lora_dir))
-                if lora_strength is not None:
-                    argv.extend(("--lora-strength", f"{lora_strength:g}"))
+            if lora_dirs:
+                # The adapter directories (ADR-0028): the CLI resolves each
+                # .safetensors inside and merges all deltas at DiT load —
+                # one strength per adapter, aligned with the stack.
+                argv.append("--lora")
+                argv.extend(lora_dirs)
+                if lora_strengths is not None:
+                    argv.append("--lora-strength")
+                    argv.extend(f"{s:g}" for s in lora_strengths)
             process = await asyncio.create_subprocess_exec(
                 *argv,
                 cwd=mlx_dir,

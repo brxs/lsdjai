@@ -1375,7 +1375,7 @@ describe('DeckColumn', () => {
       target: { value: 'vinyl spinback' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
-    expect(onGenerateToPad).toHaveBeenCalledWith('vinyl spinback', 'sfx', true, null)
+    expect(onGenerateToPad).toHaveBeenCalledWith('vinyl spinback', 'sfx', true, [])
 
     fireEvent.change(screen.getByLabelText('Engine'), {
       target: { value: 'music' },
@@ -1390,11 +1390,11 @@ describe('DeckColumn', () => {
       'vinyl spinback',
       'music',
       false,
-      null,
+      [],
     )
   })
 
-  it('rides the chosen LoRA adapter + strength into a pad generation (issue #66)', () => {
+  it('rides the stacked LoRA adapters and their trims into a pad generation (issue #66)', () => {
     useLorasMock.mockReturnValue([
       {
         name: 'small/maqam',
@@ -1405,7 +1405,16 @@ describe('DeckColumn', () => {
         adapterType: 'lora',
         rank: 64,
       },
-      // A medium adapter never reaches the pad picker (pads ride the small DiTs).
+      {
+        name: 'small/crackle',
+        base: 'small',
+        slug: 'crackle',
+        sizeBytes: 50_000_000,
+        source: null,
+        adapterType: 'lora',
+        rank: 8,
+      },
+      // A medium adapter never reaches the pad rack (pads ride the small DiTs).
       {
         name: 'medium/tape',
         base: 'medium',
@@ -1419,22 +1428,20 @@ describe('DeckColumn', () => {
     const onGenerateToPad = vi.fn()
     generateRow({ onGenerateToPad: onGenerateToPad as () => void })
 
-    const picker = screen.getByLabelText('LoRA')
-    expect(
-      Array.from(picker.querySelectorAll('option')).map((option) => option.value),
-    ).toEqual(['none', 'small/maqam'])
-    fireEvent.change(picker, { target: { value: 'small/maqam' } })
-    fireEvent.change(screen.getByLabelText('Strength'), {
+    expect(screen.queryByText('tape')).toBeNull()
+    fireEvent.click(screen.getByText('maqam'))
+    fireEvent.click(screen.getByText('crackle'))
+    fireEvent.change(screen.getByLabelText('maqam strength'), {
       target: { value: '0.75' },
     })
     fireEvent.change(screen.getByLabelText('Generate prompt'), {
       target: { value: 'oud phrase' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
-    expect(onGenerateToPad).toHaveBeenCalledWith('oud phrase', 'sfx', true, {
-      name: 'small/maqam',
-      strength: 0.75,
-    })
+    expect(onGenerateToPad).toHaveBeenCalledWith('oud phrase', 'sfx', true, [
+      { name: 'small/maqam', strength: 0.75 },
+      { name: 'small/crackle', strength: 1 },
+    ])
   })
 
   it('offers Magenta while the deck plays — the third engine is its own worker', () => {
@@ -1450,7 +1457,7 @@ describe('DeckColumn', () => {
       target: { value: 'magenta' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
-    expect(onGenerateToPad).toHaveBeenCalledWith('dub chords', 'magenta', true, null)
+    expect(onGenerateToPad).toHaveBeenCalledWith('dub chords', 'magenta', true, [])
   })
 
   it('caps the prompt input short of the backend limit, sparing the BPM stamp', () => {

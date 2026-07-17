@@ -1,0 +1,130 @@
+Per-adapter --lora-strength for the LoRA stack (multi-LoRA follow-up to
+issue #66 / ADR-0028). Against brxs/stable-audio-3 @ 36ef97776ee12375edd67a830a1bb0056d65bad8
+(the sa3-pin.json commit). `--lora-strength` becomes one value per --lora
+adapter (a single value still broadcasts, so existing invocations are
+unchanged), and the merge scales each adapter's delta by its own strength.
+
+To land: `git apply -p1` in the fork checkout, commit, push to
+brxs/stable-audio-3, then bump the commit in sa3-pin.json (the app's
+model manager offers the update in-place). Leading text like this is
+ignored by `git apply`.
+
+diff --git a/optimized/mlx/models/defs/lora_merge.py b/optimized/mlx/models/defs/lora_merge.py
+index b312382..a3c2a36 100644
+--- a/optimized/mlx/models/defs/lora_merge.py
++++ b/optimized/mlx/models/defs/lora_merge.py
+@@ -297,34 +297,47 @@ def _resolve_native_type(adapter_type: str) -> str:
+ 
+ # ── public entry point ─────────────────────────────────────────────────────────
+ 
+-def merge_loras_into_weights(weights: dict, lora_paths, strength: float = 1.0,
++def merge_loras_into_weights(weights: dict, lora_paths, strength=1.0,
+                              log=lambda _m: None) -> dict:
+     """Merge one or more LoRA adapters into ``weights`` in place.
+ 
+     ``weights`` is the DiT weight dict as loaded from the npz (str → mx.array).
+-    ``strength`` is the application weight applied to every adapter's delta (the
++    ``strength`` is the application weight for each adapter's delta (the
+     `--lora-strength` knob; matches ``application_weight`` in
+-    ``merge_loras_into_base_model``). Deltas are accumulated against the original
+-    weight, then applied once, so stacking is order-independent for linear LoRA.
++    ``merge_loras_into_base_model``): a single float applied to every adapter,
++    or a sequence with one float per adapter. Deltas are accumulated against
++    the original weight, then applied once, so stacking is order-independent
++    for linear LoRA.
+ 
+     Returns a stats dict ``{"merged": int, "skipped": list[str], "adapters": int}``.
+     """
+     if not lora_paths:
+         return {"merged": 0, "skipped": [], "adapters": 0}
+ 
++    if isinstance(strength, (int, float)):
++        strengths = [float(strength)] * len(lora_paths)
++    else:
++        strengths = [float(s) for s in strength]
++        if len(strengths) == 1:
++            strengths = strengths * len(lora_paths)
++        if len(strengths) != len(lora_paths):
++            raise LoraError(
++                f"{len(strengths)} strengths for {len(lora_paths)} adapters — "
++                "give one per adapter, or a single value for all")
++
+     parsed = []
+-    for raw in lora_paths:
++    for raw, s in zip(lora_paths, strengths):
+         path = _resolve_path(raw)
+         adapter_type, scaling, layers = _parse_adapter(path)
+-        parsed.append((path, adapter_type, scaling, layers))
++        parsed.append((path, adapter_type, scaling, layers, s))
+         log(f"lora: {os.path.basename(path)} — {adapter_type}, "
+-            f"scaling={scaling:.3f}, {len(layers)} target layers")
++            f"scaling={scaling:.3f}, strength={s:g}, {len(layers)} target layers")
+ 
+     # Accumulate deltas per npz key against the *original* weight. Each entry is
+     # [summed_delta, restore] — the layout restorer is the same across repeats.
+     accum: dict[str, list] = {}
+     skipped: list[str] = []
+-    for path, adapter_type, scaling, layers in parsed:
++    for path, adapter_type, scaling, layers, s in parsed:
+         need = _PARAMS_FOR.get(adapter_type, ())
+         for layer, params in layers.items():
+             key = _layer_to_npz_key(layer)
+@@ -337,7 +350,7 @@ def merge_loras_into_weights(weights: dict, lora_paths, strength: float = 1.0,
+             W0, restore = _weight_as_2d(weights[key])
+             _check_shapes(layer, W0, params, adapter_type)
+             merged = _merged_weight(W0, params, adapter_type, scaling)
+-            delta = strength * (merged - W0)
++            delta = s * (merged - W0)
+             if key in accum:
+                 accum[key][0] += delta
+             else:
+diff --git a/optimized/mlx/scripts/sa3_mlx.py b/optimized/mlx/scripts/sa3_mlx.py
+index 69db172..cfafb7f 100644
+--- a/optimized/mlx/scripts/sa3_mlx.py
++++ b/optimized/mlx/scripts/sa3_mlx.py
+@@ -399,9 +399,11 @@ def main():
+                          "ONLY .safetensors is accepted — a pickle .ckpt/.pt is refused (it "
+                          "would execute code on load). The adapter's base must match --dit "
+                          "(e.g. a medium adapter with --dit medium).")
+-    ap.add_argument("--lora-strength", type=float, default=1.0,
+-                    help="Application weight for every --lora delta (default 1.0). 0 disables "
+-                         "the adapter (bit-identical to no LoRA); >1 amplifies it.")
++    ap.add_argument("--lora-strength", type=float, nargs="+", default=None,
++                    metavar="STRENGTH",
++                    help="Application weight per --lora delta: one value per adapter, or a "
++                         "single value applied to all (default 1.0). 0 disables that "
++                         "adapter (bit-identical to no LoRA); >1 amplifies it.")
+ 
+     # ── Sampling ──────────────────────────────────────────────────────────────
+     ap.add_argument("--seconds", type=float, default=30.0,
+@@ -462,6 +464,17 @@ def main():
+     args = ap.parse_args()
+     if args.steps < 1:
+         ap.error(f"--steps must be ≥ 1 (got {args.steps})")
++    if args.lora_strength is not None and not args.lora:
++        ap.error("--lora-strength needs --lora")
++    if args.lora:
++        # Normalise to one strength per adapter; a single value broadcasts.
++        strengths = args.lora_strength if args.lora_strength is not None else [1.0]
++        if len(strengths) == 1:
++            strengths = strengths * len(args.lora)
++        if len(strengths) != len(args.lora):
++            ap.error(f"{len(strengths)} --lora-strength values for {len(args.lora)} "
++                     "adapters — give one per adapter, or a single value for all")
++        args.lora_strength = strengths
+ 
+     args = prompt_user_if_missing(args)
+     if args.prompt is None:
+@@ -641,8 +654,10 @@ def main():
+     # ── 3b. DiT pingpong sampling ──
+     stage("[3/5]", f"DiT — load + sample ({args.steps} steps, σmax={sigma_max:.2f})")
+     if args.lora:
+-        sub(f"lora  {', '.join(os.path.basename(p.rstrip('/')) for p in args.lora)}  "
+-            f"(strength {args.lora_strength:g})")
++        stacked = ', '.join(
++            f"{os.path.basename(p.rstrip('/'))} ×{s:g}"
++            for p, s in zip(args.lora, args.lora_strength))
++        sub(f"lora  {stacked}")
+     t0 = time.time(); dit_model, _ = load_dit(args.dit, T_lat=T_lat, dtype=dtype,
+                                               lora_paths=args.lora, lora_strength=args.lora_strength)
+     _stage_peak_b('DiT load')

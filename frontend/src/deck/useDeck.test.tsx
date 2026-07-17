@@ -976,23 +976,40 @@ describe('useDeck generated pads', () => {
     expect(result.current.loop.active).toBeNull()
   })
 
-  it('rides a LoRA adapter + strength on an SA3 pad generation (issue #66)', async () => {
+  it('rides a LoRA stack with per-adapter strengths on an SA3 pad generation (issue #66)', async () => {
     const fetchMock = stubFetchOk()
     const { engine } = makeFakeEngine()
     const { result } = await playingDeck(engine)
 
     act(() =>
-      result.current.generateToPad('oud phrase', 'sfx', true, {
-        name: 'small/maqam',
-        strength: 0.75,
-      }),
+      result.current.generateToPad('oud phrase', 'sfx', true, [
+        { name: 'small/maqam', strength: 0.75 },
+        { name: 'small/crackle', strength: 1 },
+      ]),
     )
     await act(async () => {})
     expect(requestBody(fetchMock)).toEqual({
       prompt: 'oud phrase',
       seconds: 4,
       kind: 'sfx',
-      lora: { name: 'small/maqam', strength: 0.75 },
+      loras: [
+        { name: 'small/maqam', strength: 0.75 },
+        { name: 'small/crackle', strength: 1 },
+      ],
+    })
+  })
+
+  it('omits the loras field when the stack is empty', async () => {
+    const fetchMock = stubFetchOk()
+    const { engine } = makeFakeEngine()
+    const { result } = await playingDeck(engine)
+
+    act(() => result.current.generateToPad('air horn', 'sfx', true, []))
+    await act(async () => {})
+    expect(requestBody(fetchMock)).toEqual({
+      prompt: 'air horn',
+      seconds: 4,
+      kind: 'sfx',
     })
   })
 

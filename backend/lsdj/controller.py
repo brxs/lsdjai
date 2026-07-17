@@ -445,28 +445,47 @@ def _validate_generate_request(
             )
         options["seed"] = seed
 
-    if "lora" in parsed:
-        lora = parsed["lora"]
-        if not isinstance(lora, dict):
-            raise HTTPException(status_code=422, detail="'lora' must be an object")
-        name = lora.get("name")
-        if not isinstance(name, str):
-            raise HTTPException(status_code=422, detail="'lora.name' must be a string")
-        try:
-            adapter_dir, base = loras.resolve(name)
-        except loras.UnknownAdapter as error:
-            raise HTTPException(status_code=422, detail=str(error)) from None
-        if loras.KIND_BASES[kind] != base:
+    if "loras" in parsed:
+        stack = parsed["loras"]
+        if not isinstance(stack, list):
+            raise HTTPException(status_code=422, detail="'loras' must be an array")
+        if len(stack) > loras.MAX_LORA_STACK:
             raise HTTPException(
                 status_code=422,
-                detail=(
-                    f"adapter '{name}' rides the {base} DiT and cannot apply "
-                    f"to kind '{kind}'"
-                ),
+                detail=f"'loras' holds at most {loras.MAX_LORA_STACK} adapters",
             )
-        options["lora_dir"] = str(adapter_dir)
-        if "strength" in lora:
-            strength = lora["strength"]
+        lora_dirs: list[str] = []
+        lora_strengths: list[float] = []
+        seen: set[str] = set()
+        for entry in stack:
+            if not isinstance(entry, dict):
+                raise HTTPException(
+                    status_code=422, detail="'loras' entries must be objects"
+                )
+            name = entry.get("name")
+            if not isinstance(name, str):
+                raise HTTPException(
+                    status_code=422, detail="'loras[].name' must be a string"
+                )
+            if name in seen:
+                # A repeated adapter would double its delta silently; refuse.
+                raise HTTPException(
+                    status_code=422, detail=f"duplicate adapter {name!r}"
+                )
+            seen.add(name)
+            try:
+                adapter_dir, base = loras.resolve(name)
+            except loras.UnknownAdapter as error:
+                raise HTTPException(status_code=422, detail=str(error)) from None
+            if loras.KIND_BASES[kind] != base:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"adapter '{name}' rides the {base} DiT and cannot apply "
+                        f"to kind '{kind}'"
+                    ),
+                )
+            strength = entry.get("strength", 1.0)
             if (
                 isinstance(strength, bool)
                 or not isinstance(strength, (int, float))
@@ -476,11 +495,15 @@ def _validate_generate_request(
                 raise HTTPException(
                     status_code=422,
                     detail=(
-                        "'lora.strength' must be "
+                        "'loras[].strength' must be "
                         f"{loras.MIN_LORA_STRENGTH:g}-{loras.MAX_LORA_STRENGTH:g}"
                     ),
                 )
-            options["lora_strength"] = float(strength)
+            lora_dirs.append(str(adapter_dir))
+            lora_strengths.append(float(strength))
+        if lora_dirs:
+            options["lora_dirs"] = lora_dirs
+            options["lora_strengths"] = lora_strengths
 
     if "inpaint_range" in parsed:
         inpaint_range = parsed["inpaint_range"]

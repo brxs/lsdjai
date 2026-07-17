@@ -144,8 +144,11 @@ def test_generate_forwards_optional_json_controls(client, monkeypatch):
 
 @pytest.fixture
 def lora_registry(tmp_path, monkeypatch):
-    """A registry with one adapter per base, pointed at via the env override."""
-    for base, slug in (("small", "crackle"), ("medium", "maqam")):
+    """A registry pointed at via the env override: two small adapters, one
+    medium, plus five smalls (stack0-4) for the over-the-cap case."""
+    slugs = [("small", "crackle"), ("small", "hiss"), ("medium", "maqam")]
+    slugs += [("small", f"stack{n}") for n in range(5)]
+    for base, slug in slugs:
         adapter_dir = tmp_path / base / slug
         adapter_dir.mkdir(parents=True)
         (adapter_dir / "adapter_model.safetensors").write_bytes(b"fake")
@@ -153,9 +156,11 @@ def lora_registry(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_generate_forwards_the_lora_adapter_and_strength(
+def test_generate_forwards_the_lora_stack_with_aligned_strengths(
     client, monkeypatch, lora_registry
 ):
+    # Two adapters ride together; a missing strength defaults to 1.0 so the
+    # dirs and strengths lists stay aligned position by position.
     calls = []
 
     async def fake_generate(prompt, seconds, kind, **options):
@@ -165,13 +170,21 @@ def test_generate_forwards_the_lora_adapter_and_strength(
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
     response = client.post(
         "/api/generate",
-        json=generate_request(lora={"name": "small/crackle", "strength": 1.5}),
+        json=generate_request(
+            loras=[
+                {"name": "small/crackle", "strength": 1.5},
+                {"name": "small/hiss"},
+            ]
+        ),
     )
     assert response.status_code == 200
     assert calls == [
         {
-            "lora_dir": str(lora_registry / "small" / "crackle"),
-            "lora_strength": 1.5,
+            "lora_dirs": [
+                str(lora_registry / "small" / "crackle"),
+                str(lora_registry / "small" / "hiss"),
+            ],
+            "lora_strengths": [1.5, 1.0],
         }
     ]
 
@@ -190,13 +203,15 @@ def test_generate_accepts_the_lora_strength_boundaries(
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
     response = client.post(
         "/api/generate",
-        json=generate_request(lora={"name": "small/crackle", "strength": strength}),
+        json=generate_request(loras=[{"name": "small/crackle", "strength": strength}]),
     )
     assert response.status_code == 200
-    assert calls[0]["lora_strength"] == strength
+    assert calls[0]["lora_strengths"] == [strength]
 
 
-def test_generate_lora_strength_is_optional(client, monkeypatch, lora_registry):
+def test_generate_treats_an_empty_lora_stack_as_no_adapters(
+    client, monkeypatch, lora_registry
+):
     calls = []
 
     async def fake_generate(prompt, seconds, kind, **options):
@@ -204,35 +219,38 @@ def test_generate_lora_strength_is_optional(client, monkeypatch, lora_registry):
         return b"RIFFwav"
 
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
-    response = client.post(
-        "/api/generate", json=generate_request(lora={"name": "small/crackle"})
-    )
+    response = client.post("/api/generate", json=generate_request(loras=[]))
     assert response.status_code == 200
-    assert calls == [{"lora_dir": str(lora_registry / "small" / "crackle")}]
+    assert calls == [{}]
 
 
 @pytest.mark.parametrize(
-    "lora",
+    "loras",
     [
-        "small/crackle",  # not an object
-        {"name": None},
-        {"name": "small/absent"},  # not installed
-        {"name": "small/../crackle"},  # traversal
-        {"name": "medium/maqam"},  # medium adapter cannot ride an sfx (small) DiT
-        {"name": "small/crackle", "strength": -0.1},
-        {"name": "small/crackle", "strength": 4.1},
-        {"name": "small/crackle", "strength": True},
-        {"name": "small/crackle", "strength": "1"},
+        {"name": "small/crackle"},  # not an array
+        ["small/crackle"],  # entry not an object
+        [{"name": None}],
+        [{"name": "small/absent"}],  # not installed
+        [{"name": "small/../crackle"}],  # traversal
+        [{"name": "medium/maqam"}],  # medium adapter cannot ride an sfx (small) DiT
+        [{"name": "small/crackle", "strength": -0.1}],
+        [{"name": "small/crackle", "strength": 4.1}],
+        [{"name": "small/crackle", "strength": True}],
+        [{"name": "small/crackle", "strength": "1"}],
+        # A repeated adapter would double its delta silently.
+        [{"name": "small/crackle"}, {"name": "small/crackle"}],
+        # One over MAX_LORA_STACK, and every name resolves — only the cap trips.
+        [{"name": f"small/stack{n}"} for n in range(5)],
     ],
 )
-def test_generate_rejects_invalid_lora_requests(
-    client, monkeypatch, lora_registry, lora
+def test_generate_rejects_invalid_lora_stacks(
+    client, monkeypatch, lora_registry, loras
 ):
     async def fake_generate(prompt, seconds, kind, **options):  # pragma: no cover
         raise AssertionError("invalid input must not reach generation")
 
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
-    response = client.post("/api/generate", json=generate_request(lora=lora))
+    response = client.post("/api/generate", json=generate_request(loras=loras))
     assert response.status_code == 422
 
 
@@ -247,7 +265,7 @@ def test_generate_rejects_a_nan_lora_strength(client, monkeypatch, lora_registry
         "/api/generate",
         content=(
             '{"prompt": "x", "seconds": 3, "kind": "sfx", '
-            '"lora": {"name": "small/crackle", "strength": NaN}}'
+            '"loras": [{"name": "small/crackle", "strength": NaN}]}'
         ),
         headers={"content-type": "application/json"},
     )

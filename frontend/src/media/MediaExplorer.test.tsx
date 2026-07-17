@@ -215,7 +215,7 @@ describe('MediaExplorer', () => {
     ).toBe(true)
   })
 
-  it('rides the chosen LoRA adapter + strength on a track compose (issue #66)', async () => {
+  it('rides a stacked pair of LoRA adapters with their trims on a track compose (issue #66)', async () => {
     useLorasMock.mockReturnValue([
       {
         name: 'medium/maqam',
@@ -226,7 +226,16 @@ describe('MediaExplorer', () => {
         adapterType: 'lora',
         rank: 64,
       },
-      // Small adapters never reach the track picker (tracks ride medium).
+      {
+        name: 'medium/breaks',
+        base: 'medium',
+        slug: 'breaks',
+        sizeBytes: 150_000_000,
+        source: null,
+        adapterType: 'lora',
+        rank: 32,
+      },
+      // Small adapters never reach the track rack (tracks ride medium).
       {
         name: 'small/crackle',
         base: 'small',
@@ -240,12 +249,11 @@ describe('MediaExplorer', () => {
     const fetchMock = stubFetch()
     renderExplorer()
     fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
-    const picker = screen.getByLabelText('LoRA')
-    expect(
-      Array.from(picker.querySelectorAll('option')).map((option) => option.value),
-    ).toEqual(['none', 'medium/maqam'])
-    fireEvent.change(picker, { target: { value: 'medium/maqam' } })
-    fireEvent.change(screen.getByLabelText('Strength'), {
+    expect(screen.queryByText('crackle')).toBeNull()
+    // Chip both medium adapters into the stack; trim only maqam.
+    fireEvent.click(screen.getByText('maqam'))
+    fireEvent.click(screen.getByText('breaks'))
+    fireEvent.change(screen.getByLabelText('maqam strength'), {
       target: { value: '1.5' },
     })
     await composeTrack('maqam study')
@@ -256,8 +264,37 @@ describe('MediaExplorer', () => {
           prompt: 'maqam study',
           seconds: 120,
           kind: 'track',
-          lora: { name: 'medium/maqam', strength: 1.5 },
+          loras: [
+            { name: 'medium/maqam', strength: 1.5 },
+            { name: 'medium/breaks', strength: 1 },
+          ],
         }),
+      }),
+    )
+  })
+
+  it('drops a chip toggled back out of the stack from the request', async () => {
+    useLorasMock.mockReturnValue([
+      {
+        name: 'medium/maqam',
+        base: 'medium',
+        slug: 'maqam',
+        sizeBytes: 200_000_000,
+        source: null,
+        adapterType: 'lora',
+        rank: 64,
+      },
+    ])
+    const fetchMock = stubFetch()
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByText('maqam')) // in…
+    fireEvent.click(screen.getByText('maqam')) // …and back out
+    await composeTrack('clean take')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/generate',
+      expect.objectContaining({
+        body: JSON.stringify({ prompt: 'clean take', seconds: 120, kind: 'track' }),
       }),
     )
   })

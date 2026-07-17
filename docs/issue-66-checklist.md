@@ -71,3 +71,32 @@ adapter throughout.
 - [ ] POST `/api/generate` directly with `kind: "sfx"` and the medium
       adapter's name: 422 naming the base mismatch (the UI never offers the
       combination; the boundary still refuses it).
+
+## LoRA stack (multi-adapter follow-up)
+
+The generate surfaces replaced the adapter/strength pickers with the
+**LoRA rack**: every base-matched adapter is a toggle chip; a chip clicked
+into the stack grows a trim knob (double-click parks it at ×1, ×0 dims the
+slot — bit-exact bypass). `/api/generate` now takes `loras` (a list of up to
+4 `{name, strength}` entries) instead of the single `lora` object.
+
+**Fork prerequisite (before anything below):** apply
+[`sa3-lora-stack.patch`](sa3-lora-stack.patch) to the `brxs/stable-audio-3`
+checkout (`git apply -p1`), push, and bump the commit in `sa3-pin.json` —
+the pinned CLI takes multiple `--lora` adapters but only a single global
+`--lora-strength` until then. The app-side code always sends one strength
+per adapter, which the old CLI's argparse would refuse.
+
+- [ ] With two medium adapters installed: chip both into the Generate tab's
+      rack, distinct trims (e.g. ×1 and ×0.5) — the backend log shows
+      `merged … from 2 adapter(s)` and the take audibly carries both.
+- [ ] Trim one slot to ×0: its slot dims; same prompt + seed with that
+      adapter chipped out entirely is byte-identical (per-slot bypass).
+- [ ] Chip a 5th adapter with 4 stacked: the chip is disabled with the
+      "Stack full" hint (and a direct POST with 5 entries returns 422, as
+      does a duplicated name).
+- [ ] Deck rack takes the deck accent (A lime / B violet by default);
+      the Media Explorer racks take the master accent.
+- [ ] Toggle a chip out and back in: it remembers its trim for the session.
+- [ ] Delete a stacked adapter from the LoRA Library: the chip vanishes
+      from the racks and the next generate simply rides without it.
