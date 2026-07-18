@@ -305,6 +305,7 @@
     "models": "Deck realtime models",
     "modelDeck": "Deck {{id}}",
     "modelLibrary": "Model library",
+    "loraLibrary": "LoRA Library",
     "recording": "Recording",
     "recordingFolder": "Recordings folder",
     "recordingFolderDefault": "Downloads (default)",
@@ -369,7 +370,20 @@
       "install": "Building and warming…",
       "done": "Done",
       "error": "Failed"
-    }
+    },
+    "loras": "LoRA adapters",
+    "loraNone": "No adapters installed",
+    "loraBaseLabel": "Base",
+    "loraBaseAuto": "Detect base",
+    "loraBase": {
+      "small": "Small DiT (pads)",
+      "medium": "Medium DiT (tracks)"
+    },
+    "loraRepo": "HuggingFace repo",
+    "loraRepoPlaceholder": "owner/adapter-repo or huggingface.co link",
+    "loraImportFile": "Import file…",
+    "loraFileFilter": "LoRA adapter",
+    "loraDelete": "Delete adapter {{name}}"
   },
   "piano": {
     "heading": "MIDI keyboard",
@@ -380,5 +394,13 @@
     "octaveUp": "Octave up",
     "octaveDown": "Octave down",
     "key": "{{note}}"
+  },
+  "lora": {
+    "rack": "LoRA",
+    "include": "Add {{name}} to the LoRA stack",
+    "exclude": "Remove {{name}} from the LoRA stack",
+    "strength": "{{name}} strength",
+    "strengthValue": "×{{value}}",
+    "stackFull": "Stack full — up to {{max}} adapters per generation"
   }
 }

@@ -529,6 +529,129 @@
   opacity: 0.4;
 }
 
+/* Small dial ('s'): the in-row trim (LoRA rack). The viewBox is 28 so the
+   stroke scales down a step to keep the arc weight proportional. */
+.ui-knob--s .ui-knob__dial {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.ui-knob--s .ui-knob__track,
+.ui-knob--s .ui-knob__value {
+  stroke-width: 2.6;
+}
+
+/* ---------- LoRA rack (issue #66 follow-up) ---------- */
+
+/* The adapter stack as an FX rack strip: one slot per installed adapter,
+   and — once toggled into the stack — the slot grows a trim knob BESIDE the
+   chip behind a hairline divider, keeping the whole rack one control line
+   (tray height belongs to the library list). Accent follows the host
+   (deck a/b or master), like the knob. */
+.ui-lorarack {
+  --rack-accent: var(--color-accent);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.ui-lorarack--a {
+  --rack-accent: var(--color-deck-a);
+}
+
+.ui-lorarack--b {
+  --rack-accent: var(--color-deck-b);
+}
+
+.ui-lorarack__label {
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-silkscreen);
+  flex: none;
+}
+
+.ui-lorarack__slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: stretch;
+}
+
+.ui-lorarack__slot {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface-raised);
+}
+
+.ui-lorarack__chip {
+  font: 600 var(--text-s) var(--font-ui);
+  line-height: var(--control-line);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.ui-lorarack__chip:not(:disabled):hover {
+  color: var(--color-text);
+}
+
+/* Stack full: the freeze-pad disabled convention. */
+.ui-lorarack__chip:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ui-lorarack__chip:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
+/* In the stack: accent-lit, the icon-picker active convention. */
+.ui-lorarack__slot--on {
+  border-color: var(--rack-accent);
+}
+
+.ui-lorarack__slot--on .ui-lorarack__chip {
+  color: var(--rack-accent);
+}
+
+.ui-lorarack__trim {
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-2);
+  border-left: 1px solid var(--color-border);
+  background: var(--color-surface-inset);
+}
+
+/* The knob lies on its side in the strip: dial then ×value, one line. The
+   readout gets a floor width so the slot doesn't resize under a drag as
+   "×1" becomes "×0.25". */
+.ui-lorarack__trim .ui-knob {
+  flex-direction: row;
+  gap: var(--space-2);
+}
+
+.ui-lorarack__trim .ui-knob__label {
+  min-width: 1.9rem;
+  text-align: left;
+}
+
+/* ×0 = the bit-exact bypass: in the stack but silent, so the slot dims
+   toward the surface instead of holding the full accent. */
+.ui-lorarack__slot--bypass {
+  border-color: color-mix(in srgb, var(--rack-accent) 45%, var(--color-surface));
+}
+
+.ui-lorarack__slot--bypass .ui-lorarack__chip {
+  color: color-mix(in srgb, var(--rack-accent) 55%, var(--color-surface));
+}
+
 /* ---------- phase meter (M20) ---------- */
 
 .ui-phasemeter {
@@ -1234,6 +1357,19 @@
   color: var(--color-led-danger);
   font-size: var(--text-xs);
   margin-top: var(--space-1);
+}
+/* The LoRA import controls (issue #66): the repo field takes a full line of
+   the drawer (pasted HF links are long), with base + actions wrapping below. */
+.modelmgr__import {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+.modelmgr__import-repo {
+  flex: 1 1 100%;
+  min-width: 0;
 }
 .modelmgr__empty {
   color: var(--color-text-muted);

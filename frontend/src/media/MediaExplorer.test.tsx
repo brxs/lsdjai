@@ -18,6 +18,14 @@ vi.mock('../audio/nativeEngine', async (importOriginal) => {
 })
 vi.mock('../audio/interfaceStore', () => ({ useInterfaceStore: vi.fn(() => null) }))
 
+// The installed-adapter list (issue #66) is stubbed per test; the default is
+// none, which hides the LoRA pickers entirely.
+const useLorasMock = vi.fn<() => import('../audio/nativeEngine').LoraAdapter[]>(() => [])
+vi.mock('../models/useLoras', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../models/useLoras')>()
+  return { ...original, useLoras: () => useLorasMock() }
+})
+
 type Handlers = {
   onLoadPreset?: (deck: DeckId, preset: StylePreset) => void
   onLoadTrack?: (deck: DeckId, source: TrackSource, title: string) => Promise<boolean>
@@ -99,6 +107,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.mocked(useInterfaceStore).mockReturnValue(null)
   vi.mocked(togglePianoWindow).mockClear()
+  useLorasMock.mockReturnValue([])
 })
 
 describe('MediaExplorer', () => {
@@ -204,6 +213,90 @@ describe('MediaExplorer', () => {
         .getAllByText('Track (SA3 medium)')
         .some((element) => element.classList.contains('media__meta')),
     ).toBe(true)
+  })
+
+  it('rides a stacked pair of LoRA adapters with their trims on a track compose (issue #66)', async () => {
+    useLorasMock.mockReturnValue([
+      {
+        name: 'medium/maqam',
+        base: 'medium',
+        slug: 'maqam',
+        sizeBytes: 200_000_000,
+        source: null,
+        adapterType: 'lora',
+        rank: 64,
+      },
+      {
+        name: 'medium/breaks',
+        base: 'medium',
+        slug: 'breaks',
+        sizeBytes: 150_000_000,
+        source: null,
+        adapterType: 'lora',
+        rank: 32,
+      },
+      // Small adapters never reach the track rack (tracks ride medium).
+      {
+        name: 'small/crackle',
+        base: 'small',
+        slug: 'crackle',
+        sizeBytes: 50_000_000,
+        source: null,
+        adapterType: 'lora',
+        rank: 8,
+      },
+    ])
+    const fetchMock = stubFetch()
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    expect(screen.queryByText('crackle')).toBeNull()
+    // Chip both medium adapters into the stack; trim only maqam.
+    fireEvent.click(screen.getByText('maqam'))
+    fireEvent.click(screen.getByText('breaks'))
+    fireEvent.change(screen.getByLabelText('maqam strength'), {
+      target: { value: '1.5' },
+    })
+    await composeTrack('maqam study')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/generate',
+      expect.objectContaining({
+        body: JSON.stringify({
+          prompt: 'maqam study',
+          seconds: 120,
+          kind: 'track',
+          loras: [
+            { name: 'medium/maqam', strength: 1.5 },
+            { name: 'medium/breaks', strength: 1 },
+          ],
+        }),
+      }),
+    )
+  })
+
+  it('drops a chip toggled back out of the stack from the request', async () => {
+    useLorasMock.mockReturnValue([
+      {
+        name: 'medium/maqam',
+        base: 'medium',
+        slug: 'maqam',
+        sizeBytes: 200_000_000,
+        source: null,
+        adapterType: 'lora',
+        rank: 64,
+      },
+    ])
+    const fetchMock = stubFetch()
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByText('maqam')) // in…
+    fireEvent.click(screen.getByText('maqam')) // …and back out
+    await composeTrack('clean take')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/generate',
+      expect.objectContaining({
+        body: JSON.stringify({ prompt: 'clean take', seconds: 120, kind: 'track' }),
+      }),
+    )
   })
 
   it('previews a take in the headphones and toggles it off', async () => {
