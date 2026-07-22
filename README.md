@@ -2,9 +2,9 @@
   <img src="docs/img/lsdj-mark.svg" alt="LSDJai" width="128">
 </p>
 
-<h1 align="center">LSDJ.ai</h1>
+<h1 align="center">Latent Space DJ</h1>
 
-<p align="center"><strong>Latent Space DJ</strong> — an instrument for real-time AI music.</p>
+<p align="center"><strong>An instrument for real-time AI music.</p>
 
 <p align="center">
   <img src="docs/img/lsdj-demo.gif" alt="LSDJai — latent space disc jockey" width="640">
